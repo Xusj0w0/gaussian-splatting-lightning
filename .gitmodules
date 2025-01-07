@@ -1,0 +1,9 @@
+[submodule "third_party/gaussian_splatting"]
+	path = third_party/gaussian_splatting
+	url = https://github.com/graphdeco-inria/gaussian-splatting.git
+[submodule "third_party/VastGaussian"]
+	path = third_party/VastGaussian
+	url = https://github.com/kangpeilun/VastGaussian.git
+[submodule "third_party/CityGaussian"]
+	path = third_party/CityGaussian
+	url = https://github.com/DekuLiuTesla/CityGaussian.git
