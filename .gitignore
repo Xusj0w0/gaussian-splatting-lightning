@@ -1,3 +1,7 @@
+# self-defined
+.vscode
+datasets
+
 .idea
 outputs
 camera_paths
