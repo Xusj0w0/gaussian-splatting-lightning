@@ -1,8 +1,8 @@
 export PATH="/usr/local/cuda-11.8/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 CUR_DIR=$(pwd)
-NUM_PROC=4
-CUDA_LIST=(1 2 3 4)
+NUM_PROC=2
+CUDA_LIST=(1 2)
 
 kill_pids() {
   for pid in "$@"; do
@@ -13,7 +13,7 @@ kill_pids() {
   done
 }
 
-PARTITION_DATA_PATH="/data/xusj/Projects/3drec/gspl/datasets/rubble/colmap/partitions-size_60.0-enlarge_0.1-visibility_0.9_0.25"
+PARTITION_DATA_PATH="/data/xusj/Projects/3drec/gaussian-splatting-lightning/datasets/Mill-19/rubble/colmap/partitions-size_60.0-enlarge_0.1-visibility_0.9_0.25"
 
 PROJECT_NAME="MegaNeRF-rubble-mip"
 mkdir -p logs/$PROJECT_NAME

@@ -3,7 +3,7 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 export CUDA_VISIBLE_DEVICES="1"
 PROJECT_NAME=shanxi
-EXP_NAME=shanxi-gsplat-shvd-sfmer
+EXP_NAME=shanxi-gsplat-shvd-sfmer-denser
 MAX_STEPS=60000
 
 python main.py fit \
@@ -16,7 +16,8 @@ python main.py fit \
     --config configs/appearance_embedding_renderer/sh_view_dependent.yaml \
     --model.density.densification_interval 200 \
     --model.density.densify_from_iter 1000 \
-    --model.density.densify_until_iter 30000 \
+    --model.density.densify_until_iter 50000 \
+    --model.density.densify_grad_threshold 0.0001 \
     --data.path /data/xusj/Projects/3drec/gspl/datasets/shanxi-building/colmap/undistorted \
     --data.parser Colmap \
     --data.train_max_num_images_to_cache 512 \

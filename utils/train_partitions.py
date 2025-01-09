@@ -316,7 +316,7 @@ class PartitionTraining:
             "--data.path", self.dataset_path,
             "--project", project_name,
             "--output", project_output_dir,
-            "--logger", "wandb",
+            # "--logger", "wandb",
         ]
 
         args += self.get_partition_specific_args(partition_idx)

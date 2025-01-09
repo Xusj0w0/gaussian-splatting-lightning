@@ -1,6 +1,9 @@
 # self-defined
 .vscode
 datasets
+partition_outputs
+tmp
+.env
 
 .idea
 outputs
