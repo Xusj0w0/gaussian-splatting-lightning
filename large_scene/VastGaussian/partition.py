@@ -8,11 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from arguments import ModelParams
-from external.partition_utils import (VastGSPartitionCoordinates,
-                                      VastGSProgressiveDataPartitioning,
-                                      focal2fov)
-from scene.dataset_readers import (CameraInfo, SceneInfo, fetchPly,
-                                   getNerfppNorm, storePly)
+from external.partition_utils import VastGSPartitionCoordinates, VastGSProgressiveDataPartitioning, focal2fov
+from scene.dataset_readers import CameraInfo, SceneInfo, fetchPly, getNerfppNorm, storePly
 
 import internal.utils.colmap as colmap_utils
 from utils.camera_utils import cameraList_from_camInfos_partition
@@ -73,7 +70,7 @@ def read_scene(dataset_path: str, ply_path: str, extra_trans: Optional[np.ndarra
                 height=height,
             )
         )
-    # cam_infos = sorted(cam_infos, key=lambda x: x.image_name)  # affect *-based_assignments
+    cam_infos = sorted(cam_infos, key=lambda x: x.image_name)  # may affect *-based_assignments
     nerf_normalization = getNerfppNorm(cam_infos)
 
     xyz, rgb = extract_from_points3D(points3D)
