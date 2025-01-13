@@ -7,9 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from arguments import ModelParams
 from external.partition_utils import VastGSPartitionCoordinates, VastGSProgressiveDataPartitioning, focal2fov
-from internal.configs.dataset import DatasetParams
 from scene.dataset_readers import CameraInfo, SceneInfo, fetchPly, getNerfppNorm, storePly
 
 import internal.utils.colmap as colmap_utils

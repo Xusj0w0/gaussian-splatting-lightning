@@ -1,3 +1,8 @@
+- `partition.py`：区域分块
+- `train_partitions.py`：分块训练
+- `train_partitions.sh`：使用tmux管理分块训练任务
+- `merge.py`：还未完成
+
 原始高斯实现：若设置了eval为True，从colmap结果中加载图像，按名称排序后间隔llffhold步取一张用来测试，训练与测试不重合
 gspl实现：设置eval_image_select_model为"step"，并设置split_mode为"experiment"（不重复）可以达到上述同样的效果
 但是到分块重建会有问题：
