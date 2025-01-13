@@ -1,3 +1,8 @@
+import os
+import os.path as osp
+import sys
+
+sys.path.insert(0, osp.dirname(osp.dirname(__file__)))
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -8,7 +13,8 @@ from torch import nn
 
 from internal.cameras import Camera
 from internal.models.gaussian import GaussianModel
-from internal.renderers.gsplat_v1_renderer import GSplatV1Renderer, GSplatV1RendererModule
+from internal.renderers.gsplat_v1_renderer import (GSplatV1Renderer,
+                                                   GSplatV1RendererModule)
 
 
 @dataclass

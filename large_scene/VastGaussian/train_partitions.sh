@@ -1,3 +1,5 @@
+# use tmux to manage multiple `train_partitions.py` tasks
+
 PWD=$(pwd)
 
 export PATH="/usr/local/cuda-11.8/bin:$PATH"
@@ -10,13 +12,13 @@ ENV_VARS=(
     PYTHONPATH
 )
 
-NUM_PROC=3
-CUDA_LIST=(1 2 4)
+CUDA_LIST=(3 4)
+NUM_PROC=${#CUDA_LIST[@]}
 
-DATASET_NAME=rubble
+DATASET_NAME=building
 DATASET_PREFIX=MegaNeRF
 PARTITION_DATA_PATH="$PWD/tmp/partitions/$DATASET_NAME/partitions"
-PROJECT_NAME="$DATASET_NAME-vastgs"
+PROJECT_NAME="vastgs-$DATASET_NAME"
 
 for i in "${!CUDA_LIST[@]}"; do
     # launch tmux session
@@ -39,12 +41,12 @@ for i in "${!CUDA_LIST[@]}"; do
             -p $PROJECT_NAME \
             --dataset_path $PWD/datasets/$DATASET_PREFIX/$DATASET_NAME/colmap \
             --eval \
-            --config configs/gsplat_v1.yaml \
+            --config large_scene/VastGaussian/configs/gsplat_appearance_modeling.yaml \
             --n-processes $NUM_PROC \
             --process-id $((i + 1)) \
             -- \
-            --model.gaussian.optimization.spatial_lr_scale 15 \
-            --data.parser.down_sample_factor 2 \
+            --data.parser.down_sample_factor 4 \
+            --data.parser.appearance_groups dedicated \
             --logger tensorboard \
         " C-m
 done
