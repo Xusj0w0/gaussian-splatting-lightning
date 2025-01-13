@@ -1,13 +1,18 @@
 # modified from utils/meganerf2colmap.py
+
+import argparse
 import json
 import os
-import sys
-import argparse
+import sqlite3
 import subprocess
+import sys
+
 import numpy as np
 import torch
-import sqlite3
+
+from internal.dataparsers.colmap_dataparser import ColmapDataParser
 from internal.utils import colmap
+from internal.utils.graphics_utils import fetch_ply, store_ply
 
 
 def array_to_blob(array):
@@ -51,15 +56,15 @@ def main():
                 )
             )
 
-    image_dir = os.path.join(colmap_dir, "images")
+    image_dir = os.path.join(colmap_dir, "distorted", "images")
     os.makedirs(image_dir, exist_ok=True)
     for i, _, image_name, split in image_metadata_pairs:
         try:
-            os.symlink(os.path.join("..", "..", split, "rgbs", image_name), os.path.join(image_dir, image_name))
+            os.symlink(os.path.join("..", "..", "..", split, "rgbs", image_name), os.path.join(image_dir, image_name))
         except FileExistsError:
             pass
 
-    colmap_db_path = os.path.join(colmap_dir, "colmap.db")
+    colmap_db_path = os.path.join(colmap_dir, "distorted", "colmap.db")
     assert (
         subprocess.call(
             [
@@ -209,7 +214,7 @@ def main():
 
     colmap_db.close()
 
-    sparse_manually_model_dir = os.path.join(colmap_dir, "sparse_manually")
+    sparse_manually_model_dir = os.path.join(colmap_dir, "distorted", "sparse_manually")
     os.makedirs(sparse_manually_model_dir, exist_ok=True)
     colmap.write_images_binary(images, os.path.join(sparse_manually_model_dir, "images.bin"))
     colmap.write_cameras_binary(cameras, os.path.join(sparse_manually_model_dir, "cameras.bin"))
@@ -227,7 +232,7 @@ def main():
         == 0
     )
 
-    sparse_dir_triangulated = os.path.join(colmap_dir, "sparse_triangulated")
+    sparse_dir_triangulated = os.path.join(colmap_dir, "distorted", "sparse_triangulated")
     if not os.path.exists(sparse_dir_triangulated):
         os.makedirs(sparse_dir_triangulated, exist_ok=True)
         assert (
@@ -256,7 +261,7 @@ def main():
         # use the intrinsics and extrinsics provided by MegaNeRF will produce a suboptimal result,
         # so run a bundle adjustment to further refine them
 
-        sparse_dir = os.path.join(colmap_dir, "sparse")
+        sparse_dir = os.path.join(colmap_dir, "distorted", "sparse")
         if not os.path.exists(sparse_dir):
             os.makedirs(sparse_dir, exist_ok=True)
             assert (
@@ -279,27 +284,41 @@ def main():
                 == 0
             )
 
-        dense_dir = os.path.join(colmap_dir, "dense")
-        os.makedirs(dense_dir, exist_ok=True)
-        assert (
-            subprocess.call(
-                [
-                    colmap_exe_path,
-                    "image_undistorter",
-                    "--image_path",
-                    image_dir,
-                    "--input_path",
-                    sparse_dir,
-                    "--output_path",
-                    dense_dir,
-                ]
+        dense_dir = os.path.join(colmap_dir, "undistorted")
+        if not os.path.exists(dense_dir):
+            os.makedirs(dense_dir, exist_ok=True)
+            assert (
+                subprocess.call(
+                    [
+                        colmap_exe_path,
+                        "image_undistorter",
+                        "--image_path",
+                        image_dir,
+                        "--input_path",
+                        sparse_dir,
+                        "--output_path",
+                        dense_dir,
+                    ]
+                )
+                == 0
             )
-            == 0
-        )
-        print("Saved to '{}', use this as your dataset path".format(dense_dir))
+        if os.path.exists(os.path.join(dense_dir, "images")) and not os.path.exists(os.path.join(colmap_dir, "images")):
+            os.rename(os.path.join(dense_dir, "images"), os.path.join(colmap_dir, "images"))
+        if os.path.exists(os.path.join(dense_dir, "sparse")) and not os.path.exists(os.path.join(colmap_dir, "sparse")):
+            os.rename(os.path.join(dense_dir, "sparse"), os.path.join(colmap_dir, "sparse"))
     else:
-        os.rename(sparse_dir_triangulated, os.path.join(colmap_dir, "sparse"))
-        print("Saved to '{}', use this as your dataset path".format(colmap_dir))
+        if os.path.exists(os.path.join(colmap_dir, "distorted", "images")) and not os.path.exists(
+            os.path.join(colmap_dir, "images")
+        ):
+            os.rename(os.path.join(colmap_dir, "distorted", "images"), os.path.join(colmap_dir, "images"))
+        if os.path.exists(sparse_dir_triangulated) and not os.path.exists(os.path.join(colmap_dir, "sparse")):
+            os.rename(sparse_dir_triangulated, os.path.join(colmap_dir, "sparse"))
+
+    print("Saved to '{}', use this as your dataset path".format(colmap_dir))
+    ply_path = os.path.join(colmap_dir, "input.ply")
+    if not os.path.exists(ply_path):
+        xyz, rgb, _ = ColmapDataParser.read_points3D_binary(os.path.join(colmap_dir, "sparse", "points3D.bin"))
+        store_ply(ply_path, xyz, rgb)
 
 
 def test_main():
