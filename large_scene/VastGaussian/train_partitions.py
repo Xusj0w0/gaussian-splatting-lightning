@@ -52,8 +52,9 @@ class VastGSPartitionTraining(PartitionTraining):
                     "{}.txt".format(self.get_partition_id_str(partition_idx)),
                 )
             ),
+            "--data.parser.eval_image_select_mode=list",
+            "--data.parser.eval_list={}".format(os.path.join(self.dataset_path, "splits/val_images.txt")),
             "--data.parser.split_mode={}".format("experiment" if self.config.eval else "reconstruction"),
-            "--data.parser.eval_step=64",
             "--data.parser.points_from=ply",
             "--data.parser.ply_file={}".format(
                 os.path.join(self.path, "init_pcds", f"{self.get_partition_id_str(partition_idx)}.ply")
@@ -67,4 +68,5 @@ def main():
     VastGSPartitionTraining.start_with_configured_argparser(parser, config_cls=VastGSPartitionTrainingConfig)
 
 
-main()
+if __name__ == "__main__":
+    main()

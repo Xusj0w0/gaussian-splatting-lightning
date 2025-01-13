@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from arguments import ModelParams
 from external.partition_utils import VastGSPartitionCoordinates, VastGSProgressiveDataPartitioning, focal2fov
+from internal.configs.dataset import DatasetParams
 from scene.dataset_readers import CameraInfo, SceneInfo, fetchPly, getNerfppNorm, storePly
 
 import internal.utils.colmap as colmap_utils
@@ -16,7 +17,22 @@ from utils.camera_utils import cameraList_from_camInfos_partition
 from utils.graphics_utils import BasicPointCloud
 
 
-def read_scene(dataset_path: str, ply_path: str, extra_trans: Optional[np.ndarray] = None):
+def make_parser():
+    parser = ArgumentParser()
+    parser.add_argument("--dataset_path", required=True, type=str, default="")
+    parser.add_argument("--output_path", required=True, type=str, default="")
+    parser.add_argument(
+        "--regions",
+        required=True,
+        type=str,
+        default="2,4",
+        help="split number along x- and z-axis, like '2,4'",
+    )
+    parser.add_argument("--manhattan_trans", type=str, default="", help="relative path to dataset_path")
+    return parser
+
+
+def read_scene(dataset_path: str, ply_path: str, manhattan_trans: Optional[np.ndarray] = None):
     """
     Replace `partition()` in `scene.dataset_readers`, using `colmap_utils` from `internal.utils`.
     `dataset_path/sparse/` should contains *.bin or *.txt files.
@@ -34,10 +50,10 @@ def read_scene(dataset_path: str, ply_path: str, extra_trans: Optional[np.ndarra
         height, width = camera.height, camera.width
 
         dtype = image.tvec.dtype
-        if extra_trans is not None:
+        if manhattan_trans is not None:
             w2c = np.eye(4, dtype=dtype)
             w2c[:3, :3], w2c[:3, -1] = image.qvec2rotmat(), image.tvec
-            w2c_extra = w2c @ np.linalg.inv(extra_trans)
+            w2c_extra = w2c @ np.linalg.inv(manhattan_trans)
             R, T = w2c_extra[:3, :3].transpose(), w2c_extra[:3, -1]
         else:
             R, T = image.qvec2rotmat().transpose(), image.tvec
@@ -73,12 +89,12 @@ def read_scene(dataset_path: str, ply_path: str, extra_trans: Optional[np.ndarra
     cam_infos = sorted(cam_infos, key=lambda x: x.image_name)  # may affect *-based_assignments
     nerf_normalization = getNerfppNorm(cam_infos)
 
-    xyz, rgb = extract_from_points3D(points3D)
     # ply_path = osp.join(output_path, "input.ply")
     if not osp.exists(ply_path):
+        xyz, rgb = extract_from_points3D(points3D)
         print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
         storePly(ply_path, xyz, rgb)
-    pcd = fetchPly(ply_path, man_trans=extra_trans)  # transform applied pcd
+    pcd = fetchPly(ply_path, man_trans=manhattan_trans)  # transform applied pcd
 
     dist_threshold = 99
     points, colors, normals = pcd.points, pcd.colors, pcd.normals
@@ -95,36 +111,42 @@ def read_scene(dataset_path: str, ply_path: str, extra_trans: Optional[np.ndarra
 def data_partition(
     dataset_path: str,
     output_path: str,
-    partition_path: str,
     regions: List[int] = [2, 4],
-    extra_trans: Optional[str] = "",
+    manhattan_trans: Optional[str] = "",
 ):
-    os.makedirs(output_path, exist_ok=True)
+    vastgs_path = osp.join(output_path, "vastgs")
+    partition_path = osp.join(output_path, "partitions")
+    os.makedirs(vastgs_path, exist_ok=True)
     os.makedirs(partition_path, exist_ok=True)
-    if len(extra_trans) > 0:
+
+    if len(manhattan_trans) > 0:
+        manhattan_path = osp.join(dataset_path, manhattan_trans)
+        assert osp.exists(manhattan_path), "File to manhattan transformation not found."
         try:
-            seq = [float(s) for s in extra_trans.strip().split()]
+            with open(manhattan_path, "r") as f:
+                trans_mat = " ".join([l.strip() for l in f.readlines()])
+            seq = [float(s) for s in trans_mat.split()]
         except:
-            raise ValueError("Invalid extra_transformation.")
-        assert len(seq) == 12, "Invalid extra_transformation."
-        extra_trans = np.array(seq).reshape(3, 4)
+            raise ValueError("Parse manhattan transformation failed.")
+        assert len(seq) == 16, "Invalid manhattan transformation."
+        manhattan_trans = np.array(seq).reshape(4, 4)
     else:
-        extra_trans = None
+        manhattan_trans = None
 
     ply_path = osp.join(output_path, "input.ply")
     pcd, cam_infos, nerf_normalization = read_scene(
-        dataset_path=dataset_path, ply_path=ply_path, extra_trans=extra_trans
+        dataset_path=dataset_path, ply_path=ply_path, manhattan_trans=manhattan_trans
     )
     all_cameras = cameraList_from_camInfos_partition(cam_infos, Namespace(data_device="cpu"))
     DataPartitioning = VastGSProgressiveDataPartitioning(
         pcd=pcd,
         train_cameras=all_cameras,
-        model_path=output_path,
+        model_path=vastgs_path,
         m_region=regions[0],
         n_region=regions[1],
         extend_rate=0.2,
         visible_rate=0.25,
-        extra_trans=extra_trans,
+        manhattan_trans=manhattan_trans,
     )
     partition_result = DataPartitioning.partition_scene
 
@@ -182,8 +204,8 @@ def data_partition(
     partitioning_info["location_based_assignments"] = torch.from_numpy(DataPartitioning.location_based_assignments)
     partitioning_info["final_assignments"] = torch.from_numpy(DataPartitioning.final_assignments)
     partitioning_info["extra_data"] = {
-        "up": torch.from_numpy(np.linalg.inv(extra_trans)[:3, 1]),
-        "rotation_transform": torch.from_numpy(extra_trans),
+        "up": torch.from_numpy(np.linalg.inv(manhattan_trans)[:3, 1]),
+        "rotation_transform": torch.from_numpy(manhattan_trans),
     }
     torch.save(partitioning_info, osp.join(partition_path, "partitions.pt"))
 
@@ -197,23 +219,12 @@ def extract_from_points3D(points3D: Dict[int, colmap_utils.Point3D]):
     return xyz, rgb
 
 
-def make_parser():
-    parser = ArgumentParser()
-    parser.add_argument("--dataset_path", required=True, type=str, default="")
-    parser.add_argument("--output_path", required=True, type=str, default="")
-    parser.add_argument("--partitions_path", required=True, type=str, default="")
-    parser.add_argument("--regions", required=True, type=str, default="2,4")
-    parser.add_argument("--extra_trans", type=str, default="")
-    return parser
-
-
 def main(args):
     data_partition(
         dataset_path=args.dataset_path,
         output_path=args.output_path,
-        partition_path=args.partitions_path,
         regions=args.regions,
-        extra_trans=args.extra_trans,
+        manhattan_trans=args.manhattan_trans,
     )
 
 
@@ -232,11 +243,11 @@ if __name__ == "__main__":
     #     -0.360898 -0.004220 0.932596 -9.532154
     #     0.000000 0.000000 0.000000 1.000000
     # """
-    # extra_trans = np.array([[float(s) for s in line.strip().split()] for line in st.strip().splitlines()])
+    # manhattan_trans = np.array([[float(s) for s in line.strip().split()] for line in st.strip().splitlines()])
     # data_partition(
     #     dataset_path=dataset_path,
     #     output_path=output_path,
     #     partition_path=partitions_path,
     #     regions=regions,
-    #     extra_trans=extra_trans,
+    #     manhattan_trans=manhattan_trans,
     # )

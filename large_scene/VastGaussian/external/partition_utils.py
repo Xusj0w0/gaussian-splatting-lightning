@@ -12,12 +12,10 @@ import numpy as np
 import torch
 from scene.cameras import SimpleCamera
 from scene.dataset_readers import storePly
-from scene.vastgs.data_partition import (CameraPartition, CameraPose,
-                                         ProgressiveDataPartitioning)
+from scene.vastgs.data_partition import CameraPartition, CameraPose, ProgressiveDataPartitioning
 from scene.vastgs.graham_scan import run_graham_scan
 
-from internal.utils.partitioning_utils import (MinMaxBoundingBoxes,
-                                               PartitionCoordinates)
+from internal.utils.partitioning_utils import MinMaxBoundingBoxes, PartitionCoordinates
 from utils.graphics_utils import BasicPointCloud
 
 
@@ -49,7 +47,7 @@ class VastGSProgressiveDataPartitioning(ProgressiveDataPartitioning):
         n_region=4,
         extend_rate=0.2,
         visible_rate=0.25,
-        extra_trans: Optional[np.ndarray] = None,
+        manhattan_trans: Optional[np.ndarray] = None,
     ):
         self.partition_scene = None
         self.pcd = pcd
@@ -66,7 +64,7 @@ class VastGSProgressiveDataPartitioning(ProgressiveDataPartitioning):
         self.n_region = n_region
         self.extend_rate = extend_rate
         self.visible_rate = visible_rate
-        self.extra_trans = extra_trans
+        self.manhattan_trans = manhattan_trans
         self.fig, self.ax = self.draw_pcd(self.pcd, train_cameras)
         self.run_DataPartition(train_cameras)
 
@@ -109,10 +107,28 @@ class VastGSProgressiveDataPartitioning(ProgressiveDataPartitioning):
         ax.title.set_text("Plot of 2D Points")
         ax.set_xlabel("X-axis")
         ax.set_ylabel("Z-axis")
-        fig.tight_layout()
-        fig.savefig(os.path.join(self.model_path, "pcd.png"), dpi=200)
+
         x_coords = np.array([cam.camera_center[0].item() for cam in train_cameras])
         z_coords = np.array([cam.camera_center[2].item() for cam in train_cameras])
+        xmin, xmax = x_coords.min(), x_coords.max()
+        zmin, zmax = z_coords.min(), z_coords.max()
+        xmin, xmax = xmin - 0.3 * (xmax - xmin), xmax + 0.3 * (xmax - xmin)
+        zmin, zmax = zmin - 0.3 * (zmax - zmin), zmax + 0.3 * (zmax - zmin)
+        if (xmax - xmin) < 0.75 * (zmax - zmin):
+            xmin = (xmax + xmin) * 0.5 - 0.5 * 0.75 * (zmax - zmin)
+            xmax = (xmax + xmin) * 0.5 + 0.5 * 0.75 * (zmax - zmin)
+        elif (zmax - zmin) < 0.75 * (xmax - xmin):
+            zmin = (zmax + zmin) * 0.5 - 0.5 * 0.75 * (xmax - xmin)
+            zmax = (zmax + zmin) * 0.5 + 0.5 * 0.75 * (xmax - xmin)
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(zmin, zmax)
+        aspect_ratio = ax.get_aspect()
+        fig_height = fig.get_size_inches()[1]
+        fig_width = fig_height * aspect_ratio
+        fig.set_size_inches(fig_width, fig_height)
+        fig.tight_layout()
+        fig.savefig(os.path.join(self.model_path, "pcd.png"), dpi=200)
+
         ax.scatter(x_coords, z_coords, color="red", s=1)
         fig.savefig(os.path.join(self.model_path, "camera_on_pcd.png"), dpi=200)
         return fig, ax
@@ -406,7 +422,7 @@ class VastGSProgressiveDataPartitioning(ProgressiveDataPartitioning):
         if not osp.exists(init_pcd_dir):
             os.makedirs(init_pcd_dir)
         self.partition_scene: List[CameraPartition]
-        transform = np.linalg.inv(self.extra_trans)
+        transform = np.linalg.inv(self.manhattan_trans)
         Rt, t = transform[:3, :3].T, transform[:3, -1]
         for idx, partition in enumerate(self.partition_scene):
             xyz, rgb = partition.point_cloud.points, partition.point_cloud.colors
