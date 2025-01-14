@@ -1,7 +1,10 @@
 import argparse
 import os
+import os.path as osp
+import sys
 from dataclasses import dataclass
 
+sys.path.insert(0, osp.dirname(osp.dirname(__file__)))
 import torch
 from external.partition_utils import VastGSPartitionCoordinates
 

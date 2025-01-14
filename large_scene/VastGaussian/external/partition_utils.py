@@ -15,14 +15,14 @@ from scene.dataset_readers import storePly
 from scene.vastgs.data_partition import CameraPartition, CameraPose, ProgressiveDataPartitioning
 from scene.vastgs.graham_scan import run_graham_scan
 
-from internal.utils.partitioning_utils import MinMaxBoundingBoxes, PartitionCoordinates
+from internal.utils.partitioning_utils import MinMaxBoundingBox, MinMaxBoundingBoxes, PartitionCoordinates
 from utils.graphics_utils import BasicPointCloud
 
 
 @dataclass
 class VastGSPartitionCoordinates(PartitionCoordinates):
     # xy: torch.Tensor, (N_partitions, 4), (xmin, zmin, xmax, zmax)
-    def get_bounding_boxes(self, size: Tuple[float], enlarge: float = 0.0) -> MinMaxBoundingBoxes:
+    def get_bounding_boxes(self) -> MinMaxBoundingBoxes:
         return MinMaxBoundingBoxes(min=self.xy[:, :2], max=self.xy[:, 2:])
 
     def get_str_id(self, idx):
@@ -31,6 +31,15 @@ class VastGSPartitionCoordinates(PartitionCoordinates):
         if isinstance(id, torch.Tensor):
             x, y = x.item(), y.item()
         return "{:d}_{:d}".format(x, y)
+
+    @staticmethod
+    def modify(bbox: MinMaxBoundingBox, flag: List[bool]) -> MinMaxBoundingBox:
+        assert len(flag) == 4, "Length of bbox and flag should be 4."
+        minmax = torch.cat([bbox.min, bbox.max], dim=0).detach().clone()
+        for i, f in enumerate(flag):
+            if f:
+                minmax[i] = -torch.inf if i < 2 else torch.inf
+        return MinMaxBoundingBox(min=minmax[:2], max=minmax[2:])
 
 
 class VastGSProgressiveDataPartitioning(ProgressiveDataPartitioning):

@@ -4,11 +4,15 @@ import sys
 from argparse import ArgumentParser, Namespace
 from typing import Dict, List, Optional, Tuple
 
+sys.path.insert(0, osp.dirname(osp.dirname(__file__)))
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from external.partition_utils import VastGSPartitionCoordinates, VastGSProgressiveDataPartitioning, focal2fov
-from scene.dataset_readers import CameraInfo, SceneInfo, fetchPly, getNerfppNorm, storePly
+from external.partition_utils import (VastGSPartitionCoordinates,
+                                      VastGSProgressiveDataPartitioning,
+                                      focal2fov)
+from scene.dataset_readers import (CameraInfo, SceneInfo, fetchPly,
+                                   getNerfppNorm, storePly)
 
 import internal.utils.colmap as colmap_utils
 from utils.camera_utils import cameraList_from_camInfos_partition
@@ -17,16 +21,22 @@ from utils.graphics_utils import BasicPointCloud
 
 def make_parser():
     parser = ArgumentParser()
-    parser.add_argument("--dataset_path", required=True, type=str, default="")
+    parser.add_argument(
+        "--dataset_path",
+        required=True,
+        type=str,
+        default="",
+        help="Path to dataset. Containing directories images, sparse, etc.",
+    )
     parser.add_argument("--output_path", required=True, type=str, default="")
     parser.add_argument(
         "--regions",
         required=True,
         type=str,
         default="2,4",
-        help="split number along x- and z-axis, like '2,4'",
+        help="Split number along x- and z-axis, like '2,4'",
     )
-    parser.add_argument("--manhattan_trans", type=str, default="", help="relative path to dataset_path")
+    parser.add_argument("--manhattan_trans", type=str, default="", help="Relative path to dataset_path")
     return parser
 
 
@@ -202,6 +212,7 @@ def data_partition(
     partitioning_info["location_based_assignments"] = torch.from_numpy(DataPartitioning.location_based_assignments)
     partitioning_info["final_assignments"] = torch.from_numpy(DataPartitioning.final_assignments)
     partitioning_info["extra_data"] = {
+        "dataset_path": dataset_path,
         "up": torch.from_numpy(np.linalg.inv(manhattan_trans)[:3, 1]),
         "rotation_transform": torch.from_numpy(manhattan_trans),
     }

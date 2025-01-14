@@ -12,12 +12,12 @@ ENV_VARS=(
     PYTHONPATH
 )
 
-CUDA_LIST=(3 4)
+CUDA_LIST=(4 5 6)
 NUM_PROC=${#CUDA_LIST[@]}
 
-DATASET_NAME=building
+DATASET_NAME=rubble
 DATASET_PREFIX=MegaNeRF
-PARTITION_DATA_PATH="$PWD/tmp/partitions/$DATASET_NAME/partitions"
+PARTITION_DATA_PATH="$PWD/tmp/partitions/rubble_2-3/partitions"
 PROJECT_NAME="vastgs-$DATASET_NAME"
 
 for i in "${!CUDA_LIST[@]}"; do
@@ -36,7 +36,7 @@ for i in "${!CUDA_LIST[@]}"; do
     # execute commands
     tmux send-keys -t $SESSION_NAME \
         " \
-        python large_scene/VastGaussian/train_partitions.py \
+        python large_scene/VastGaussian/tools/train_partitions.py \
             $PARTITION_DATA_PATH \
             -p $PROJECT_NAME \
             --dataset_path $PWD/datasets/$DATASET_PREFIX/$DATASET_NAME/colmap \
