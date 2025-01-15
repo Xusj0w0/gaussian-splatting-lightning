@@ -15,7 +15,7 @@ from scene.dataset_readers import storePly
 from scene.vastgs.data_partition import CameraPartition, CameraPose, ProgressiveDataPartitioning
 from scene.vastgs.graham_scan import run_graham_scan
 
-from internal.utils.partitioning_utils import MinMaxBoundingBox, MinMaxBoundingBoxes, PartitionCoordinates
+from internal.utils.partitioning_utils_2dsize import MinMaxBoundingBox, MinMaxBoundingBoxes, PartitionCoordinates
 from utils.graphics_utils import BasicPointCloud
 
 

@@ -26,7 +26,7 @@ from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import (GaussianPlyUtils,
                                            GaussianTransformUtils)
-from internal.utils.partitioning_utils import MinMaxBoundingBox
+from internal.utils.partitioning_utils_2dsize import MinMaxBoundingBox
 
 MERGABLE_PROPERTY_NAMES = ["means", "shs_dc", "shs_rest", "scales", "rotations", "opacities"]
 
