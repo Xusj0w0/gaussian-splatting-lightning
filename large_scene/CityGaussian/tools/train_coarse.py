@@ -4,6 +4,7 @@ for matrix city aerial and building, change
     --model.gaussian.init_args.optimization.means_lr_init
     --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.lr_final
     --model.gaussian.init_args.optimization.scales_lr
+
 for example:
     python large_scene/CityGaussian/train_coarse.py \
         --dataset_path datasets/MegaNeRF/building/colmap \
@@ -12,6 +13,9 @@ for example:
         --model.gaussian.init_args.optimization.means_lr_init 0.00008 \
         --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.lr_final 0.0000008 \
         --model.gaussian.init_args.optimization.scales_lr 0.0025
+
+if gaussian model type is not specified, run `python main.py fit --help` for instructions
+else only `--gaussian.means_lr_init x.xxx` is valid.
 """
 
 import os.path as osp
@@ -21,8 +25,10 @@ from argparse import ArgumentParser
 
 def make_parser():
     parser = ArgumentParser()
-    parser.add_argument("--dataset_path", required=True)
-    parser.add_argument("--project", required=True)
+    parser.add_argument(
+        "--dataset_path", required=True, help="Path to dataset. Containing directories images, sparse, etc."
+    )
+    parser.add_argument("--project", required=True, help="Project name. Related to logger/output_dir.")
     parser.add_argument("--down_sample_factor", default=4)
     return parser
 

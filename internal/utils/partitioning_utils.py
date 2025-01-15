@@ -171,7 +171,7 @@ class PartitionableScene:
         return self.is_partitions_visible_to_cameras
 
     def build_output_dirname(self):
-        return "partitions-size_({},{})-enlarge_{}-visibility_{}_{}".format(
+        return "partitions-size_{}-{}-enlarge_{}-visibility_{}_{}".format(
             self.scene_config.partition_size[0],
             self.scene_config.partition_size[1],
             self.scene_config.location_based_enlarge,
@@ -228,8 +228,8 @@ class PartitionableScene:
         for partition_id, partition_xy in self.partition_coordinates:
             ax.add_artist(mpatches.Rectangle(
                 (partition_xy[0], partition_xy[1]),
-                self.scene_config.partition_size,
-                self.scene_config.partition_size,
+                self.scene_config.partition_size[0],
+                self.scene_config.partition_size[1],
                 fill=False,
                 color=next(color_iter),
             ))

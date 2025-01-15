@@ -8,11 +8,8 @@ sys.path.insert(0, osp.dirname(osp.dirname(__file__)))
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from external.partition_utils import (VastGSPartitionCoordinates,
-                                      VastGSProgressiveDataPartitioning,
-                                      focal2fov)
-from scene.dataset_readers import (CameraInfo, SceneInfo, fetchPly,
-                                   getNerfppNorm, storePly)
+from external.partition_utils import VastGSPartitionCoordinates, VastGSProgressiveDataPartitioning, focal2fov
+from scene.dataset_readers import CameraInfo, SceneInfo, fetchPly, getNerfppNorm, storePly
 
 import internal.utils.colmap as colmap_utils
 from utils.camera_utils import cameraList_from_camInfos_partition
@@ -206,6 +203,7 @@ def data_partition(
 
     id_tensor = torch.tensor([[int(s) for s in p.partition_id.split("_")] for p in partition_result])
     xy_tensor = torch.tensor([p.ori_camera_bbox for p in partition_result])
+    xy_tensor = xy_tensor[:, [0, 2, 1, 3]]
     partitioning_info["partition_coordinates"] = {"id": id_tensor, "xy": xy_tensor}
 
     partitioning_info["visibilities"] = torch.zeros((len(id_tensor), len(all_cameras)), dtype=torch.float32)

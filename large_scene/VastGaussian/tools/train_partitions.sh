@@ -12,13 +12,13 @@ ENV_VARS=(
     PYTHONPATH
 )
 
-CUDA_LIST=(4 5 6)
+CUDA_LIST=(2 4)
 NUM_PROC=${#CUDA_LIST[@]}
 
 DATASET_NAME=rubble
-DATASET_PREFIX=MegaNeRF
-PARTITION_DATA_PATH="$PWD/tmp/partitions/rubble_2-3/partitions"
-PROJECT_NAME="vastgs-$DATASET_NAME"
+DATASET_PATH=$PWD/datasets/MegaNeRF/rubble/colmap
+PARTITION_DATA_PATH="$PWD/tmp/partitions/rubble-3_3/partitions"
+PROJECT_NAME="vastgs-$DATASET_NAME-3_3-gsplat"
 
 for i in "${!CUDA_LIST[@]}"; do
     # launch tmux session
@@ -39,9 +39,9 @@ for i in "${!CUDA_LIST[@]}"; do
         python large_scene/VastGaussian/tools/train_partitions.py \
             $PARTITION_DATA_PATH \
             -p $PROJECT_NAME \
-            --dataset_path $PWD/datasets/$DATASET_PREFIX/$DATASET_NAME/colmap \
+            --dataset_path $DATASET_PATH \
             --eval \
-            --config large_scene/VastGaussian/configs/gsplat_appearance_modeling.yaml \
+            --config configs/gsplat_v1.yaml \
             --n-processes $NUM_PROC \
             --process-id $((i + 1)) \
             -- \
