@@ -357,7 +357,7 @@ class PartitionTraining:
             "--data.path={}".format(self.dataset_path),
             "--project={}".format(project_name),
             "--output={}".format(project_output_dir),
-            "--logger={}".format("wandb"),
+            "--logger={}".format("tensorboard"), # "--logger={}".format("wandb"),
         ]
 
         args += self.get_partition_specific_args(partition_idx)

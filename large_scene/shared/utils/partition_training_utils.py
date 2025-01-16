@@ -31,7 +31,7 @@ class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
     def configure_argparser(parser, extra_epoches: int = 0):
         PartitionTrainingConfig.configure_argparser(parser, extra_epoches)
         parser.add_argument("--eval", action="store_true", default=False)
-        parser.add_argument("--dataset_path", default="")
+        parser.add_argument("--dataset_path", type=str, default="")
 
 
 class ModifiedPartitionTraining(PartitionTraining):
@@ -60,6 +60,25 @@ class ModifiedPartitionTraining(PartitionTraining):
             "--data.parser.eval_list={}".format(os.path.join(self.dataset_path, "splits/val_images.txt")),
             "--data.parser.split_mode={}".format("experiment" if self.config.eval else "reconstruction"),
         ]
+
+    @property
+    def project_output_dir(self) -> str:
+        """Append \'partitions\' after project name: <workdir>/outputs/<project>/partitions"""
+        return osp.join(super().project_output_dir, "partitions")
+
+    def train_a_partition(self, partition_idx):
+        res = super().train_a_partition(partition_idx)
+
+        filename = self.get_partition_trained_step_filename(partition_idx)
+        partition_trained_step_file_path = osp.join(self.project_output_dir, filename)
+        try:
+            os.rename(
+                partition_trained_step_file_path,
+                osp.join(self.project_output_dir, self.get_experiment_name(partition_idx), filename),
+            )
+        except:
+            pass
+        return res
 
 
 def main():
