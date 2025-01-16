@@ -4,6 +4,7 @@ datasets
 partition_outputs
 tmp
 .env
+*.pkl
 
 .idea
 outputs

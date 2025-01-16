@@ -16,7 +16,7 @@ from matplotlib.pyplot import cm
 class SceneConfig:
     origin: torch.Tensor
 
-    partition_size: Tuple[float]
+    partition_size: float
 
     location_based_enlarge: float = None
     """ enlarge bounding box by `partition_size * location_based_enlarge`, used for location based camera assignment """
@@ -483,9 +483,8 @@ class PartitionableScene:
         self.unmerged = None
 
     def build_output_dirname(self):
-        return "partitions-size_{}-{}-enlarge_{}-visibility_{}_{}".format(
-            self.scene_config.partition_size[0],
-            self.scene_config.partition_size[1],
+        return "partitions-size_{}-enlarge_{}-{}_visibility_{}_{}".format(
+            self.scene_config.partition_size,
             self.scene_config.location_based_enlarge,
             "convex_hull" if self.scene_config.convex_hull_based_visibility else "point",
             self.scene_config.visibility_based_distance,
@@ -507,16 +506,16 @@ class PartitionableScene:
 
     def set_plot_ax_limit(self, ax, plot_enlarge: float = 0.25):
         ax.set_xlim([
-            self.scene_bounding_box.bounding_box.min[0] - plot_enlarge * self.scene_config.partition_size[0],
-            self.scene_bounding_box.bounding_box.max[0] + plot_enlarge * self.scene_config.partition_size[1],
+            self.scene_bounding_box.bounding_box.min[0] - plot_enlarge * self.scene_config.partition_size,
+            self.scene_bounding_box.bounding_box.max[0] + plot_enlarge * self.scene_config.partition_size,
         ])
         ax.set_ylim([
-            self.scene_bounding_box.bounding_box.min[1] - plot_enlarge * self.scene_config.partition_size[0],
-            self.scene_bounding_box.bounding_box.max[1] + plot_enlarge * self.scene_config.partition_size[1],
+            self.scene_bounding_box.bounding_box.min[1] - plot_enlarge * self.scene_config.partition_size,
+            self.scene_bounding_box.bounding_box.max[1] + plot_enlarge * self.scene_config.partition_size,
         ])
 
     def plot_scene_bounding_box(self, ax):
-        ax.set_aspect("equal", adjustable="box")
+        ax.set_aspect('equal', adjustable='box')
 
         ax.scatter(self.camera_centers[:, 0], self.camera_centers[:, 1], s=0.2)
         ax.add_artist(mpatches.Rectangle(
@@ -530,7 +529,7 @@ class PartitionableScene:
 
     def plot_partitions(self, ax=None, annotate_font_size: int = 5, annotate_position_x: float = 0.125, annotate_position_y: float = 0.25, plot_cameras: bool = True):
         self.set_plot_ax_limit(ax)
-        ax.set_aspect("equal", adjustable="box")
+        ax.set_aspect('equal', adjustable='box')
 
         colors = list(iter(cm.rainbow(np.linspace(0, 1, len(self.partition_coordinates)))))
         # random.shuffle(colors)
@@ -572,7 +571,7 @@ class PartitionableScene:
         visibility_based_assignment = self.is_partitions_visible_to_cameras[partition_idx]
         n_assigned_cameras = (location_based_assignment | visibility_based_assignment).sum().item()
 
-        ax.set_aspect("equal", adjustable="box")
+        ax.set_aspect('equal', adjustable='box')
         if point_xyzs is not None:
             ax.scatter(point_xyzs[::point_sparsify, 0], point_xyzs[::point_sparsify, 1], c=point_rgbs[::point_sparsify] / 255., s=point_size)
 
@@ -616,7 +615,7 @@ class PartitionableScene:
                 self.partition_coordinates.id[partition_idx, 1].item(),
                 n_assigned_cameras,
             ),
-            xy=self.partition_coordinates.xy[partition_idx] + 0.05 * min(self.scene_config.partition_size),
+            xy=self.partition_coordinates.xy[partition_idx] + 0.05 * self.scene_config.partition_size,
             color="orange",
         )
 
@@ -675,18 +674,13 @@ class Partitioning:
         return new_xyz, n_partitions
 
     @classmethod
-    def align_bounding_box(cls, bounding_box: MinMaxBoundingBox, origin: torch.Tensor, size: Tuple[float]):
+    def align_bounding_box(cls, bounding_box: MinMaxBoundingBox, origin: torch.Tensor, size: float):
         # TODO: if center out of bounding box, incorrect result will be produced
-        # assert torch.all(origin >= bounding_box.min), "center {} out-of-min-bound {}".format(origin, bounding_box.min)
-        # assert torch.all(origin <= bounding_box.max), "center {} out-of-max-bound {}".format(origin, bounding_box.max)
-        if torch.all(origin >= bounding_box.min) and torch.all(origin <= bounding_box.max):
-            new_min, n1 = cls.align_xyz(bounding_box.min, origin, size)
-            new_max, n2 = cls.align_xyz(bounding_box.max, origin, size)
-        elif torch.all(origin < bounding_box.min):
-            new_max, n2 = cls.align_xyz(bounding_box.max, origin, size)
-            new_min, n1 = origin.detach().clone(), n2.new_zeros(n2.size())
-            # new_min, n1 = cls.align_xyz(bounding_box.min, origin, size)
-            # new_max, n2 = cls.align_xyz(bounding_box.max, origin, size)
+        assert torch.all(origin >= bounding_box.min), "center {} out-of-min-bound {}".format(origin, bounding_box.min)
+        assert torch.all(origin <= bounding_box.max), "center {} out-of-max-bound {}".format(origin, bounding_box.max)
+
+        new_min, n1 = cls.align_xyz(bounding_box.min, origin, size)
+        new_max, n2 = cls.align_xyz(bounding_box.max, origin, size)
 
         aligned = MinMaxBoundingBox(
             min=new_min,
@@ -700,7 +694,7 @@ class Partitioning:
         )
 
     @staticmethod
-    def build_partition_coordinates(scene_bounding_box: SceneBoundingBox, origin: torch.Tensor, size: Tuple[float]):
+    def build_partition_coordinates(scene_bounding_box: SceneBoundingBox, origin: torch.Tensor, size: float):
         partition_count = scene_bounding_box.n_partitions
         origin_partition_offset = scene_bounding_box.origin_partition_offset
         grid_x, grid_y = torch.meshgrid(
@@ -708,7 +702,7 @@ class Partitioning:
             torch.arange(partition_count[1], dtype=torch.int) + origin_partition_offset[1],
             indexing="xy",
         )
-        size = torch.tensor(size)
+
         partition_id = torch.dstack([grid_x, grid_y])
         partition_xy = partition_id * size + origin
 
@@ -720,8 +714,8 @@ class Partitioning:
 
     @staticmethod
     def is_in_bounding_boxes(
-        bounding_boxes: MinMaxBoundingBoxes,
-        coordinates: torch.Tensor,  # [N, 2]
+            bounding_boxes: MinMaxBoundingBoxes,
+            coordinates: torch.Tensor,  # [N, 2]
     ):
         xy_min = bounding_boxes.min  # [N_partitions, 2]
         xy_max = bounding_boxes.max  # [N_partitions, 2]
@@ -776,15 +770,14 @@ class Partitioning:
             all_visibilities[camera_idx].copy_(visibilities.to(device=all_visibilities.device))
 
         from concurrent.futures.thread import ThreadPoolExecutor
-
         with ThreadPoolExecutor() as tpe:
             for _ in tqdm(
-                tpe.map(calculate_visibilities, range(n_cameras)),
-                total=n_cameras,
+                    tpe.map(calculate_visibilities, range(n_cameras)),
+                    total=n_cameras,
             ):
                 pass
 
-        assert torch.all(all_visibilities >= 0.0)
+        assert torch.all(all_visibilities >= 0.)
 
         return all_visibilities.T  # [N_partitions, N_cameras]
 
@@ -869,9 +862,9 @@ class Partitioning:
 
     @classmethod
     def calculate_point_based_visibilities(
-        cls,
-        partition_bounding_boxes: MinMaxBoundingBoxes,
-        points: torch.Tensor,  # [N_points, 2 or 3]
+            cls,
+            partition_bounding_boxes: MinMaxBoundingBoxes,
+            points: torch.Tensor,  # [N_points, 2 or 3]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if points.shape[0] == 0:
             n_points_in_partitions = torch.zeros((partition_bounding_boxes.min.shape[0],), dtype=torch.long)
