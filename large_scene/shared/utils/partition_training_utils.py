@@ -1,6 +1,9 @@
 import argparse
 import os
 import os.path as osp
+import sys
+
+sys.path.insert(0, osp.join(os.getcwd(), "utils"))
 from dataclasses import dataclass
 
 import torch
@@ -9,6 +12,7 @@ from internal.utils.partitioning_utils import PartitionCoordinates
 from utils.train_partitions import PartitionTraining, PartitionTrainingConfig
 
 
+@dataclass
 class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
     """
     1. Reorganize the directory structure of partition training.
@@ -48,7 +52,7 @@ class ModifiedPartitionTraining(PartitionTraining):
         return "Colmap"
 
     def get_dataset_specific_args(self, partition_idx: int) -> list[str]:
-        return super().get_dataset_specific_args() + [
+        return super().get_dataset_specific_args(partition_idx) + [
             "--data.parser.image_list={}".format(
                 os.path.join(
                     self.path,
@@ -65,23 +69,3 @@ class ModifiedPartitionTraining(PartitionTraining):
     def project_output_dir(self) -> str:
         """Append \'partitions\' after project name: <workdir>/outputs/<project>/partitions"""
         return osp.join(super().project_output_dir, "partitions")
-
-    def train_a_partition(self, partition_idx):
-        res = super().train_a_partition(partition_idx)
-
-        filename = self.get_partition_trained_step_filename(partition_idx)
-        partition_trained_step_file_path = osp.join(self.project_output_dir, filename)
-        try:
-            os.rename(
-                partition_trained_step_file_path,
-                osp.join(self.project_output_dir, self.get_experiment_name(partition_idx), filename),
-            )
-        except:
-            pass
-        return res
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    ModifiedPartitionTrainingConfig.configure_argparser(parser)
-    ModifiedPartitionTraining.start_with_configured_argparser(parser, config_cls=ModifiedPartitionTrainingConfig)

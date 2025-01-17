@@ -8,13 +8,12 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import lightning
 import torch
-from scene.vastgs.appearance_network import AppearanceNetwork
+from utils.appearance_network import AppearanceNetwork
 from torch import nn
 
 from internal.cameras import Camera
 from internal.models.gaussian import GaussianModel
-from internal.renderers.gsplat_v1_renderer import (GSplatV1Renderer,
-                                                   GSplatV1RendererModule)
+from internal.renderers.gsplat_v1_renderer import GSplatV1Renderer, GSplatV1RendererModule
 
 
 @dataclass

@@ -5,6 +5,7 @@ partition_outputs
 tmp
 .env
 *.pkl
+toberemoved
 
 .idea
 outputs
