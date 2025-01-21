@@ -12,12 +12,12 @@ ENV_VARS=(
     PYTHONPATH
 )
 
-CUDA_LIST=(1 2 3 4)
+CUDA_LIST=(2 4)
 NUM_PROC=${#CUDA_LIST[@]}
 
 DATASET_NAME=rubble
 DATASET_PATH=$PWD/datasets/MegaNeRF/rubble/colmap
-PARTITION_DATA_PATH="$PWD/tmp/rubble/partitions-size_75.3609848022461-enlarge_0.2-convex_hull_visibility_0.0_0.25"
+PARTITION_DATA_PATH="$PWD/tmp/vastgs/rubble-3_3"
 PROJECT_NAME="vastgs-$DATASET_NAME-gsplatv1"
 
 for i in "${!CUDA_LIST[@]}"; do

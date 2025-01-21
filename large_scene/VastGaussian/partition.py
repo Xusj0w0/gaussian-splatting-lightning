@@ -1,3 +1,4 @@
+import json
 import os
 import os.path as osp
 import pickle
@@ -11,7 +12,9 @@ from matplotlib import pyplot as plt
 from tqdm.auto import tqdm
 
 import internal.utils.colmap as colmap_utils
+from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
+from internal.dataparsers.dataparser import ImageSet
 from utils.partitioning_utils import VastGSScene, VastGSSceneConfig
 
 
@@ -142,13 +145,14 @@ class VastGSPartitioning:
         points3D_path = osp.join(dataparser.detect_sparse_model_dir(), "points3D.bin")
         dataparser_outputs = dataparser.get_outputs()
 
-        cameras = dataparser_outputs.train_set.cameras
-        image_names = dataparser_outputs.train_set.image_names
+        image_set = dataparser_outputs.train_set
+        # cameras = dataparser_outputs.train_set.cameras
+        # image_names = dataparser_outputs.train_set.image_names
 
         xyzs, rgbs, errors, track_lengths = self.load_points_from_bin(points3D_path)
         mask = self.prefilter_points3D(errors, track_lengths)
 
-        return [cameras, image_names], [xyzs[mask], rgbs[mask]]
+        return image_set, [xyzs[mask], rgbs[mask]]
 
     def prefilter_points3D(self, errors, track_lengths):
         return torch.logical_and(
@@ -181,9 +185,7 @@ class VastGSPartitioning:
                 point_rgbs=rgb,
             )
 
-    def save_partitioning_results(self, image_names: List[str]):
-        os.makedirs(osp.join(self.output_path, "image_lists"), exist_ok=True)
-
+    def save_partitioning_results(self, image_set: ImageSet):
         self.scene.save(
             self.output_path,
             extra_data={
@@ -196,22 +198,55 @@ class VastGSPartitioning:
             self.scene.is_camera_in_partition, self.scene.is_partitions_visible_to_cameras
         )
         written_idx_list = []
-        for partition_idx in tqdm(list(range(is_images_assigned_to_partitions.shape[0]))):
+        for partition_idx in tqdm(
+            list(range(is_images_assigned_to_partitions.shape[0])), desc="Saving image lists and cameras"
+        ):
             partition_image_indices = is_images_assigned_to_partitions[partition_idx].nonzero().squeeze(-1).tolist()
             partition_id_str = self.scene.partition_coordinates.get_str_id(partition_idx)
             if len(partition_image_indices) == 0:
                 continue
             written_idx_list.append(partition_idx)
 
-            with open(osp.join(self.output_path, "image_lists", "{}.txt".format(partition_id_str)), "w") as f:
+            camera_list = []
+            os.makedirs(osp.join(self.output_path, "partition_infos", partition_id_str), exist_ok=True)
+            with open(osp.join(self.output_path, "partition_infos", partition_id_str, "image_list.txt"), "w") as f:
                 for image_index in partition_image_indices:
-                    f.write(image_names[image_index])
+                    f.write(image_set.image_names[image_index])
                     f.write("\n")
 
+                    color = [0, 0, 255]
+                    if self.scene.is_partitions_visible_to_cameras[partition_idx][image_index]:
+                        color = [255, 0, 0]
+                    camera: Camera = image_set.cameras[image_index]
+                    c2w = torch.linalg.inv(camera.world_to_camera.T)
+                    camera_list.append(
+                        {
+                            "id": image_index,
+                            "img_name": image_set.image_names[image_index],
+                            "width": int(camera.width),
+                            "height": int(camera.height),
+                            "position": c2w[:3, -1].numpy().tolist(),
+                            "rotation": c2w[:3, :3].numpy().tolist(),
+                            "fx": float(camera.fx),
+                            "fy": float(camera.fy),
+                            "cx": camera.cx.item(),
+                            "cy": camera.cy.item(),
+                            "time": camera.time.item() if camera.item is not None else None,
+                            "appearance_id": camera.appearance_id.item() if camera.appearance_id is not None else None,
+                            "normalized_appearance_id": (
+                                camera.normalized_appearance_id.item()
+                                if camera.normalized_appearance_id is not None
+                                else None
+                            ),
+                        }
+                    )
+            with open(os.path.join(self.output_path, "partition_infos", partition_id_str, "cameras.json"), "w") as f:
+                json.dump(camera_list, f, indent=4, ensure_ascii=False)
+
     def partition(self):
-        (cameras, image_names), (xyzs, rgbs) = self.read_scene()
+        image_set, (xyzs, rgbs) = self.read_scene()
         reoriented_camera_centers: torch.Tensor = (
-            cameras.camera_center @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+            image_set.cameras.camera_center @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
         )
         reoriented_points3D: torch.Tensor = xyzs @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
         self.scene.camera_centers = reoriented_camera_centers[..., :2]
@@ -232,16 +267,16 @@ class VastGSPartitioning:
         )
         self.scene.calculate_camera_visibilities(
             point_getter=self.scene.get_point_getter_fn(
-                cameras,
+                image_set.cameras,
                 vertices_inverse_manhattan_transformed,
                 bbox_centers,
             ),
-            device=cameras.R.device,
+            device=image_set.cameras.R.device,
         )
         self.scene.visibility_based_partition_assignment()
 
         self.save_plots(reoriented_points3D, rgbs)
-        self.save_partitioning_results(image_names)
+        self.save_partitioning_results(image_set)
 
     @classmethod
     def start(cls, parser, config_cls=VastGSPartitiongConfig):
