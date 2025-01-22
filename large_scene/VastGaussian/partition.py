@@ -214,9 +214,6 @@ class VastGSPartitioning:
                     f.write(image_set.image_names[image_index])
                     f.write("\n")
 
-                    color = [0, 0, 255]
-                    if self.scene.is_partitions_visible_to_cameras[partition_idx][image_index]:
-                        color = [255, 0, 0]
                     camera: Camera = image_set.cameras[image_index]
                     c2w = torch.linalg.inv(camera.world_to_camera.T)
                     camera_list.append(

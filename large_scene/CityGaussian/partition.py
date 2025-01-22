@@ -37,7 +37,7 @@ class CityGSPartitiongConfig:
     num_gaussians_per_partition_threshold: int = 25_000
     gaussian_bbox_enlarge_step: List = None
     location_based_enlarge: float = 0.2
-    visibility_threshold: float = 0.25
+    visibility_threshold: float = 0.08
 
     @staticmethod
     def configure_argparser(parser: ArgumentParser):
@@ -72,7 +72,7 @@ class CityGSPartitiongConfig:
         parser.add_argument("--num_gaussians_per_partition_threshold", type=int, default=25_000)
         parser.add_argument("--gaussian_bbox_enlarge_step", type=str, default="0.02,0.02,0.02")
         parser.add_argument("--location_based_enlarge", type=float, default=0.2)
-        parser.add_argument("--visibility_threshold", type=float, default=0.25)
+        parser.add_argument("--visibility_threshold", type=float, default=0.08)
         return parser
 
     @classmethod
@@ -231,9 +231,6 @@ class CityGSPartitioning:
                     f.write(image_set.image_names[image_index])
                     f.write("\n")
 
-                    color = [0, 0, 255]
-                    if self.scene.is_partitions_visible_to_cameras[partition_idx][image_index]:
-                        color = [255, 0, 0]
                     camera: Camera = image_set.cameras[image_index]
                     c2w = torch.linalg.inv(camera.world_to_camera.T)
                     camera_list.append(
@@ -272,9 +269,7 @@ class CityGSPartitioning:
             }
             model.properties = incomplete_properties
             dst_path = osp.join(self.output_path, "partition_infos", partition_id_str, "gaussian_model.ply")
-            GaussianPlyUtils.load_from_model_properties(
-                model.get_non_pre_activated_properties(), model.max_sh_degree
-            ).to_ply_format().save_to_ply(dst_path)
+            GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
         model.properties = complete_properties
 
     def partition(self):
@@ -284,11 +279,9 @@ class CityGSPartitioning:
         # load coarse model and render
         device = torch.device("cuda")
         ckpt_path = GaussianModelLoader.search_load_file(osp.join(self.config.output_path, "coarse"))
-        (
-            coarse_model,
-            renderer,
-            ckpt,
-        ) = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(ckpt_path, device)
+        coarse_model, renderer, ckpt = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
+            ckpt_path, device, pre_activate=False
+        )
         coarse_model: VanillaGaussianModel
 
         # load images and loader
@@ -297,13 +290,13 @@ class CityGSPartitioning:
         # calculate points' xyz
         camera_centers = image_set.cameras.camera_center
         camera_centers_transformed = camera_centers @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
-        means = coarse_model.get_means().detach().clone().cpu()
+        means = coarse_model.get_xyz.detach().clone().cpu()
         means_transformed = means @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
 
-        shs = coarse_model.get_shs().transpose(1, 2).view(-1, 3, (coarse_model.max_sh_degree + 1) ** 2)
         dir_pp = -self.manhattan_trans[2, :3].repeat(means.shape[0], 1)
-        rgb = eval_sh(coarse_model.active_sh_degree, sh=shs.detach().clone().cpu(), dirs=dir_pp)
-        rgb = torch.clamp(rgb, 0.0, 1.0) * 255.0
+        shs_view = coarse_model.get_features.transpose(1, 2).view(-1, 3, (coarse_model.max_sh_degree + 1) ** 2)
+        rgb = eval_sh(coarse_model.active_sh_degree, shs_view.detach().cpu(), dir_pp)
+        rgb = torch.clamp(rgb + 0.5, 0.0, 1.0).detach().cpu().numpy() * 255.0
 
         # means and cameras are not transformed
         self.scene.camera_centers = camera_centers_transformed
@@ -321,9 +314,7 @@ class CityGSPartitioning:
         # self.scene.calculate_camera_visibilities(
         #     coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color
         # )
-        self.scene.camera_visibilities = torch.load("tmp/citygs/rubble-3_3/partitions.pt", map_location="cpu")[
-            "visibilities"
-        ]
+        self.scene.camera_visibilities = torch.load("tmp/citygs/rubble-3_3/partitions.pt", "cpu")["visibilities"]
         # assign cameras based on visibilities
         self.scene.visibility_based_partition_assignment()
 

@@ -45,7 +45,7 @@ class CityGSSceneConfig(SceneConfig):
     location_based_enlarge: float = 0.2
     visibility_based_distance: float = 0.0
     visibility_based_partition_enlarge: float = 0.0
-    visibility_threshold: float = 0.25
+    visibility_threshold: float = 0.08
 
 
 @dataclass
