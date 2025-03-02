@@ -6,6 +6,7 @@ tmp
 .env
 *.pkl
 toberemoved
+cuda_src
 
 .idea
 outputs

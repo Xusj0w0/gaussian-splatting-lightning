@@ -12,7 +12,7 @@ ENV_VARS=(
     PYTHONPATH
 )
 
-CUDA_LIST=(1 3)
+CUDA_LIST=(2 3 5)
 NUM_PROC=${#CUDA_LIST[@]}
 
 PARTITION_DATA_PATH="$PWD/datasets/chongqing/colmap/partitions-size_2.0-enlarge_0.1-point_visibility_0.9_0.11"
@@ -41,7 +41,6 @@ for i in "${!CUDA_LIST[@]}"; do
             --n-processes $NUM_PROC \
             --process-id $((i + 1)) \
             -- \
-            --data.parser.down_sample_factor 4 \
             --logger tensorboard \
         " C-m
 done

@@ -12,13 +12,13 @@ ENV_VARS=(
     PYTHONPATH
 )
 
-CUDA_LIST=(1 3)
+CUDA_LIST=(1 2)
 NUM_PROC=${#CUDA_LIST[@]}
 
-DATASET_NAME=rubble
-DATASET_PATH=$PWD/datasets/MegaNeRF/rubble/colmap
-PARTITION_DATA_PATH="$PWD/tmp/citygs/rubble-3_3"
-PROJECT_NAME="citygs-$DATASET_NAME-gsplatv1"
+DATASET_PATH=$PWD/datasets/MegaNeRF/residence/colmap
+PARTITION_DATA_PATH="$PWD/outputs/residence/partition_infos"
+PROJECT_NAME="residence"
+TRAINING_SCRIPT="$PWD/large_scene/CityGaussian/partition_training.py"
 
 for i in "${!CUDA_LIST[@]}"; do
     # launch tmux session
@@ -36,12 +36,11 @@ for i in "${!CUDA_LIST[@]}"; do
     # execute commands
     tmux send-keys -t $SESSION_NAME \
         " \
-        python $PWD/large_scene/CityGaussian/partition_training.py \
+        python $TRAINING_SCRIPT \
             $PARTITION_DATA_PATH \
             -p $PROJECT_NAME \
             --dataset_path $DATASET_PATH \
             --eval \
-            --config configs/gsplat_v1.yaml \
             --n-processes $NUM_PROC \
             --process-id $((i + 1)) \
             -- \

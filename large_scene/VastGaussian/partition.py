@@ -38,15 +38,13 @@ class VastGSPartitiongConfig:
             "--dataset_path",
             required=True,
             type=str,
-            default="",
             help="Path to dataset. Containing directories images, sparse, etc.",
         )
-        parser.add_argument("--output_path", required=True, type=str, default="", help="Partition info dir.")
+        parser.add_argument("--output_path", required=True, type=str, help="Partition info dir.")
         parser.add_argument(
             "--partition_dim",
             required=True,
             type=str,
-            default="3,3",
             help="Split number along x- and z-axis, like '2,4'",
         )
         parser.add_argument(
@@ -101,8 +99,10 @@ class VastGSPartitioning:
         )
         self.scene = VastGSScene(scene_config=scene_config)
         self.output_path = self.config.output_path
-        os.makedirs(self.output_path, exist_ok=True)
-        yaml.safe_dump(asdict(self.config), open(osp.join(self.output_path, "partition_config.yaml"), "w"))
+        os.makedirs(osp.join(self.output_path, "partition_infos"), exist_ok=True)
+        yaml.safe_dump(
+            asdict(self.config), open(osp.join(self.output_path, "partition_infos", "partition_config.yaml"), "w")
+        )
 
     @staticmethod
     def load_manhattan_transformation(manhattan_str: str):
@@ -146,8 +146,6 @@ class VastGSPartitioning:
         dataparser_outputs = dataparser.get_outputs()
 
         image_set = dataparser_outputs.train_set
-        # cameras = dataparser_outputs.train_set.cameras
-        # image_names = dataparser_outputs.train_set.image_names
 
         xyzs, rgbs, errors, track_lengths = self.load_points_from_bin(points3D_path)
         mask = self.prefilter_points3D(errors, track_lengths)
@@ -161,31 +159,32 @@ class VastGSPartitioning:
         )
 
     def save_plots(self, xyz, rgb):
-        os.makedirs(osp.join(self.output_path, "figs"), exist_ok=True)
+        fig_dir = osp.join(self.output_path, "partition_infos", "figs")
+        os.makedirs(fig_dir, exist_ok=True)
 
         # plot scene_bounding_box
         fig, ax = plt.subplots()
         ax.scatter(xyz[::16, 0], xyz[::16, 1], c=rgb[::16] / 255.0, s=1)
         self.scene.plot_scene_bounding_box(ax)
-        fig.savefig(osp.join(self.output_path, "figs", "scene_bounding_box.png"), dpi=600)
+        fig.savefig(osp.join(fig_dir, "scene_bounding_box.png"), dpi=600)
 
         self.scene.plot_partitions(ax)
-        fig.savefig(osp.join(self.output_path, "figs", "partition_coordinates.png"), dpi=600)
+        fig.savefig(osp.join(fig_dir, "partition_coordinates.png"), dpi=600)
         plt.close(fig)
 
         coordinates = self.scene.partition_coordinates
         for partition_idx in range(len(coordinates)):
             self.scene.save_plot(
                 func=self.scene.plot_partition_assigned_cameras,
-                path=osp.join(
-                    self.output_path, "figs", "{}-partition.png".format(coordinates.get_str_id(partition_idx))
-                ),
+                path=osp.join(fig_dir, "{}-partition.png".format(coordinates.get_str_id(partition_idx))),
                 partition_idx=partition_idx,
                 point_xyzs=xyz,
                 point_rgbs=rgb,
             )
 
     def save_partitioning_results(self, image_set: ImageSet):
+        partition_dir = osp.join(self.output_path, "partition_infos")
+        os.makedirs(partition_dir, exist_ok=True)
         self.scene.save(
             self.output_path,
             extra_data={
@@ -208,8 +207,8 @@ class VastGSPartitioning:
             written_idx_list.append(partition_idx)
 
             camera_list = []
-            os.makedirs(osp.join(self.output_path, "partition_infos", partition_id_str), exist_ok=True)
-            with open(osp.join(self.output_path, "partition_infos", partition_id_str, "image_list.txt"), "w") as f:
+            os.makedirs(osp.join(partition_dir, "partitions", partition_id_str), exist_ok=True)
+            with open(osp.join(partition_dir, "partitions", partition_id_str, "image_list.txt"), "w") as f:
                 for image_index in partition_image_indices:
                     f.write(image_set.image_names[image_index])
                     f.write("\n")
@@ -237,7 +236,7 @@ class VastGSPartitioning:
                             ),
                         }
                     )
-            with open(os.path.join(self.output_path, "partition_infos", partition_id_str, "cameras.json"), "w") as f:
+            with open(os.path.join(partition_dir, "partitions", partition_id_str, "cameras.json"), "w") as f:
                 json.dump(camera_list, f, indent=4, ensure_ascii=False)
 
     def partition(self):

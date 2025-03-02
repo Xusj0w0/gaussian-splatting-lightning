@@ -54,7 +54,7 @@ class ModifiedPartitionTraining(PartitionTraining):
     def get_dataset_specific_args(self, partition_idx: int) -> list[str]:
         return super().get_dataset_specific_args(partition_idx) + [
             "--data.parser.image_list={}".format(
-                os.path.join(self.path, "partition_infos", self.get_partition_id_str(partition_idx), "image_list.txt")
+                os.path.join(self.path, "partitions", self.get_partition_id_str(partition_idx), "image_list.txt")
             ),
             "--data.parser.eval_image_select_mode=list",
             "--data.parser.eval_list={}".format(os.path.join(self.dataset_path, "splits/val_images.txt")),

@@ -17,7 +17,7 @@ class CityGSParitionTraining(ModifiedPartitionTraining):
     def get_partition_specific_args(self, partition_idx):
         return super().get_partition_specific_args(partition_idx) + [
             "--model.initialize_from={}".format(
-                osp.join(self.path, "partition_infos", self.get_partition_id_str(partition_idx), "gaussian_model.ply")
+                osp.join(self.path, "partitions", self.get_partition_id_str(partition_idx), "gaussian_model.ply")
             )
         ]
 

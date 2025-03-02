@@ -40,7 +40,7 @@ def parse_args():
 
     if args.output_path is None:
         # args.output_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", args.project, "merged.ckpt")
-        args.output_path = os.path.join(os.getcwd(), 'outputs', args.project, 'merged/merged.ckpt',)
+        args.output_path = os.path.join(os.getcwd(), "outputs", args.project, "merged/merged.ckpt")
         os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
     elif not args.output_path.endswith(".ckpt"):
         args.output_path += ".ckpt"

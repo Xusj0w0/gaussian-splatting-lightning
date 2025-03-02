@@ -45,21 +45,18 @@ class CityGSPartitiongConfig:
             "--dataset_path",
             required=True,
             type=str,
-            default="datasets/MegaNeRF/rubble/colmap",
             help="Path to dataset. Containing directories images, sparse, etc.",
         )
         parser.add_argument(
             "--output_path",
             required=True,
             type=str,
-            default="tmp/citygs/rubble-2_2",
             help="Partition info dir.",
         )
         parser.add_argument(
             "--partition_dim",
             required=True,
             type=str,
-            default="2,2",
             help="Split number along x- and z-axis, like '2,4'",
         )
         parser.add_argument(
@@ -119,8 +116,10 @@ class CityGSPartitioning:
         )
         self.scene = CityGSScene(scene_config=scene_config)
         self.output_path = self.config.output_path
-        os.makedirs(self.output_path, exist_ok=True)
-        yaml.safe_dump(asdict(self.config), open(osp.join(self.output_path, "partition_config.yaml"), "w"))
+        os.makedirs(osp.join(self.output_path, "partition_infos"), exist_ok=True)
+        yaml.safe_dump(
+            asdict(self.config), open(osp.join(self.output_path, "partition_infos", "partition_config.yaml"), "w")
+        )
 
     @staticmethod
     def load_manhattan_transformation(manhattan_str: str):
@@ -174,25 +173,24 @@ class CityGSPartitioning:
         return dataparser_outputs.train_set
 
     def save_plots(self, xyz: torch.Tensor, rgb: torch.Tensor):
-        os.makedirs(osp.join(self.output_path, "figs"), exist_ok=True)
+        fig_dir = osp.join(self.output_path, "partition_infos", "figs")
+        os.makedirs(fig_dir, exist_ok=True)
 
         # plot scene_bounding_box
         fig, ax = plt.subplots()
         ax.scatter(xyz[::16, 0], xyz[::16, 1], c=rgb[::16] / 255.0, s=1)
         self.scene.plot_scene_bounding_box(ax)
-        fig.savefig(osp.join(self.output_path, "figs", "scene_bounding_box.png"), dpi=600)
+        fig.savefig(osp.join(fig_dir, "scene_bounding_box.png"), dpi=600)
 
         self.scene.plot_partitions(ax)
-        fig.savefig(osp.join(self.output_path, "figs", "partition_coordinates.png"), dpi=600)
+        fig.savefig(osp.join(fig_dir, "partition_coordinates.png"), dpi=600)
         plt.close(fig)
 
         coordinates = self.scene.partition_coordinates
         for partition_idx in range(len(coordinates)):
             self.scene.save_plot(
                 func=self.scene.plot_partition_assigned_cameras,
-                path=osp.join(
-                    self.output_path, "figs", "{}-partition.png".format(coordinates.get_str_id(partition_idx))
-                ),
+                path=osp.join(fig_dir, "{}-partition.png".format(coordinates.get_str_id(partition_idx))),
                 partition_idx=partition_idx,
                 point_xyzs=xyz,
                 point_rgbs=rgb,
@@ -200,8 +198,10 @@ class CityGSPartitioning:
             )
 
     def save_partitioning_results(self, model: VanillaGaussianModel, image_set: ImageSet):  # image_names: List[str]
+        partition_dir = osp.join(self.output_path, "partition_infos")
+        os.makedirs(partition_dir, exist_ok=True)
         self.scene.save(
-            self.output_path,
+            partition_dir,
             extra_data={
                 "up": torch.linalg.inv(self.manhattan_trans)[:3, 1],
                 "rotation_transform": self.manhattan_trans,
@@ -225,8 +225,8 @@ class CityGSPartitioning:
             written_idx_list.append(partition_idx)
 
             camera_list = []
-            os.makedirs(osp.join(self.output_path, "partition_infos", partition_id_str), exist_ok=True)
-            with open(osp.join(self.output_path, "partition_infos", partition_id_str, "image_list.txt"), "w") as f:
+            os.makedirs(osp.join(partition_dir, "partitions", partition_id_str), exist_ok=True)
+            with open(osp.join(partition_dir, "partitions", partition_id_str, "image_list.txt"), "w") as f:
                 for image_index in partition_image_indices:
                     f.write(image_set.image_names[image_index])
                     f.write("\n")
@@ -254,11 +254,11 @@ class CityGSPartitioning:
                             ),
                         }
                     )
-            with open(os.path.join(self.output_path, "partition_infos", partition_id_str, "cameras.json"), "w") as f:
+            with open(os.path.join(partition_dir, "partitions", partition_id_str, "cameras.json"), "w") as f:
                 json.dump(camera_list, f, indent=4, ensure_ascii=False)
             shutil.copy(
                 osp.join(self.output_path, "coarse", "cfg_args"),
-                osp.join(self.output_path, "partition_infos", partition_id_str, "cfg_args"),
+                osp.join(partition_dir, "partitions", partition_id_str, "cfg_args"),
             )
 
         complete_properties = model.properties
@@ -268,7 +268,7 @@ class CityGSPartitioning:
                 k: v[self.scene.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
             }
             model.properties = incomplete_properties
-            dst_path = osp.join(self.output_path, "partition_infos", partition_id_str, "gaussian_model.ply")
+            dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
             GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
         model.properties = complete_properties
 
@@ -311,10 +311,9 @@ class CityGSPartitioning:
 
         # render image with one of the partitions removed
         bg_color = ckpt["hyper_parameters"]["background_color"]
-        # self.scene.calculate_camera_visibilities(
-        #     coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color
-        # )
-        self.scene.camera_visibilities = torch.load("tmp/citygs/rubble-3_3/partitions.pt", "cpu")["visibilities"]
+        self.scene.calculate_camera_visibilities(
+            coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color
+        )
         # assign cameras based on visibilities
         self.scene.visibility_based_partition_assignment()
 
@@ -323,7 +322,7 @@ class CityGSPartitioning:
             xy=self.scene.partition_coordinates.xy[:, :2],
             size=self.scene.partition_coordinates.size[:, :2],
         )
-        # self.save_plots(means_transformed, rgb)
+        self.save_plots(means_transformed, rgb)
         self.save_partitioning_results(coarse_model, image_set)
 
     @classmethod
