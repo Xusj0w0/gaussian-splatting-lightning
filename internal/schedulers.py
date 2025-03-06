@@ -1,4 +1,4 @@
-from typing import Literal, Optional, Any
+from typing import List, Literal, Optional, Any
 from dataclasses import dataclass, field
 from internal.configs.instantiate_config import InstantiatableConfig
 from torch.optim import Optimizer, lr_scheduler
@@ -85,3 +85,44 @@ class ExponentialDecaySchedulerImpl(SchedulerImpl):
 
         scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=func)
         return scheduler
+
+    def get_schedulers(
+        self, optimizer: Optimizer, lr_finals: List[float] = None, max_steps: List[int] = None
+    ) -> LRScheduler:
+        if lr_finals is None:
+            lr_finals = [None] * len(optimizer.param_groups)
+        assert len(lr_finals) == len(optimizer.param_groups)
+        for i, param_group in enumerate(optimizer.param_groups):
+            if lr_finals[i] is None:
+                lr_finals[i] = param_group["lr"]
+        if max_steps is None:
+            max_steps = [None] * len(optimizer.param_groups)
+        assert len(lr_finals) == len(optimizer.param_groups)
+        for i in range(len(max_steps)):
+            if max_steps[i] is None:
+                max_steps[i] = self.config.max_steps
+
+        funcs = []
+        for param_group, lr_final, max_step in zip(optimizer.param_groups, lr_finals, max_steps):
+            lr_init = param_group["lr"]
+
+            def func(step, lr_init=lr_init, lr_final=lr_final, max_step=max_step):
+                if step < self.config.warmup_steps:
+                    if self.config.ramp == "cosine":
+                        lr = self.config.lr_pre_warmup + (lr_init - self.config.lr_pre_warmup) * np.sin(
+                            0.5 * np.pi * np.clip(step / self.config.warmup_steps, 0, 1)
+                        )
+                    else:
+                        lr = (
+                            self.config.lr_pre_warmup
+                            + (lr_init - self.config.lr_pre_warmup) * step / self.config.warmup_steps
+                        )
+                else:
+                    t = np.clip((step - self.config.warmup_steps) / (max_step - self.config.warmup_steps), 0, 1)
+                    lr = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
+                return lr / lr_init  # divided by lr_init because the multiplier is with the initial learning rate
+
+            funcs.append(func)
+        scheduler = lr_scheduler.LambdaLR(optimizer, funcs)
+        return scheduler
+        

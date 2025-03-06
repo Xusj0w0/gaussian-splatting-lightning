@@ -47,7 +47,7 @@ class NetworkFactory:
             n_layers: int,
             n_neurons: int,
             activation: Literal["ReLU", "None"],
-            output_activation: Literal["ReLU", "Sigmoid", "None"],
+            output_activation: Literal["ReLU", "Sigmoid", "Tanh", "None"],
     ):
         assert n_layers > 0 and n_neurons > 0
 
@@ -88,7 +88,7 @@ class NetworkFactory:
             n_layers: int,
             n_neurons: int,
             activation: Literal["ReLU", "None"],
-            output_activation: Literal["ReLU", "Sigmoid", "None"],
+            output_activation: Literal["ReLU", "Sigmoid", "Tanh", "None"],
             skips: list[int] = [],
     ):
         original_n_input_dims = n_input_dims
@@ -130,6 +130,8 @@ class NetworkFactory:
             return nn.ReLU()
         if name == "Sigmoid":
             return nn.Sigmoid()
+        if name == "Tanh":
+            return nn.Tanh()
         raise ValueError("unsupported activation type {}".format(name))
 
     def _get_torch_layer(self, in_features: int, out_features: int, activation_name: str) -> list:

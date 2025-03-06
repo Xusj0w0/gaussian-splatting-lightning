@@ -1,0 +1,10 @@
+max_steps: 40000
+model:
+  gaussian:
+    class_path: myimpl.scaffold_gaussian.gaussian_model.ScaffoldLoDGaussian
+  renderer:
+    class_path: myimpl.scaffold_gaussian.renderer.ScaffoldLoDRenderer
+  metric:
+    class_path: myimpl.scaffold_gaussian.metrics.ScaffoldMetrics
+  density:
+    class_path: myimpl.scaffold_gaussian.density_controller.ScaffoldDensityController
