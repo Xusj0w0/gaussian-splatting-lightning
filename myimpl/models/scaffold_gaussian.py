@@ -15,12 +15,10 @@ from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import (build_scaling_rotation,
                                           inverse_sigmoid, strip_symmetric)
 from internal.utils.network_factory import NetworkFactory
-from myimpl.scaffold_gaussian.octree_gaussian import (OctreeGaussian,
-                                                      OctreeGaussianModel)
-from myimpl.scaffold_gaussian.octree_gaussian import \
+from myimpl.models.octree_gaussian import OctreeGaussian, OctreeGaussianModel
+from myimpl.models.octree_gaussian import \
     OpimizationConfig as OctreeOpimizationConfig
-from myimpl.scaffold_gaussian.utils import (knn, map_to_int_level_factory,
-                                            xyz_grid_mapping_factory)
+from myimpl.utils.octree_utils import init_weight, knn
 
 
 @dataclass
@@ -46,7 +44,7 @@ class OpimizationConfig(OctreeOpimizationConfig):
     mlp_scheduler: Scheduler = field(
         default_factory=lambda: {
             "class_path": "ExponentialDecayScheduler",
-            "init_args": {"max_steps": 40_000},
+            "init_args": {"max_steps": 100_000},
         }
     )
 
@@ -148,8 +146,7 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
 
         rots = torch.zeros((n_anchors, 4), dtype=torch.float)
         rots[:, 0] = 1
-        # anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
-        anchor_features = torch.normal(0, .01, (n_anchors, self.config.feature_dim)).float()
+        anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
         rotations = nn.Parameter(rots, requires_grad=False)
         anchor_features = nn.Parameter(anchor_features, requires_grad=True)
 

@@ -42,7 +42,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 scaling_reg = torch.tensor(0.0)
             metrics["loss"] += self.config.lambda_dreg * scaling_reg
             metrics["loss_dreg"] = scaling_reg
-            prog_bar["loss_dreg"] = True
+            prog_bar["loss_dreg"] = False
 
         if self.config.lambda_normal > 0 and global_step >= self.config.normal_start_iter:
             # key names from `vanilla_2dgs_renderer`

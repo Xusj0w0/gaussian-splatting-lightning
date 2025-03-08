@@ -11,9 +11,10 @@ from einops import repeat
 from gsplat import rasterization
 
 from internal.cameras.cameras import Camera
-from internal.renderers.gsplat_v1_renderer import GSplatV1, GSplatV1Renderer, GSplatV1RendererModule
+from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
+                                                   GSplatV1RendererModule)
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
-from myimpl.scaffold_gaussian.gaussian_model import ScaffoldLoDGaussianModel
+from myimpl.models.scaffold_gaussian import ScaffoldLoDGaussianModel
 
 
 @dataclass
@@ -87,23 +88,17 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         return appearance_embedding_optimizer, appearance_embedding_scheduler
 
     def get_anchor_mask(self, pc: ScaffoldLoDGaussianModel, viewpoint_camera: Camera, global_step=1 << 30):
-        dist = torch.sqrt(torch.sum((pc.get_anchors - viewpoint_camera.camera_center) ** 2, dim=1))
-        pred_level = torch.log2(pc.standard_dist / dist) / math.log2(pc.config.fork) + pc.get_extra_levels
+        dists = torch.sqrt(torch.sum((pc.get_anchors - viewpoint_camera.camera_center) ** 2, dim=1))
+        pred_level = pc.predict_level(dists) + pc.get_extra_levels
+        int_level, prog_ratio = pc.map_to_int_level(pred_level, pc.activate_level)
+        anchor_mask = pc.get_levels <= int_level
 
-        if pc.config.progressive:
-            coarse_index = np.searchsorted(pc.coarse_intervals, global_step) + 1 + pc.init_level.item()
-        else:
-            coarse_index = pc.levels
-
-        output_pkg = pc.map_to_int_level(pred_level, coarse_index - 1)
-        int_level = output_pkg[0]
-        prog_ratio, transition_mask = None, None
+        transition_mask = None
         if pc.config.dist2level == "progressive":
-            prog_ratio, transition_mask = output_pkg[1], output_pkg[2]
-        anchor_mask = pc.get_levels.squeeze(dim=1) <= int_level
+            transition_mask = pc.get_levels == int_level
         return anchor_mask, prog_ratio, transition_mask
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def voxel_prefilter(
         self, pc: ScaffoldLoDGaussianModel, viewpoint_camera: Camera, anchor_mask: torch.Tensor, **kwargs
     ):
@@ -154,9 +149,6 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         render_types: list = None,
         **kwargs,
     ):
-        # pass global_step in kwargs
-        if getattr(pc, "coarse_intervals", None) is None:
-            pc.set_coarse_intervals()
         anchor_mask, prog_ratio, transition_mask = self.get_anchor_mask(pc, viewpoint_camera, **kwargs)
         anchor_mask = self.voxel_prefilter(pc, viewpoint_camera, anchor_mask)
         xyz, scales, rots, colors, opacities, offset_mask = self.calculate_properties(
@@ -346,12 +338,14 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         **kwargs,
     ):
         # pass global_step in kwargs
+        if getattr(pc, "coarse_intervals", None) is None:
+            pc.set_coarse_intervals()
         anchor_mask, prog_ratio, transition_mask = self.get_anchor_mask(pc, viewpoint_camera, **kwargs)
-        visibility_mask = self.voxel_prefilter(pc, viewpoint_camera, anchor_mask)
+        anchor_mask = self.voxel_prefilter(pc, viewpoint_camera, anchor_mask)
         xyz, scales, rots, colors, opacities, offset_mask = self.calculate_properties(
             viewpoint_camera=viewpoint_camera,
             pc=pc,
-            anchor_mask=visibility_mask,
+            anchor_mask=anchor_mask,
             prog_ratio=prog_ratio,
             transition_mask=transition_mask,
         )
@@ -390,7 +384,7 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
             "scales": scales,
             "opacities": opacities,
             # extra infos
-            "anchor_mask": visibility_mask,
+            "anchor_mask": anchor_mask,
             "offset_mask": offset_mask,
         }
 
@@ -408,8 +402,6 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         features = pc.get_anchor_features[anchor_mask]
         offsets = pc.get_offsets[anchor_mask]
         scalings = pc.get_scalings[anchor_mask]
-        # levels = pc.get_levels[anchor_mask]
-        # scalings = pc.get_scalings[anchor_mask] * (0.5 * pc.voxel_size / (float(pc.config.fork) ** pc.get_levels))
 
         n_anchors, n_offsets = pc.n_anchors, pc.n_offsets
 
@@ -447,16 +439,22 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
 
         scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, 7)
 
-        # concatenated = torch.repeat_interleave(torch.cat([anchors, scalings], dim=-1), n_offsets, dim=0)
-        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
+        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n (c) -> (n k) (c)", k=n_offsets)
         concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
         concatenated_masked = concatenated[mask]
-        _anchors, _scalings_offset, _scalings_scales, _offsets, _opacities, _colors, _scales, _rots = torch.split(
-            concatenated_masked, [3, 3, 3, 3, 1, 3, 3, 4], dim=-1
-        )
+        (
+            _anchors,
+            _scalings_offset,
+            _scalings_scales,
+            _offsets,
+            _opacities,
+            _colors,
+            _scales,
+            _rots,
+        ) = torch.split(concatenated_masked, [3, 3, 3, 3, 1, 3, 3, 4], dim=-1)
 
         xyz = _anchors + _offsets * _scalings_offset
-        scales = _scalings_scales * F.sigmoid(_scales)
+        scales = F.sigmoid(_scales) * _scalings_scales
         rots = pc.rotation_activation(_rots)
         colors = _colors
         opacities = _opacities.squeeze()

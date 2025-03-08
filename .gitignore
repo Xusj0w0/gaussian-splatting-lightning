@@ -5,8 +5,9 @@ partition_outputs
 tmp
 .env
 *.pkl
-toberemoved
+
 cuda_src
+**/test_scripts
 
 .idea
 outputs
