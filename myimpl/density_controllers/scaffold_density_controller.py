@@ -33,7 +33,7 @@ class ScaffoldDensityController(VanillaDensityController):
 
     densify_from_iter: int = 1_500
 
-    densify_until_iter: int = 25_000
+    densify_until_iter: int = 60_000
 
     def instantiate(self, *args, **kwargs):
         return ScaffoldDensityControllerImpl(self)

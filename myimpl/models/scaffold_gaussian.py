@@ -6,9 +6,10 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 import lightning
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
 
-from internal.cameras.cameras import Cameras
+from internal.cameras.cameras import Camera, Cameras
 from internal.models.gaussian import Gaussian, GaussianModel
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
@@ -23,6 +24,8 @@ from myimpl.utils.octree_utils import init_weight, knn
 
 @dataclass
 class OpimizationConfig(OctreeOpimizationConfig):
+    sh_degree_up_interval: int = 1_000
+
     anchor_features_lr: float = 0.0075
 
     rotation_lr: float = 0.002
@@ -61,6 +64,10 @@ class ScaffoldLoDGaussian(OctreeGaussian):
 
     tcnn: bool = False
 
+    color_mode: Literal["RGB", "SHs"] = "RGB"
+
+    sh_degree: int = 3
+
     optimization: OpimizationConfig = field(default_factory=lambda: OpimizationConfig())
 
     def instantiate(self, *args, **kwargs) -> "ScaffoldLoDGaussianModel":
@@ -77,6 +84,9 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
             "anchor_features",
         ] + self.get_extra_property_names()
         self._names = tuple(list(self._names) + names)
+
+        self._buffer_names = tuple(list(self._buffer_names) + ["_activate_sh_degree"])
+        self.register_buffer("_activate_sh_degree", torch.tensor(0, dtype=torch.int))
 
         self.gaussian_mlps = nn.ModuleDict()
 
@@ -105,7 +115,7 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
         # color: return 3*n_offsets
         self.gaussian_mlps["color"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
             n_input_dims=self.config.feature_dim + self.config.view_dim + self.config.n_appearance_embedding_dims,
-            n_output_dims=3 * self.config.n_offsets,
+            n_output_dims=self.color_dim * self.config.n_offsets,
             n_layers=2,
             n_neurons=self.config.feature_dim,
             activation="ReLU",
@@ -242,6 +252,17 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
 
         return optimizers, schedulers
 
+    def on_train_batch_end(self, step, module):
+        super().on_train_batch_end(step, module)
+
+        if self.config.color_mode == "SHs":
+            if (
+                step % self.config.optimization.sh_degree_up_interval != 0
+                or self.activate_sh_degree >= self.config.sh_degree
+            ):
+                return
+            self.register_buffer("_activate_sh_degree", self._activate_sh_degree + 1)
+
     def get_property_names(self) -> Tuple[str, ...]:
         return self._names
 
@@ -285,4 +306,23 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
 
     @property
     def max_sh_degree(self):
-        return 0
+        if self.config.color_mode == "RGB":
+            return 0
+        elif self.config.color_mode == "SHs":
+            return self.config.sh_degree
+        else:
+            raise ValueError(f"Unknown color mode: {self.config.color_mode}")
+
+    @property
+    def activate_sh_degree(self):
+        self._activate_sh_degree: torch.Tensor
+        return self._activate_sh_degree.item()
+
+    @property
+    def color_dim(self):
+        if self.config.color_mode == "RGB":
+            return 3
+        elif self.config.color_mode == "SHs":
+            return 3 * (self.config.sh_degree + 1) ** 2
+        else:
+            raise ValueError(f"Unknown color mode: {self.config.color_mode}")

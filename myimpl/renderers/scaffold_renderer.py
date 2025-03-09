@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
-from gsplat import rasterization
+from gsplat import spherical_harmonics
 
 from internal.cameras.cameras import Camera
 from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
@@ -87,7 +87,7 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
             )
         return appearance_embedding_optimizer, appearance_embedding_scheduler
 
-    def get_anchor_mask(self, pc: ScaffoldLoDGaussianModel, viewpoint_camera: Camera, global_step=1 << 30):
+    def get_anchor_mask(self, pc: ScaffoldLoDGaussianModel, viewpoint_camera: Camera):
         dists = torch.sqrt(torch.sum((pc.get_anchors - viewpoint_camera.camera_center) ** 2, dim=1))
         pred_level = pc.predict_level(dists) + pc.get_extra_levels
         int_level, prog_ratio = pc.map_to_int_level(pred_level, pc.activate_level)
@@ -98,7 +98,7 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
             transition_mask = pc.get_levels == int_level
         return anchor_mask, prog_ratio, transition_mask
 
-    # @torch.no_grad()
+    @torch.no_grad()
     def voxel_prefilter(
         self, pc: ScaffoldLoDGaussianModel, viewpoint_camera: Camera, anchor_mask: torch.Tensor, **kwargs
     ):
@@ -119,27 +119,6 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         _anchor_mask[anchor_mask] = radii.squeeze(0) > 0
         return _anchor_mask
 
-    def training_forward(
-        self,
-        step,
-        module,
-        viewpoint_camera: Camera,
-        pc: ScaffoldLoDGaussianModel,
-        bg_color,
-        render_types=None,
-        **kwargs,
-    ):
-        return super().training_forward(
-            step,
-            module,
-            viewpoint_camera,
-            pc,
-            bg_color,
-            render_types,
-            global_step=step,
-            **kwargs,
-        )
-
     def forward(
         self,
         viewpoint_camera: Camera,
@@ -149,7 +128,7 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         render_types: list = None,
         **kwargs,
     ):
-        anchor_mask, prog_ratio, transition_mask = self.get_anchor_mask(pc, viewpoint_camera, **kwargs)
+        anchor_mask, prog_ratio, transition_mask = self.get_anchor_mask(pc, viewpoint_camera)
         anchor_mask = self.voxel_prefilter(pc, viewpoint_camera, anchor_mask)
         xyz, scales, rots, colors, opacities, offset_mask = self.calculate_properties(
             viewpoint_camera=viewpoint_camera,
@@ -221,7 +200,10 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         rgb = None
         acc_vis = None
         if self.is_type_required(render_type_bits, self._RGB_REQUIRED):
-            rgbs = colors
+            if pc.config.color_mode == 'SHs':
+                rgbs = self.get_rgbs_from_SHs(viewpoint_camera, xyz, colors, visibility_filter, pc.activate_sh_degree)
+            else:
+                rgbs = colors
             rgb = rasterize(rgbs, bg_color).permute(2, 0, 1)
             # avoid overriding by hard depth
             acc_vis = means2d.has_hit_any_pixels
@@ -328,65 +310,16 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
         }
         # fmt: on
 
-    def _forward(
+    def get_rgbs_from_SHs(
         self,
-        viewpoint_camera: Camera,
-        pc: ScaffoldLoDGaussianModel,
-        bg_color: torch.Tensor,
-        scaling_modifier=1.0,
-        render_types: list = None,
-        **kwargs,
+        camera: Camera,
+        xyz: torch.Tensor,
+        colors: torch.Tensor,
+        visibility_filter: torch.Tensor,
+        activate_sh_degree: int,
     ):
-        # pass global_step in kwargs
-        if getattr(pc, "coarse_intervals", None) is None:
-            pc.set_coarse_intervals()
-        anchor_mask, prog_ratio, transition_mask = self.get_anchor_mask(pc, viewpoint_camera, **kwargs)
-        anchor_mask = self.voxel_prefilter(pc, viewpoint_camera, anchor_mask)
-        xyz, scales, rots, colors, opacities, offset_mask = self.calculate_properties(
-            viewpoint_camera=viewpoint_camera,
-            pc=pc,
-            anchor_mask=anchor_mask,
-            prog_ratio=prog_ratio,
-            transition_mask=transition_mask,
-        )
-        viewmats, Ks, (img_width, img_height) = GSplatV1.preprocess_camera(viewpoint_camera)
-        rendered, _, info = rasterization(
-            means=xyz,
-            quats=rots,
-            scales=scales,
-            opacities=opacities,
-            colors=colors,
-            viewmats=viewmats,
-            Ks=Ks,
-            width=img_width,
-            height=img_height,
-            packed=False,
-            sh_degree=None,
-            render_mode="RGB",
-        )
-
-        if rendered.shape[-1] == 4:
-            rgb, depth = rendered[..., 0:3], rendered[..., 3:4]
-            rgb = rgb[0].permute(2, 0, 1)
-            depth = depth[0].permute(2, 0, 1)
-        else:
-            rgb = rendered[0].permute(2, 0, 1)
-            depth = None
-        radii = info["radii"].squeeze(0)
-        means2d = info["means2d"].squeeze(0)
-
-        return {
-            "render": rgb,
-            "viewspace_points": means2d,
-            "viewspace_points_grad_scale": 0.5
-            * torch.tensor([img_width, img_height]).to(means2d).clamp_(max=self.config.max_viewspace_grad_scale),
-            "visibility_filter": radii > 0,
-            "scales": scales,
-            "opacities": opacities,
-            # extra infos
-            "anchor_mask": anchor_mask,
-            "offset_mask": offset_mask,
-        }
+        viewdirs = xyz.detach() - camera.camera_center
+        return spherical_harmonics(activate_sh_degree, viewdirs, colors, visibility_filter)
 
     def calculate_properties(
         self,
@@ -451,11 +384,11 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
             _colors,
             _scales,
             _rots,
-        ) = torch.split(concatenated_masked, [3, 3, 3, 3, 1, 3, 3, 4], dim=-1)
+        ) = torch.split(concatenated_masked, [3, 3, 3, 3, 1, 3, pc.color_dim, 4], dim=-1)
 
         xyz = _anchors + _offsets * _scalings_offset
         scales = F.sigmoid(_scales) * _scalings_scales
         rots = pc.rotation_activation(_rots)
-        colors = _colors
+        colors = _colors if pc.config.color_mode == "RGB" else _colors.reshape(-1, int(pc.color_dim // 3), 3)
         opacities = _opacities.squeeze()
         return xyz, scales, rots, colors, opacities, mask

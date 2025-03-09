@@ -129,7 +129,7 @@ class OctreeGaussianModel(GaussianModel):
 
         self._activate_level = self.max_level
         if self.config.optimization.progressive:
-            self._activate_level = np.searchsorted(self._coarse_intervals, step) + 1 + self.optimize_from_level
+            self._activate_level = np.searchsorted(self.coarse_intervals, step) + 1 + self.optimize_from_level
 
     def set_octree_properties(self, points: torch.Tensor, cameras: Cameras, *args, **kwargs):
         cam_centers = cameras.camera_center
@@ -190,12 +190,6 @@ class OctreeGaussianModel(GaussianModel):
         points = torch.from_numpy(xyz).to(cameras[0].device).float()
         self.set_octree_properties(points, cameras)
 
-        self._coarse_intervals: List[float] = OctreeUtils.get_coarse_intervals(
-            num_level=self.max_level - self.optimize_from_level + 1,
-            coarse_iter=self.config.optimization.coarse_iter,
-            coarse_factor=self.config.optimization.coarse_factor,
-        )
-
         positions, levels = OctreeUtils.octree_sample(
             points,
             voxel_size=self.voxel_size,
@@ -241,8 +235,6 @@ class OctreeGaussianModel(GaussianModel):
         self.register_buffer("_voxel_size", torch.tensor(0, dtype=torch.float))
         self.register_buffer("_grid_origin", torch.zeros((3,), dtype=torch.float))
         self.register_buffer("_visibility_threshold", torch.tensor(0, dtype=torch.float))
-
-        self._coarse_intervals = []
 
         anchors = torch.zeros((n, 3)).float()
         offsets = torch.zeros((n, self.config.n_offsets, 3)).float()
@@ -325,6 +317,23 @@ class OctreeGaussianModel(GaussianModel):
             int_level_fn=lambda x: self.map_to_int_level(x, self.max_level)[0],
             use_chunk=use_chunk,
         )
+
+    def mask_anchors_by_camera(self, viewpoint_camera: Camera):
+        dists = torch.sqer(torch.sum((self.get_anchors - viewpoint_camera.camera_center) ** 2, dim=-1))
+        pred_level = self.predict_level(dists) + self.get_extra_levels
+        int_level_pkg = self.map_to_int_level(pred_level, self.activate_level)
+        anchor_mask = self.get_levels <= int_level_pkg[0]
+
+        return anchor_mask, int_level_pkg
+
+    def generate_gaussian_primitives(
+        self, viewpoint_camera: Camera, int_level_pkg: Tuple[torch.Tensor, Optional[torch.Tensor]]
+    ):
+        """
+        `int_level_pkg` is a tuple, the second is frac part of pred level (if dist2level == "progressive"),
+        used for smoothing cross level artifacts.
+        """
+        pass
 
     @property
     def n_anchors(self):
@@ -427,6 +436,19 @@ class OctreeGaussianModel(GaussianModel):
     @property
     def visibility_threshold(self) -> float:
         return self._visibility_threshold.item()
+
+    @property
+    def coarse_intervals(self):
+        if getattr(self, "_coarse_intervals", None) is None:
+            if self.config.optimization.progressive:
+                self._coarse_intervals: List[float] = OctreeUtils.get_coarse_intervals(
+                    num_level=self.max_level - self.optimize_from_level + 1,
+                    coarse_iter=self.config.optimization.coarse_iter,
+                    coarse_factor=self.config.optimization.coarse_factor,
+                )
+            else:
+                self._coarse_intervals = []
+        return self._coarse_intervals
 
     def load_state_dict(self, state_dict, strict=True):
         if "_camera_infos" in state_dict.keys():
