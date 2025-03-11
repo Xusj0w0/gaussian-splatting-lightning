@@ -1,5 +1,6 @@
 import math
 import sched
+import stat
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
@@ -9,17 +10,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from internal.cameras.cameras import Camera, Cameras
-from internal.models.gaussian import Gaussian, GaussianModel
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
-from internal.utils.general_utils import (build_scaling_rotation,
-                                          inverse_sigmoid, strip_symmetric)
 from internal.utils.network_factory import NetworkFactory
 from myimpl.models.octree_gaussian import OctreeGaussian, OctreeGaussianModel
 from myimpl.models.octree_gaussian import \
     OpimizationConfig as OctreeOpimizationConfig
-from myimpl.utils.octree_utils import init_weight, knn
 
 
 @dataclass
@@ -27,8 +23,6 @@ class OpimizationConfig(OctreeOpimizationConfig):
     sh_degree_up_interval: int = 1_000
 
     anchor_features_lr: float = 0.0075
-
-    rotation_lr: float = 0.002
 
     opacity_mlp_lr_init: float = 0.002
     opacity_mlp_lr_final: float = 0.00002
@@ -80,13 +74,13 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
         self.config = config
 
         names = [
-            "rotations",  # [N, 4]
             "anchor_features",
         ] + self.get_extra_property_names()
         self._names = tuple(list(self._names) + names)
 
-        self._buffer_names = tuple(list(self._buffer_names) + ["_activate_sh_degree"])
-        self.register_buffer("_activate_sh_degree", torch.tensor(0, dtype=torch.int))
+        if self.config.color_mode == "SHs":
+            self._buffer_names = tuple(list(self._buffer_names) + ["_activate_sh_degree"])
+            self.register_buffer("_activate_sh_degree", torch.tensor(0, dtype=torch.int))
 
         self.gaussian_mlps = nn.ModuleDict()
 
@@ -154,14 +148,9 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
 
         n_anchors, n_offsets = self.get_anchors.shape[0], self.config.n_offsets
 
-        rots = torch.zeros((n_anchors, 4), dtype=torch.float)
-        rots[:, 0] = 1
         anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
-        rotations = nn.Parameter(rots, requires_grad=False)
         anchor_features = nn.Parameter(anchor_features, requires_grad=True)
-
         property_dict = {
-            "rotations": rotations,
             "anchor_features": anchor_features,
         }
         self.before_setup_set_properties_from_pcd(xyz, rgb, property_dict, *args, **kwargs)
@@ -175,14 +164,9 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
     def setup_from_number(self, n, *args, **kwargs):
         super().setup_from_number(n, *args, **kwargs)
 
-        rots = torch.zeros((n, 4), dtype=torch.float)
-        rots[:, 0] = 1
         anchor_features = torch.zeros((n, self.config.feature_dim), dtype=torch.float)
-
-        rotations = nn.Parameter(rots.requires_grad_(True))
         anchor_features = nn.Parameter(anchor_features.requires_grad_(True))
         property_dict = {
-            "rotations": rotations,
             "anchor_features": anchor_features,
         }
         self.before_setup_set_properties_from_number(n, property_dict, *args, **kwargs)
@@ -202,7 +186,6 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
 
         # constant properties
         l = [
-            {"params": self.gaussians["rotations"], "lr": optimization_config.rotation_lr, "name": "rotations"},
             {"params": self.gaussians["anchor_features"], "lr": optimization_config.anchor_features_lr, "name": "anchor_features",},  # fmt: skip
         ]
         for param_group in l:
@@ -271,11 +254,6 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
         return v
 
     @property
-    def get_rotations(self):
-        """[N, 4]"""
-        return self.rotation_activation(self.gaussians["rotations"])
-
-    @property
     def get_anchor_features(self):
         """[N, C]"""
         return self.gaussians["anchor_features"]
@@ -316,7 +294,9 @@ class ScaffoldLoDGaussianModel(OctreeGaussianModel):
     @property
     def activate_sh_degree(self):
         self._activate_sh_degree: torch.Tensor
-        return self._activate_sh_degree.item()
+        if self.config.color_mode == "SHs":
+            return self._activate_sh_degree.item()
+        return 0
 
     @property
     def color_dim(self):

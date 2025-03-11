@@ -15,6 +15,8 @@ from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
                                                    GSplatV1RendererModule)
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from myimpl.models.scaffold_gaussian import ScaffoldLoDGaussianModel
+from myimpl.renderers.octree_renderer import (OctreeRenderer,
+                                              OctreeRendererModule)
 
 
 @dataclass
@@ -32,7 +34,7 @@ class OptimizationConfig:
 
 
 @dataclass
-class ScaffoldLoDRenderer(GSplatV1Renderer):
+class ScaffoldLoDRenderer(OctreeRenderer):
     anti_aliased: bool = False
 
     model: ModelConfig = field(default_factory=lambda: ModelConfig())
@@ -43,7 +45,7 @@ class ScaffoldLoDRenderer(GSplatV1Renderer):
         return ScaffoldLoDRendererModule(self)
 
 
-class ScaffoldLoDRendererModule(GSplatV1RendererModule):
+class ScaffoldLoDRendererModule(OctreeRendererModule):
     config: ScaffoldLoDRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
@@ -86,38 +88,6 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
                 )
             )
         return appearance_embedding_optimizer, appearance_embedding_scheduler
-
-    def get_anchor_mask(self, pc: ScaffoldLoDGaussianModel, viewpoint_camera: Camera):
-        dists = torch.sqrt(torch.sum((pc.get_anchors - viewpoint_camera.camera_center) ** 2, dim=1))
-        pred_level = pc.predict_level(dists) + pc.get_extra_levels
-        int_level, prog_ratio = pc.map_to_int_level(pred_level, pc.activate_level)
-        anchor_mask = pc.get_levels <= int_level
-
-        transition_mask = None
-        if pc.config.dist2level == "progressive":
-            transition_mask = pc.get_levels == int_level
-        return anchor_mask, prog_ratio, transition_mask
-
-    @torch.no_grad()
-    def voxel_prefilter(
-        self, pc: ScaffoldLoDGaussianModel, viewpoint_camera: Camera, anchor_mask: torch.Tensor, **kwargs
-    ):
-        means = pc.get_anchors[anchor_mask]
-        scales = pc.get_scalings[anchor_mask][:, :3]
-        quats = pc.get_rotations[anchor_mask]
-
-        processed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
-        radii = GSplatV1.project(
-            processed_camera,
-            means3d=means,
-            scales=scales,
-            quats=quats,
-            anti_aliased=False,
-        )[0]
-
-        _anchor_mask = anchor_mask.clone()
-        _anchor_mask[anchor_mask] = radii.squeeze(0) > 0
-        return _anchor_mask
 
     def forward(
         self,
@@ -372,7 +342,7 @@ class ScaffoldLoDRendererModule(GSplatV1RendererModule):
 
         scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, 7)
 
-        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n (c) -> (n k) (c)", k=n_offsets)
+        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
         concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
         concatenated_masked = concatenated[mask]
         (

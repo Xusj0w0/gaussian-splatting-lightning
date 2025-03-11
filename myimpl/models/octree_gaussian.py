@@ -12,8 +12,7 @@ from internal.cameras.cameras import Camera, Cameras
 from internal.models.gaussian import Gaussian, GaussianModel
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
-from internal.utils.general_utils import (build_scaling_rotation,
-                                          inverse_sigmoid, strip_symmetric)
+from internal.utils.general_utils import inverse_sigmoid
 from myimpl.utils.octree_utils import OctreeUtils, knn
 
 
@@ -26,18 +25,9 @@ class OpimizationConfig:
 
     coarse_iter: int = 10_000
 
-    spatial_lr_scale: float = -1
-
     anchors_lr_init: float = 0.0
-    # anchors_lr_scheduler: Scheduler = field(
-    #     default_factory=lambda: {
-    #         "class_path": "ExponentialDecayScheduler",
-    #         "init_args": {
-    #             "lr_final": 0.0,
-    #             "max_steps": 40_000,
-    #         },
-    #     }
-    # )
+
+    scales_lr: float = 0.007
 
     offsets_lr_init: float = 0.01
     offsets_lr_scheduler: Scheduler = field(
@@ -50,7 +40,7 @@ class OpimizationConfig:
         }
     )
 
-    scales_lr: float = 0.007
+    spatial_lr_scale: float = -1
 
     optimizer: OptimizerConfig = field(default_factory=lambda: {"class_path": "Adam"})
 
@@ -108,7 +98,6 @@ class OctreeGaussianModel(GaussianModel):
         self._names = tuple(names)
 
         buffer_names = [
-            "_camera_infos",
             "_max_level",
             "_optimize_from_level",
             "_standard_dist",
@@ -127,19 +116,13 @@ class OctreeGaussianModel(GaussianModel):
     def on_train_batch_end(self, step: int, module: "lightning.LightningModule"):
         super().on_train_batch_end(step, module)
 
-        self._activate_level = self.max_level
         if self.config.optimization.progressive:
             self._activate_level = np.searchsorted(self.coarse_intervals, step) + 1 + self.optimize_from_level
 
-    def set_octree_properties(self, points: torch.Tensor, cameras: Cameras, *args, **kwargs):
-        cam_centers = cameras.camera_center
-        camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)
-        self._camera_infos: torch.Tensor
-        self.register_buffer("_camera_infos", camera_infos)
-
+    def set_octree_properties(self, points: torch.Tensor, camera_infos: torch.Tensor, *args, **kwargs):
         # calculate levels and register
         standard_dist, max_level = OctreeUtils.get_levels_by_distances(
-            points, self.camera_infos, self.config.dist_ratio, self.config.fork
+            points, camera_infos, self.config.dist_ratio, self.config.fork
         )
         max_level = torch.tensor(self.config.max_level) if self.config.max_level > 0 else max_level
         optimize_from_level = (
@@ -176,7 +159,14 @@ class OctreeGaussianModel(GaussianModel):
                 grid2xyz=self.grid2xyz,
                 fork=self.config.fork,
             )
-            mask = self.weed_out(positions, levels, 0.0)
+            mask = OctreeUtils.weed_out_mask_by_level(
+                positions,
+                levels,
+                0.0,
+                cam_infos=camera_infos,
+                predict_level_fn=self.predict_level,
+                int_level_fn=lambda x: self.map_to_int_level(x, self.max_level)[0],
+            )
             vis_thresh = torch.mean(mask.float())
         self._visibility_threshold: torch.Tensor
         self.register_buffer("_visibility_threshold", vis_thresh)
@@ -188,7 +178,9 @@ class OctreeGaussianModel(GaussianModel):
 
     def setup_from_pcd(self, xyz, rgb, cameras: Cameras, *args, **kwargs):
         points = torch.from_numpy(xyz).to(cameras[0].device).float()
-        self.set_octree_properties(points, cameras)
+        cam_centers = cameras.camera_center
+        camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)
+        self.set_octree_properties(points, camera_infos)
 
         positions, levels = OctreeUtils.octree_sample(
             points,
@@ -198,7 +190,14 @@ class OctreeGaussianModel(GaussianModel):
             grid2xyz=self.grid2xyz,
             fork=self.config.fork,
         )
-        weed_mask = self.weed_out(positions, levels, self.visibility_threshold)
+        weed_mask = OctreeUtils.weed_out_mask_by_level(
+            positions,
+            levels,
+            self.visibility_threshold,
+            cam_infos=camera_infos,
+            predict_level_fn=self.predict_level,
+            int_level_fn=lambda x: self.map_to_int_level(x, self.max_level)[0],
+        )
         fused_point_cloud, levels = positions[weed_mask], levels[weed_mask]
 
         n_anchors, n_offsets = fused_point_cloud.shape[0], self.config.n_offsets
@@ -228,7 +227,6 @@ class OctreeGaussianModel(GaussianModel):
         pass
 
     def setup_from_number(self, n, *args, **kwargs):
-        self.register_buffer("_camera_infos", torch.zeros((0, 4), dtype=torch.float))
         self.register_buffer("_max_level", torch.tensor(0, dtype=torch.int))
         self.register_buffer("_optimize_from_level", torch.tensor(0, dtype=torch.int))
         self.register_buffer("_standard_dist", torch.tensor(0, dtype=torch.float))
@@ -263,6 +261,11 @@ class OctreeGaussianModel(GaussianModel):
         pass
 
     def training_setup(self, module: "lightning.LightningModule"):
+        if self.config.optimization.progressive:
+            self._activate_level = (
+                np.searchsorted(self.coarse_intervals, module.trainer.global_step) + 1 + self.optimize_from_level
+            )
+
         spatial_lr_scale = self.config.optimization.spatial_lr_scale
         if spatial_lr_scale <= 0:
             spatial_lr_scale = module.trainer.datamodule.dataparser_outputs.camera_extent
@@ -306,34 +309,6 @@ class OctreeGaussianModel(GaussianModel):
 
     def xyz2grid(self, points: torch.Tensor, voxel_size: float):
         return OctreeUtils.point_to_grid(points, voxel_size, grid_origin=self.grid_origin, padding=self.config.padding)
-
-    def weed_out(self, anchors: torch.Tensor, levels: torch.Tensor, vis_thresh: float, use_chunk: bool = True):
-        return OctreeUtils.weed_out_mask_by_level(
-            anchors,
-            levels,
-            vis_thresh,
-            cam_infos=self.camera_infos,
-            predict_level_fn=self.predict_level,
-            int_level_fn=lambda x: self.map_to_int_level(x, self.max_level)[0],
-            use_chunk=use_chunk,
-        )
-
-    def mask_anchors_by_camera(self, viewpoint_camera: Camera):
-        dists = torch.sqer(torch.sum((self.get_anchors - viewpoint_camera.camera_center) ** 2, dim=-1))
-        pred_level = self.predict_level(dists) + self.get_extra_levels
-        int_level_pkg = self.map_to_int_level(pred_level, self.activate_level)
-        anchor_mask = self.get_levels <= int_level_pkg[0]
-
-        return anchor_mask, int_level_pkg
-
-    def generate_gaussian_primitives(
-        self, viewpoint_camera: Camera, int_level_pkg: Tuple[torch.Tensor, Optional[torch.Tensor]]
-    ):
-        """
-        `int_level_pkg` is a tuple, the second is frac part of pred level (if dist2level == "progressive"),
-        used for smoothing cross level artifacts.
-        """
-        pass
 
     @property
     def n_anchors(self):
@@ -404,10 +379,6 @@ class OctreeGaussianModel(GaussianModel):
         pass
 
     @property
-    def camera_infos(self) -> torch.Tensor:
-        return self._camera_infos
-
-    @property
     def max_level(self) -> int:
         return self._max_level.item()
 
@@ -418,8 +389,12 @@ class OctreeGaussianModel(GaussianModel):
     @property
     def activate_level(self) -> int:
         if getattr(self, "_activate_level", None) is None:
-            return self.optimize_from_level
+            self._activate_level = self.max_level
         return self._activate_level
+
+    @activate_level.setter
+    def activate_level(self, value: int):
+        self._activate_level = value
 
     @property
     def standard_dist(self) -> float:
@@ -449,9 +424,3 @@ class OctreeGaussianModel(GaussianModel):
             else:
                 self._coarse_intervals = []
         return self._coarse_intervals
-
-    def load_state_dict(self, state_dict, strict=True):
-        if "_camera_infos" in state_dict.keys():
-            camera_infos = self._camera_infos.new_zeros(state_dict["_camera_infos"].shape)
-            self.register_buffer("_camera_infos", camera_infos)
-        return super().load_state_dict(state_dict, strict)
