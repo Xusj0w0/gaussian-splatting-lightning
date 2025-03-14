@@ -13,40 +13,44 @@ from gsplat import spherical_harmonics
 from internal.cameras.cameras import Camera
 from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
                                                    GSplatV1RendererModule)
-from internal.schedulers import ExponentialDecayScheduler, Scheduler
-from myimpl.models.scaffold_gaussian import ScaffoldLoDGaussianModel
-from myimpl.renderers.octree_renderer import (OctreeRenderer,
-                                              OctreeRendererModule)
+from internal.schedulers import ExponentialDecayScheduler
+from myimpl.models.grid_gaussians import (GridGaussianModel,
+                                          LoDGridGaussianModel,
+                                          ScaffoldGaussianModelMixin)
+from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
+                                                  ImplicitLoDGridGaussianModel)
 
 
 @dataclass
-class ModelConfig:
+class AppearanceModelConfig:
     n_appearances: int = -1
 
 
 @dataclass
 class OptimizationConfig:
     appearance_embedding_lr_init: float = 0.05
+
     appearance_embedding_lr_final: float = 0.0005
+
     max_steps: int = 40_000
 
     eps: float = 1e-15
 
 
 @dataclass
-class ScaffoldLoDRenderer(OctreeRenderer):
+class GridGaussianRenderer(GSplatV1Renderer):
     anti_aliased: bool = False
 
-    model: ModelConfig = field(default_factory=lambda: ModelConfig())
+    model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
 
     optimization: OptimizationConfig = field(default_factory=lambda: OptimizationConfig())
 
     def instantiate(self, *args, **kwargs):
-        return ScaffoldLoDRendererModule(self)
+        return GridGaussianRendererModule(self)
 
 
-class ScaffoldLoDRendererModule(OctreeRendererModule):
-    config: ScaffoldLoDRenderer
+class GridGaussianRendererModule(GSplatV1RendererModule):
+    config: GridGaussianRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
         self.n_appearance_embedding_dims = 0
@@ -89,24 +93,171 @@ class ScaffoldLoDRendererModule(OctreeRendererModule):
             )
         return appearance_embedding_optimizer, appearance_embedding_scheduler
 
+    def filter_by_level(self, pc: LoDGridGaussianModel, viewpoint_camera: Camera):
+        """
+        Returns:
+            A tuple:
+            If `pc.config.dist2level` is "progressive":
+            - **anchor_mask**. [n_anchors, ]. Indicating whether the anchor is visible based on viewpoint camera and anchor levels.
+            - **prog_ratio**. [n_anchors, ]. Fractional part of predicted level, used for anti-alising cross levels.
+            - **transition_mask**. [n_anchors, ]. Indicating whether the level of anchor equals to int level.
+            Else:
+            - **anchor_mask**. [n_anchors, ]. Indicating whether the anchor is visible based on viewpoint camera and anchor levels.
+            - **prog_ratio**. None
+            - **transition_mask**. None
+        """
+        dists = torch.sqrt(torch.sum((pc.get_anchors - viewpoint_camera.camera_center) ** 2, dim=1))
+        pred_level = pc.predict_level(dists) + pc.get_extra_levels
+        int_level, prog_ratio = pc.map_to_int_level(pred_level, pc.activate_level)
+        anchor_mask = pc.get_levels <= int_level
+
+        transition_mask = None
+        if pc.config.dist2level == "progressive":
+            transition_mask = pc.get_levels == int_level
+        return anchor_mask, prog_ratio, transition_mask
+
+    @torch.no_grad()
+    def filter_by_preprojection(
+        self, pc: GridGaussianModel, viewpoint_camera: Camera, anchor_mask: Optional[torch.Tensor] = None, **kwargs
+    ):
+        if anchor_mask is None:
+            anchor_mask = pc.get_anchors.new_ones((pc.get_anchors.shape[0],), dtype=torch.bool)
+        means = pc.get_anchors[anchor_mask]
+        scales = pc.get_scalings[anchor_mask][:, :3]
+        quats = means.new_zeros((means.shape[0], 4))
+        quats[:, 0] = 1.0
+
+        processed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
+        radii = GSplatV1.project(
+            processed_camera,
+            means3d=means,
+            scales=scales,
+            quats=quats,
+            anti_aliased=False,
+        )[0]
+
+        _anchor_mask = anchor_mask.clone()
+        _anchor_mask[anchor_mask] = radii.squeeze(0) > 0
+        return _anchor_mask
+
+    def calculate_implicit_properties(
+        self,
+        pc: ImplicitGridGaussianModel,
+        viewpoint_camera: Camera,
+        anchor_mask: Optional[torch.Tensor] = None,
+        prog_ratio: Optional[torch.Tensor] = None,
+        transition_mask: Optional[torch.Tensor] = None,
+        *args,
+        **kwargs,
+    ):
+        if anchor_mask is None:
+            anchor_mask = pc.get_anchors.new_ones((pc.n_anchors,), dypt=torch.bool)
+        anchors = pc.get_anchors[anchor_mask]
+        features = pc.get_anchor_features[anchor_mask]
+        offsets = pc.get_offsets[anchor_mask]
+        scalings = pc.get_scalings[anchor_mask]
+
+        n_anchors, n_offsets = pc.n_anchors, pc.n_offsets
+
+        viewdirs = anchors - viewpoint_camera.camera_center
+        viewdirs_norm = torch.norm(viewdirs, dim=1, keepdim=True)
+        viewdirs = viewdirs / viewdirs_norm
+
+        if pc.config.use_feature_bank:
+            bank_weight = F.softmax(pc.get_feature_bank_mlp(viewdirs), dim=-1).unsqueeze(dim=1)
+            features = features.unsqueeze(dim=-1)
+            features = (
+                features[:, ::4, :1].repeat(1, 4, 1) * bank_weight[:, :, 0:1]
+                + features[:, ::2, :1].repeat(1, 2, 1) * bank_weight[:, :, 1:2]
+                + features[:, ::1, :1] * bank_weight[:, :, 2:3]
+            )
+            features = features.squeeze(dim=-1)
+        cat_local_view = torch.cat([features, viewdirs], dim=1)
+
+        opacities = pc.get_opacity_mlp(cat_local_view)
+        if prog_ratio is not None and transition_mask is not None:
+            prog = prog_ratio[anchor_mask]
+            transition = transition_mask[anchor_mask]
+            prog[~transition] = 1.0
+            opacities = opacities * prog
+        opacities = opacities.reshape(-1, 1)
+
+        primitive_mask = (opacities > 0.0).view(-1)
+
+        if self.n_appearance_embedding_dims > 0:
+            appearance_code = self.appearance_embedding(viewpoint_camera.appearance_id).view(1, -1).repeat(n_anchors, 1)
+            color_input = torch.cat([cat_local_view, appearance_code], dim=-1)
+        else:
+            color_input = cat_local_view
+        colors = pc.get_color_mlp(color_input).reshape(-1, 3)
+
+        scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, 7)
+
+        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
+        concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
+        concatenated_masked = concatenated[primitive_mask]
+        (
+            _anchors,
+            _scalings_offset,
+            _scalings_scales,
+            _offsets,
+            _opacities,
+            _colors,
+            _scales,
+            _rots,
+        ) = torch.split(concatenated_masked, [3, 3, 3, 3, 1, 3, pc.color_dim, 4], dim=-1)
+
+        xyz = _anchors + _offsets * _scalings_offset
+        scales = F.sigmoid(_scales) * _scalings_scales
+        rots = pc.rotation_activation(_rots)
+        if pc.config.color_mode == "RGB":
+            colors = _colors
+        elif pc.config.color_mode == "SHs":
+            shs = _colors.reshape(-1, int(pc.color_dim // 3), 3)
+            viewdirs = xyz.detach() - viewpoint_camera.camera_center
+            colors = spherical_harmonics(
+                pc.activate_sh_degree,
+                viewdirs,
+                shs,
+            )
+        opacities = _opacities.squeeze()
+
+        return xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask
+
+    def calculate_explicit_properties(self, pc, viewpoint_camera: Camera, *args, **kwargs):
+        # TODO
+        pass
+
+    def prepare_primitives(self, pc: GridGaussianModel, viewpoint_camera: Camera):
+        # filter by level
+        anchor_mask, prog_ratio, transition_mask = [None] * 3
+        # if isinstance(pc, LoDGridGaussianModel): in viewer, can't judge model type from pc
+        if getattr(pc, "get_levels", None) is not None and pc.get_levels.shape[0] > 0:
+            anchor_mask, prog_ratio, transition_mask = self.filter_by_level(pc, viewpoint_camera)
+
+        # filter by preprojection
+        anchor_mask = self.filter_by_preprojection(pc, viewpoint_camera, anchor_mask)
+
+        # scaffold model
+        # if isinstance(pc, ScaffoldGaussianModelMixin):
+        if getattr(pc, "gaussian_mlps", None) is not None and getattr(pc, "get_anchor_features", None) is not None:
+            return self.calculate_implicit_properties(
+                pc, viewpoint_camera, anchor_mask=anchor_mask, prog_ratio=prog_ratio, transition_mask=transition_mask
+            )
+        # TODO elif explicit model
+        else:
+            raise ValueError("Unsupported gaussian model type")
+
     def forward(
         self,
         viewpoint_camera: Camera,
-        pc: ScaffoldLoDGaussianModel,
+        pc: GridGaussianModel,
         bg_color: torch.Tensor,
         scaling_modifier=1.0,
         render_types: list = None,
         **kwargs,
     ):
-        anchor_mask, prog_ratio, transition_mask = self.get_anchor_mask(pc, viewpoint_camera)
-        anchor_mask = self.voxel_prefilter(pc, viewpoint_camera, anchor_mask)
-        xyz, scales, rots, colors, opacities, offset_mask = self.calculate_properties(
-            viewpoint_camera=viewpoint_camera,
-            pc=pc,
-            anchor_mask=anchor_mask,
-            prog_ratio=prog_ratio,
-            transition_mask=transition_mask,
-        )
+        xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask = self.prepare_primitives(pc, viewpoint_camera)
 
         # fmt: off
         # +--------------------------------------------------+
@@ -171,10 +322,9 @@ class ScaffoldLoDRendererModule(OctreeRendererModule):
         acc_vis = None
         if self.is_type_required(render_type_bits, self._RGB_REQUIRED):
             if pc.config.color_mode == 'SHs':
-                rgbs = self.get_rgbs_from_SHs(viewpoint_camera, xyz, colors, visibility_filter, pc.activate_sh_degree)
-            else:
-                rgbs = colors
-            rgb = rasterize(rgbs, bg_color).permute(2, 0, 1)
+                viewdirs = xyz.detach() - viewpoint_camera.camera_center
+                colors = spherical_harmonics(pc.activate_sh_degree, viewdirs, colors, visibility_filter)
+            rgb = rasterize(colors, bg_color).permute(2, 0, 1)
             # avoid overriding by hard depth
             acc_vis = means2d.has_hit_any_pixels
 
@@ -276,7 +426,7 @@ class ScaffoldLoDRendererModule(OctreeRendererModule):
             "isects": isects,
             # extra infos
             "anchor_mask": anchor_mask,
-            "offset_mask": offset_mask,
+            "primitive_mask": primitive_mask,
         }
         # fmt: on
 
@@ -291,74 +441,34 @@ class ScaffoldLoDRendererModule(OctreeRendererModule):
         viewdirs = xyz.detach() - camera.camera_center
         return spherical_harmonics(activate_sh_degree, viewdirs, colors, visibility_filter)
 
-    def calculate_properties(
-        self,
-        viewpoint_camera: Camera,
-        pc: ScaffoldLoDGaussianModel,
-        anchor_mask: Optional[torch.Tensor] = None,
-        prog_ratio: Optional[torch.Tensor] = None,
-        transition_mask: Optional[torch.Tensor] = None,
-    ):
-        if anchor_mask is None:
-            anchor_mask = pc.get_anchors.new_ones((pc.n_anchors,), dtype=torch.bool)
-        anchors = pc.get_anchors[anchor_mask]
-        features = pc.get_anchor_features[anchor_mask]
-        offsets = pc.get_offsets[anchor_mask]
-        scalings = pc.get_scalings[anchor_mask]
+    def setup_web_viewer_tabs(self, viewer, server, tabs):
+        super().setup_web_viewer_tabs(viewer, server, tabs)
 
-        n_anchors, n_offsets = pc.n_anchors, pc.n_offsets
+        # if isinstance(viewer.gaussian_model, LoDGridGaussianModel):
+        if getattr(viewer.gaussian_model, "get_levels", None) is not None and viewer.gaussian_model.get_levels.shape[0] > 0:
+            with tabs.add_tab("LoD"):
+                self._lod_options = LoDOptions(viewer, server)
 
-        ob_view = anchors - viewpoint_camera.camera_center
-        ob_norm = torch.norm(ob_view, dim=1, keepdim=True)
-        ob_view = ob_view / ob_norm
 
-        if pc.config.use_feature_bank:
-            bank_weight = F.softmax(pc.get_feature_bank_mlp(ob_view), dim=-1).unsqueeze(dim=1)
-            features = features.unsqueeze(dim=-1)
-            features = (
-                features[:, ::4, :1].repeat(1, 4, 1) * bank_weight[:, :, 0:1]
-                + features[:, ::2, :1].repeat(1, 2, 1) * bank_weight[:, :, 1:2]
-                + features[:, ::1, :1] * bank_weight[:, :, 2:3]
-            )
-            features = features.squeeze(dim=-1)
-        cat_local_view = torch.cat([features, ob_view], dim=1)  # [N, C+3]
+from viser import ViserServer
 
-        opacities = pc.get_opacity_mlp(cat_local_view)
-        if prog_ratio is not None and transition_mask is not None:
-            prog = prog_ratio[anchor_mask]
-            transition = transition_mask[anchor_mask]
-            prog[~transition] = 1.0
-            opacities = opacities * prog
-        opacities = opacities.reshape(-1, 1)
+from internal.viewer.viewer import Viewer
 
-        mask = (opacities > 0.0).view(-1)
 
-        if self.n_appearance_embedding_dims > 0:
-            appearance_code = self.appearance_embedding(viewpoint_camera.appearance_id).view(1, -1).repeat(n_anchors, 1)
-            color_input = torch.cat([cat_local_view, appearance_code], dim=-1)
-        else:
-            color_input = cat_local_view
-        colors = pc.get_color_mlp(color_input).reshape(-1, 3)
+class LoDOptions:
+    def __init__(self, viewer: Viewer, server: ViserServer):
+        self.viewer = viewer
+        self.server = server
 
-        scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, 7)
+        self.activate_level_slider = server.gui.add_slider(
+            label="Activate LoD Level",
+            min=0,
+            step=1,
+            max=viewer.gaussian_model.max_level,
+            initial_value=viewer.gaussian_model.max_level,
+        )
 
-        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
-        concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
-        concatenated_masked = concatenated[mask]
-        (
-            _anchors,
-            _scalings_offset,
-            _scalings_scales,
-            _offsets,
-            _opacities,
-            _colors,
-            _scales,
-            _rots,
-        ) = torch.split(concatenated_masked, [3, 3, 3, 3, 1, 3, pc.color_dim, 4], dim=-1)
-
-        xyz = _anchors + _offsets * _scalings_offset
-        scales = F.sigmoid(_scales) * _scalings_scales
-        rots = pc.rotation_activation(_rots)
-        colors = _colors if pc.config.color_mode == "RGB" else _colors.reshape(-1, int(pc.color_dim // 3), 3)
-        opacities = _opacities.squeeze()
-        return xyz, scales, rots, colors, opacities, mask
+        @self.activate_level_slider.on_update
+        def _(_):
+            viewer.viewer_renderer.gaussian_model.activate_level = self.activate_level_slider.value
+            viewer.rerender_for_all_client()

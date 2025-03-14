@@ -1,0 +1,33 @@
+max_steps: 100_000
+
+data:
+  path: datasets/MegaNeRF/residence/colmap
+  parser:
+    class_path: internal.dataparsers.colmap_dataparser.Colmap
+    init_args:
+      down_sample_factor: 4
+      split_mode: experiment
+      eval_image_select_mode: list
+      eval_list: datasets/MegaNeRF/residence/colmap/splits/val_images.txt
+  train_max_num_images_to_cache: 256
+
+model:
+  gaussian:
+    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
+    init_args:
+      base_layer: 12
+      optimization:
+        offsets_lr_scheduler:
+          init_args:
+            max_steps: 100_000
+      extra_optimization:
+        mlp_scheduler:
+          init_args:
+            max_steps: 100_000
+  renderer:
+    class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
+  metric:
+    class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
+  density:
+    class_path: myimpl.density_controllers.grid_density_controller.GridGaussianDensityController
+

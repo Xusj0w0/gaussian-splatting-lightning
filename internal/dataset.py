@@ -48,6 +48,10 @@ class Dataset(torch.utils.data.Dataset):
 
         self.image_cameras: list[Camera] = [i.to_device(camera_device) for i in image_set.cameras]  # store undistorted camera
 
+        # add self to extra data processer
+        if getattr(self.image_set.extra_data_processor, "update_properties", None) is not None:
+            self.image_set.extra_data_processor.update_properties(dataset=self)
+
     def __len__(self):
         return len(self.image_set)
 

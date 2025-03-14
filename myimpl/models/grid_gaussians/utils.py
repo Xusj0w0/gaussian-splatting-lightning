@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import torch
@@ -21,7 +21,7 @@ def knn(x, K):
     return torch.from_numpy(distances).to(x)
 
 
-class OctreeUtils:
+class GridGaussianUtils:
     chunk_size_max = 1 << 22
 
     @staticmethod
@@ -46,16 +46,13 @@ class OctreeUtils:
 
         if use_chunk:
             # chunk cameras, since quantile is applied on points
-            chunk_size = OctreeUtils.max_power_of_2(OctreeUtils.chunk_size_max // num_points)
+            chunk_size = GridGaussianUtils.max_power_of_2(GridGaussianUtils.chunk_size_max // num_points)
             dists_min = camera_infos.new_zeros((camera_infos.shape[0],))
             dists_max = camera_infos.new_zeros((camera_infos.shape[0],))
             for st in range(0, camera_infos.shape[0], chunk_size):
                 ed = min(st + chunk_size, camera_infos.shape[0])
                 _camera_infos = camera_infos[st:ed]
-                ds = (
-                    torch.sqrt(torch.sum((points - _camera_infos[:, :3].unsqueeze(1)) ** 2, dim=-1))
-                    * _camera_infos[:, -1:]
-                )
+                ds = torch.sqrt(torch.sum((points - _camera_infos[:, :3].unsqueeze(1)) ** 2, dim=-1)) * _camera_infos[:, -1:]
                 dists_min[st:ed].copy_(torch.quantile(ds, dist_ratio, dim=-1))
                 dists_max[st:ed].copy_(torch.quantile(ds, 1 - dist_ratio, dim=-1))
         else:
@@ -82,8 +79,20 @@ class OctreeUtils:
                 coarse_intervals.append(interval)
         return coarse_intervals
 
+    def build_grid(points: torch.Tensor, default_voxel_size: float):
+        grid_origin = points.mean(dim=0)
+        voxel_size = torch.tensor(default_voxel_size)
+        if voxel_size <= 0:
+            from simple_knn._C import distCUDA2
+
+            _points = points.clone().cuda()
+            _dist = distCUDA2(_points)
+            median_dist, _ = torch.kthvalue(_dist, int(len(_points) * 0.5))
+            voxel_size = median_dist.to(points.device)
+        return voxel_size, grid_origin
+
     @staticmethod
-    def setup_octree_voxel_grid(
+    def build_multi_level_grid(
         points: torch.Tensor,
         extend_ratio: float,
         base_layer: int,
@@ -132,9 +141,9 @@ class OctreeUtils:
         predict_level_fn: Callable,
         int_level_fn: Callable,
         use_chunk: bool = True,
-    ):
+    ) -> torch.Tensor:
         if use_chunk:
-            chunk_size = OctreeUtils.max_power_of_2(OctreeUtils.chunk_size_max // cam_infos.shape[0])
+            chunk_size = GridGaussianUtils.max_power_of_2(GridGaussianUtils.chunk_size_max // cam_infos.shape[0])
             count = anchors.new_zeros((anchors.shape[0],))
             for st in range(0, anchors.shape[0], chunk_size):
                 ed = min(st + chunk_size, anchors.shape[0])
@@ -156,23 +165,27 @@ class OctreeUtils:
         return mask
 
     @staticmethod
-    def point_to_grid(points: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0):
+    def point_to_grid(points: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0) -> torch.Tensor:
         return torch.round((points - grid_origin.to(points)) / voxel_size + padding).int()
 
     @staticmethod
-    def grid_to_point(grid: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0):
+    def grid_to_point(grid: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0) -> torch.Tensor:
         return (grid.float() - padding) * voxel_size + grid_origin.to(grid.device)
 
     @staticmethod
-    def octree_sample(
+    def voxelize(points: torch.Tensor, voxel_size: float, xyz2grid: Callable, grid2xyz: Callable) -> torch.Tensor:
+        return grid2xyz(torch.unique(xyz2grid(points, voxel_size), dim=0), voxel_size)
+
+    @staticmethod
+    def multi_level_voxelize(
         points: torch.Tensor, voxel_size: float, max_level: int, xyz2grid: Callable, grid2xyz: Callable, fork: int = 2
-    ):
+    ) -> Tuple[torch.Tensor]:
         positions = points.new_empty((0, 3))
         levels = torch.empty(0).int()
         for cur_level in range(max_level):
             cur_size = voxel_size / (float(fork) ** cur_level)
 
-            _positions = grid2xyz(torch.unique(xyz2grid(points, cur_size), dim=0), cur_size)
+            _positions = GridGaussianUtils.voxelize(points, cur_size, xyz2grid, grid2xyz)
             _levels = levels.new_ones((_positions.shape[0],)) * cur_level
 
             positions = torch.cat((positions, _positions), dim=0)

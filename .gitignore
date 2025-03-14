@@ -10,7 +10,7 @@ cuda_src
 **/test_scripts
 
 .idea
-outputs
+outputs*
 camera_paths
 renders
 edited
