@@ -9,7 +9,7 @@ import torch.nn as nn
 from internal.cameras.cameras import Camera, Cameras
 from internal.utils.general_utils import inverse_sigmoid
 from myimpl.models.grid_gaussians.grid_gaussian import GridGaussian, GridGaussianModel, GridOptimizationConfig
-from myimpl.models.grid_gaussians.utils import GridGaussianUtils
+from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 
 
 @dataclass

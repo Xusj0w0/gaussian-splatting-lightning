@@ -9,7 +9,7 @@ from internal.models.gaussian import Gaussian, GaussianModel
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.network_factory import NetworkFactory
-from myimpl.models.grid_gaussians.utils import GridGaussianUtils
+from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 
 
 @dataclass

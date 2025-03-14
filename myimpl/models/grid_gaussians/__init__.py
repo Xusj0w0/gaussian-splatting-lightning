@@ -4,4 +4,3 @@ from .grid_mixin import (ScaffoldGaussianMixin, ScaffoldGaussianModelMixin,
                          ScaffoldOptimizationConfigMixin)
 from .lod_grid_gaussian import (LoDGridGaussian, LoDGridGaussianModel,
                                 LoDGridOptimizationConfig)
-from .utils import GridGaussianUtils
