@@ -52,7 +52,10 @@ class GridGaussianUtils:
             for st in range(0, camera_infos.shape[0], chunk_size):
                 ed = min(st + chunk_size, camera_infos.shape[0])
                 _camera_infos = camera_infos[st:ed]
-                ds = torch.sqrt(torch.sum((points - _camera_infos[:, :3].unsqueeze(1)) ** 2, dim=-1)) * _camera_infos[:, -1:]
+                ds = (
+                    torch.sqrt(torch.sum((points - _camera_infos[:, :3].unsqueeze(1)) ** 2, dim=-1))
+                    * _camera_infos[:, -1:]
+                )
                 dists_min[st:ed].copy_(torch.quantile(ds, dist_ratio, dim=-1))
                 dists_max[st:ed].copy_(torch.quantile(ds, 1 - dist_ratio, dim=-1))
         else:
@@ -109,7 +112,7 @@ class GridGaussianUtils:
             assert default_voxel_size is not None and max_level is not None
             base_layer = torch.round(torch.log2(box_d / default_voxel_size)).int().item() - (max_level // 2) + 1
         voxel_size = box_d / (float(fork) ** base_layer)
-        return voxel_size, extend_min
+        return voxel_size, points.mean(dim=0)
 
     @staticmethod
     def map_to_int_level(pred_level: torch.Tensor, cur_level: int, dist2level: str = "floor"):
@@ -165,11 +168,15 @@ class GridGaussianUtils:
         return mask
 
     @staticmethod
-    def point_to_grid(points: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0) -> torch.Tensor:
+    def point_to_grid(
+        points: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0
+    ) -> torch.Tensor:
         return torch.round((points - grid_origin.to(points)) / voxel_size + padding).int()
 
     @staticmethod
-    def grid_to_point(grid: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0) -> torch.Tensor:
+    def grid_to_point(
+        grid: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0
+    ) -> torch.Tensor:
         return (grid.float() - padding) * voxel_size + grid_origin.to(grid.device)
 
     @staticmethod

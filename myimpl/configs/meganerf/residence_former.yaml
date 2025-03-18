@@ -1,0 +1,24 @@
+max_steps: 100000
+
+data:
+  path: datasets/MegaNeRF/residence/colmap
+  parser:
+    class_path: internal.dataparsers.colmap_dataparser.Colmap
+    init_args:
+      down_sample_factor: 4
+      split_mode: experiment
+      eval_image_select_mode: list
+      eval_list: datasets/MegaNeRF/residence/colmap/splits/val_images.txt
+  train_max_num_images_to_cache: 256
+
+model:
+  gaussian:
+    class_path: myimpl.models.scaffold_gaussian.ScaffoldLoDGaussian
+    init_args:
+      base_layer: 13
+  renderer:
+    class_path: myimpl.renderers.scaffold_renderer.ScaffoldLoDRenderer
+  metric:
+    class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
+  density:
+    class_path: myimpl.density_controllers.scaffold_density_controller.ScaffoldDensityController

@@ -8,9 +8,14 @@ from lightning import LightningModule
 from torch_scatter import scatter_max
 
 from internal.cameras.cameras import Cameras
-from internal.density_controllers.density_controller import Utils as OptimizerManipulation
-from internal.density_controllers.vanilla_density_controller import VanillaDensityController, VanillaDensityControllerImpl
-from myimpl.models.grid_gaussians import GridGaussianModel, GridGaussianUtils, LoDGridGaussianModel, ScaffoldGaussianModelMixin
+from internal.density_controllers.density_controller import \
+    Utils as OptimizerManipulation
+from internal.density_controllers.vanilla_density_controller import (
+    VanillaDensityController, VanillaDensityControllerImpl)
+from myimpl.models.grid_gaussians import (GridGaussianModel,
+                                          LoDGridGaussianModel,
+                                          ScaffoldGaussianModelMixin)
+from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 
 
 @dataclass
@@ -342,7 +347,9 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         )
         self._primitive_denom[primitive_mask] = 0
         self._primitive_gradient_accum[primitive_mask] = 0.0
-        self._primitive_denom = torch.cat([self._primitive_denom, self._primitive_denom.new_zeros((num_primitives, 1))], dim=0)
+        self._primitive_denom = torch.cat(
+            [self._primitive_denom, self._primitive_denom.new_zeros((num_primitives, 1))], dim=0
+        )
         self._primitive_gradient_accum = torch.cat(
             [self._primitive_gradient_accum, self._primitive_gradient_accum.new_zeros((num_primitives, 1))], dim=0
         )
@@ -392,7 +399,10 @@ class GridDensityContollerUtils:
             remove_duplicates_list = []
             for i in range(max_iters):
                 cur_remove_duplicates = (
-                    (candidate_grids.unsqueeze(1) == existing_grids[i * chunk_size : (i + 1) * chunk_size, :]).all(-1).any(-1).view(-1)
+                    (candidate_grids.unsqueeze(1) == existing_grids[i * chunk_size : (i + 1) * chunk_size, :])
+                    .all(-1)
+                    .any(-1)
+                    .view(-1)
                 )
                 remove_duplicates_list.append(cur_remove_duplicates)
             remove_mask = reduce(torch.logical_or, remove_duplicates_list)
@@ -473,7 +483,9 @@ class GridDensityContollerUtils:
         # if is current level, then directly filter by existing anchors and weed out by cameras
         # if is next level, execute filtering after activate_level == max_level
         # and current level shouldn't exceed max_level
-        if not is_next_level or (gaussian_model.activate_level >= gaussian_model.max_level and res_level < gaussian_model.max_level):
+        if not is_next_level or (
+            gaussian_model.activate_level >= gaussian_model.max_level and res_level < gaussian_model.max_level
+        ):
             if candidate_grids.shape[0] > 0:
                 # don't filter by existing anchors
                 if overlap:
@@ -526,7 +538,9 @@ class CandidateAnchors:
         return self.anchors.shape[0]
 
     def get_basic_properties(self, gaussian_model: GridGaussianModel, voxel_size: float):
-        scales = gaussian_model.scale_inverse_activation(gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size)
+        scales = gaussian_model.scale_inverse_activation(
+            gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size
+        )
         offsets = gaussian_model.get_offsets.new_zeros((self.n_anchors, gaussian_model.n_offsets, 3))
         return {"means": self.anchors, "scales": scales, "offsets": offsets}
 
@@ -539,9 +553,9 @@ class CandidateAnchors:
         # if anchors are added, shape of anchor_features may dismatch grad_mask
         anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
         # select max value of anchor features among primitives that convert to same grid
-        anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[
-            0
-        ]
+        anchor_features = scatter_max(
+            anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0
+        )[0]
         anchor_features = anchor_features[self.keep_mask]
         return {"anchor_features": anchor_features}
 

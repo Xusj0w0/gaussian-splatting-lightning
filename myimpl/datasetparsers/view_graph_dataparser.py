@@ -9,10 +9,12 @@ import torch
 from PIL import Image
 
 from internal.cameras.cameras import Camera, Cameras, CameraType
-from internal.dataparsers import DataParser, DataParserConfig, DataParserOutputs
+from internal.dataparsers import (DataParser, DataParserConfig,
+                                  DataParserOutputs)
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataset import Dataset
-from myimpl.utils.dataset_utils import ExtraDataProcessor, ExtraDataProcessorContainer
+from myimpl.utils.dataset_utils import (ExtraDataProcessor,
+                                        ExtraDataProcessorContainer)
 
 
 @dataclass
@@ -116,7 +118,9 @@ class ViewGraphDataparser(DataParser):
 
             if dataparser_outputs.train_set.extra_data[cam_id] is None:
                 dataparser_outputs.train_set.extra_data[cam_id] = {}
-            dataparser_outputs.train_set.extra_data[cam_id].update({"neighbor_cameras": NeighborCamera(cam_id, neighbors)})
+            dataparser_outputs.train_set.extra_data[cam_id].update(
+                {"neighbor_cameras": NeighborCamera(cam_id, neighbors)}
+            )
 
         if dataparser_outputs.train_set.extra_data_processor is None:
             dataparser_outputs.train_set.extra_data_processor = ExtraDataProcessorContainer() # fmt: skip

@@ -87,13 +87,16 @@ class GridGaussianModel(GaussianModel):
         pass
 
     def setup_grid(self, points: torch.Tensor):
-        voxel_size, grid_origin = GridGaussianUtils.build_grid(points, default_voxel_size=self.config.default_voxel_size)
+        voxel_size, grid_origin = GridGaussianUtils.build_grid(
+            points, default_voxel_size=self.config.default_voxel_size
+        )
         self.register_buffer("_voxel_size", voxel_size)
         self.register_buffer("_grid_origin", grid_origin)
 
     def setup_from_pcd(self, xyz, rgb, *args, **kwargs):
         points = torch.from_numpy(xyz).float()
         self.setup_grid(points)
+        self.register_buffer("_activate_sh_degree", torch.tensor(0, dtype=torch.int))
 
         fused_point_cloud = GridGaussianUtils.voxelize(points, self.voxel_size, self.xyz2grid, self.grid2xyz)
         property_dict = self.get_init_properties(fused_point_cloud=fused_point_cloud, mode="pcd")
@@ -107,6 +110,7 @@ class GridGaussianModel(GaussianModel):
     def setup_from_number(self, n, *args, **kwargs):
         self.register_buffer("_voxel_size", torch.tensor(0, dtype=torch.float))
         self.register_buffer("_grid_origin", torch.zeros((3,), dtype=torch.float))
+        self.register_buffer("_activate_sh_degree", torch.tensor(0, dtype=torch.int))
 
         property_dict = self.get_init_properties(n=n, mode="number")
         self.before_setup_set_properties_from_number(n, property_dict, *args, **kwargs)
@@ -114,19 +118,31 @@ class GridGaussianModel(GaussianModel):
             self.set_property(name, value)
 
     def setup_from_tensors(self, tensors, *args, **kwargs):
-        pass
+        """
+        setup from state_dict
+        """
+        assert all([n in tensors for n in self.get_buffer_names()])
+        for n in self.get_buffer_names():
+            self.register_buffer(n, tensors[n])
+
+        property_dict = self.get_init_properties(tensors=tensors, mode="tensors")
+        for name, value in property_dict.items():
+            self.set_property(name, value)
 
     def training_setup(self, module: "lightning.LightningModule"):
         basic_optimizers, basic_schedulers = self.training_setup_basic_properties(module=module)
         lod_optimizers, lod_schedulers = self.training_setup_lod_properties(module=module)
         extra_optimizers, extra_schedulers = self.training_setup_extra_properties(module=module)
-        return basic_optimizers + lod_optimizers + extra_optimizers, basic_schedulers + lod_schedulers + extra_schedulers
+        return (
+            basic_optimizers + lod_optimizers + extra_optimizers,
+            basic_schedulers + lod_schedulers + extra_schedulers,
+        )
 
     def get_init_properties(
         self,
         fused_point_cloud: Optional[torch.Tensor] = None,
         n: Optional[int] = None,
-        tensors: Optional[Tuple[torch.Tensor]] = None,
+        tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
         *args,
         **kwargs,
@@ -141,7 +157,7 @@ class GridGaussianModel(GaussianModel):
         self,
         fused_point_cloud: Optional[torch.Tensor] = None,
         n: Optional[int] = None,
-        tensors: Optional[Tuple[torch.Tensor]] = None,
+        tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
         *args,
         **kwargs,
@@ -152,7 +168,7 @@ class GridGaussianModel(GaussianModel):
 
             n_anchors, n_offsets = fused_point_cloud.shape[0], self.config.n_offsets
             anchors = fused_point_cloud
-            offsets = fused_point_cloud.new_zeros((n_anchors, n_offsets, 3))
+            offsets = anchors.new_zeros((n_anchors, n_offsets, 3))
             dist2 = torch.clamp_min(distCUDA2(fused_point_cloud.cuda()), 0.0000001).to(fused_point_cloud.device)
             scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 6)
         elif mode == "number":
@@ -161,7 +177,11 @@ class GridGaussianModel(GaussianModel):
             offsets = torch.zeros((n, self.config.n_offsets, 3)).float()
             scales = torch.zeros((n, 6)).float()
         elif mode == "tensors":
-            pass
+            assert tensors is not None and "means" in tensors
+            anchors = tensors["means"]
+            offsets = anchors.new_zeros((anchors.shape[0], self.config.n_offsets, 3))
+            dist2 = torch.clamp_min(distCUDA2(anchors.cuda()), 0.0000001).to(anchors.device)
+            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 6)
         else:
             raise ValueError(f"Unsupported mode {mode}")
 
@@ -180,7 +200,7 @@ class GridGaussianModel(GaussianModel):
         self,
         fused_point_cloud: Optional[torch.Tensor] = None,
         n: Optional[int] = None,
-        tensors: Optional[Tuple[torch.Tensor]] = None,
+        tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
         levels: Optional[torch.Tensor] = None,
         extra_levels: Optional[torch.Tensor] = None,
@@ -194,7 +214,7 @@ class GridGaussianModel(GaussianModel):
         self,
         fused_point_cloud: Optional[torch.Tensor] = None,
         n: Optional[int] = None,
-        tensors: Optional[Tuple[torch.Tensor]] = None,
+        tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
         *args,
         **kwargs,
@@ -249,10 +269,14 @@ class GridGaussianModel(GaussianModel):
         return [], []
 
     def grid2xyz(self, grids: torch.Tensor, voxel_size: float):
-        return GridGaussianUtils.grid_to_point(grids, voxel_size, grid_origin=self.grid_origin, padding=self.config.padding)
+        return GridGaussianUtils.grid_to_point(
+            grids, voxel_size, grid_origin=self.grid_origin, padding=self.config.padding
+        )
 
     def xyz2grid(self, points: torch.Tensor, voxel_size: float):
-        return GridGaussianUtils.point_to_grid(points, voxel_size, grid_origin=self.grid_origin, padding=self.config.padding)
+        return GridGaussianUtils.point_to_grid(
+            points, voxel_size, grid_origin=self.grid_origin, padding=self.config.padding
+        )
 
     def get_property_names(self):
         return self._names

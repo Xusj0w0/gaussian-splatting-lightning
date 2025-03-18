@@ -15,7 +15,7 @@ import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from utils.partitioning_utils import VastGSScene, VastGSSceneConfig
+from large_scene.VastGaussian.utils.partitioning_utils import VastGSScene, VastGSSceneConfig
 
 
 @dataclass

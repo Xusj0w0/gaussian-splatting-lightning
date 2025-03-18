@@ -257,7 +257,9 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         render_types: list = None,
         **kwargs,
     ):
-        xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask = self.prepare_primitives(pc, viewpoint_camera)
+        xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask = self.prepare_primitives(
+            pc, viewpoint_camera
+        )
 
         # fmt: off
         # +--------------------------------------------------+
@@ -445,7 +447,10 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         super().setup_web_viewer_tabs(viewer, server, tabs)
 
         # if isinstance(viewer.gaussian_model, LoDGridGaussianModel):
-        if getattr(viewer.gaussian_model, "get_levels", None) is not None and viewer.gaussian_model.get_levels.shape[0] > 0:
+        if (
+            getattr(viewer.gaussian_model, "get_levels", None) is not None
+            and viewer.gaussian_model.get_levels.shape[0] > 0
+        ):
             with tabs.add_tab("LoD"):
                 self._lod_options = LoDOptions(viewer, server)
 

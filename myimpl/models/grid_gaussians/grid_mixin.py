@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import lightning
 import torch
@@ -48,7 +48,9 @@ class ScaffoldGaussianMixin:
 
     tcnn: bool = False
 
-    extra_optimization: ScaffoldOptimizationConfigMixin = field(default_factory=lambda: ScaffoldOptimizationConfigMixin())
+    extra_optimization: ScaffoldOptimizationConfigMixin = field(
+        default_factory=lambda: ScaffoldOptimizationConfigMixin()
+    )
 
 
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
@@ -69,7 +71,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         self,
         fused_point_cloud: Optional[torch.Tensor] = None,
         n: Optional[int] = None,
-        tensors: Optional[Tuple[torch.Tensor]] = None,
+        tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
         *args,
         **kwargs,
@@ -83,7 +85,8 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             assert n is not None
             anchor_features = torch.zeros((n, self.config.feature_dim), dtype=torch.float)
         elif mode == "tensors":
-            pass
+            assert tensors is not None and "anchor_features" in tensors
+            anchor_features = tensors["anchor_features"]
         else:
             raise ValueError(f"Unsupported mode {mode}")
 

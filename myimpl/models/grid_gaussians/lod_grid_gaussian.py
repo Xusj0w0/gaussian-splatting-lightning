@@ -8,7 +8,9 @@ import torch.nn as nn
 
 from internal.cameras.cameras import Camera, Cameras
 from internal.utils.general_utils import inverse_sigmoid
-from myimpl.models.grid_gaussians.grid_gaussian import GridGaussian, GridGaussianModel, GridOptimizationConfig
+from myimpl.models.grid_gaussians.grid_gaussian import (GridGaussian,
+                                                        GridGaussianModel,
+                                                        GridOptimizationConfig)
 from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 
 
@@ -172,12 +174,20 @@ class LoDGridGaussianModel(GridGaussianModel):
             self.set_property(name, value)
 
     def setup_from_tensors(self, tensors, *args, **kwargs):
-        pass
+        assert all([n in tensors for n in self.get_buffer_names()])
+        for n in self.get_buffer_names():
+            self.register_buffer(n, tensors[n])
+
+        property_dict = self.get_init_properties(tensors=tensors, mode="tensors")
+        for name, value in property_dict.items():
+            self.set_property(name, value)
 
     def training_setup_lod_properties(self, module, *args, **kwargs):
         self._activate_level = self.max_level
         if self.config.optimization.progressive:
-            self._activate_level = np.searchsorted(self.coarse_intervals, module.trainer.global_step) + 1 + self.start_level
+            self._activate_level = (
+                np.searchsorted(self.coarse_intervals, module.trainer.global_step) + 1 + self.start_level
+            )
         module.on_train_batch_end_hooks.append(self.activate_level_update)
         return [], []
 
@@ -185,7 +195,7 @@ class LoDGridGaussianModel(GridGaussianModel):
         self,
         fused_point_cloud: Optional[torch.Tensor] = None,
         n: Optional[int] = None,
-        tensors: Optional[Tuple[torch.Tensor]] = None,
+        tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
         levels: Optional[torch.Tensor] = None,
         extra_levels: Optional[torch.Tensor] = None,
@@ -199,7 +209,9 @@ class LoDGridGaussianModel(GridGaussianModel):
             levels = torch.zeros((n,), dtype=torch.int)
             extra_levels = torch.zeros((n,), dtype=torch.float)
         elif mode == "tensors":
-            pass
+            assert tensors is not None and "levels" in tensors
+            levels = tensors["levels"]
+            extra_levels = torch.zeros((levels.shape[0],), dtype=torch.float)
         else:
             raise ValueError(f"Unsupported mode {mode}")
 

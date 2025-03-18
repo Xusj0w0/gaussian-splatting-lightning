@@ -163,6 +163,8 @@ class GaussianSplatting(LightningModule):
                     rgb=self.trainer.datamodule.point_cloud.rgb / 255.,
                     cameras=self.trainer.datamodule.dataparser_outputs.train_set.cameras,
                 )
+            elif self.hparams["initialize_from"].endswith((".pth", ".pt")):
+                self.gaussian_model.setup_from_tensors(torch.load(self.hparams["initialize_from"], map_location="cpu"))
             else:
                 self._initialize_gaussians_from_trained_model()
         else:

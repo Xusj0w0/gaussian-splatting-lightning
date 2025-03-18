@@ -7,15 +7,15 @@ data:
     init_args:
       down_sample_factor: 4
       split_mode: experiment
-      eval_image_select_mode: list
-      eval_list: datasets/MegaNeRF/residence/colmap/splits/val_images.txt
+      # eval_image_select_mode: list
+      # eval_list: datasets/MegaNeRF/residence/colmap/splits/val_images.txt
   train_max_num_images_to_cache: 256
 
 model:
   gaussian:
     class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
     init_args:
-      base_layer: 12
+      base_layer: 11
       optimization:
         offsets_lr_scheduler:
           init_args:
