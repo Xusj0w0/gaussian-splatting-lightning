@@ -17,6 +17,8 @@ def parse_args():
     parser.add_argument("yaml")
     parser.add_argument("--val-side", "--side", "--val-on", type=str, default="auto")
     parser.add_argument("--level", "-l", type=int, default=None)
+    parser.add_argument("--disable-tbc", action="store_true", default=False)
+    parser.add_argument("--down-sample", type=int, default=None)
     return parser.parse_args()
 
 
@@ -99,6 +101,7 @@ def main():
     if args.level is not None:
         config["names"] = config["names"][args.level:args.level + 1]
         level_name = "level_{}".format(args.level)
+        config["lod_distances"] = None
 
     if args.val_side == "auto":
         ckpt_name = config.get("ckpt_name", "")
@@ -127,14 +130,19 @@ def main():
     # setup renderer
     renderer = PartitionLoDRenderer(**config).instantiate()
     renderer.setup("validation")
-    renderer.synchronized = True
 
     if len(config["names"]) > 1:
         renderer.config.visibility_filter = True
-        renderer.gsplat_renderer.runtime_options.radius_clip = 1.5
-        renderer.gsplat_renderer.runtime_options.radius_clip_from = 1.5 * renderer.default_partition_size
+        # renderer.gsplat_renderer.runtime_options.radius_clip = 1.5
+        # renderer.gsplat_renderer.runtime_options.radius_clip_from = 1.5 * renderer.default_partition_size
         print("Automatically enable visibility filter and radius clipping")
         print(renderer.gsplat_renderer.runtime_options)
+
+    if args.disable_tbc:
+        print("Disable tile-based culling")
+        from internal.renderers.gsplat_v1_renderer import GSplatV1
+        renderer.gsplat_renderer.config.tile_based_culling = False
+        renderer.gsplat_renderer.isect_encode = GSplatV1.isect_encode_with_unused_opacities
 
     # load validation set
     # load a config to get the test set list
@@ -150,7 +158,7 @@ def main():
         scene_scale=training_config["scene_scale"],
         reorient=training_config["reorient"],
         appearance_groups=training_config["appearance_groups"],
-        down_sample_factor=training_config["down_sample_factor"],
+        down_sample_factor=training_config["down_sample_factor"] if args.down_sample is None else args.down_sample,
         down_sample_rounding_mode=training_config["down_sample_rounding_mode"],
 
         # CHANGED
@@ -177,7 +185,12 @@ def main():
         num_workers=2,
     )
 
-    output_dir = os.path.join(config["data"], "val-{}-{}{}".format(os.path.basename(args.yaml), level_name, "-{}".format(args.val_side) if args.val_side is not None else ""))
+    output_dir = os.path.join(config["data"], "val-{}-{}{}{}".format(
+        os.path.basename(args.yaml),
+        level_name,
+        "-ds_{}".format(args.down_sample) if args.down_sample is not None else "",
+        "-{}".format(args.val_side) if args.val_side is not None else ""),
+    )
 
     # image saver
     async_image_saver = AsyncImageSaver(is_rgb=True)
@@ -197,15 +210,19 @@ def main():
     finally:
         async_image_saver.stop()
 
-    print("Repeat rendering for evaluating FPS...")
+    renderer.synchronized = True
     cameras = [camera for camera, _, _ in dataloader]
+    n_val_cameras = len(cameras)
+    # n_repeating = max((1024 + n_val_cameras - 1) // n_val_cameras, 8)
+    n_repeating = 3
+    print("Repeat rendering validation set {} times for evaluating FPS...".format(n_repeating))
     bg_color = torch.zeros((3,), dtype=torch.float, device=cameras[0].device)
     n_gaussian_list = []
     time_list = []
     render_time_list = []
     render_time_with_lod_preprocess_list = []
     n_rendered_frames = 0
-    for _ in range(8):
+    for _ in range(n_repeating):
         for camera in cameras:
             predicts = renderer(
                 camera,
@@ -240,6 +257,7 @@ def main():
         metrics_writer.writerow(mean_row)
 
         average_n_gaussians = torch.mean(torch.tensor(n_gaussian_list, dtype=torch.float)).item()
+        peak_n_gaussians = torch.tensor(n_gaussian_list, dtype=torch.float).max().item()
         fps = n_rendered_frames / torch.sum(torch.tensor(time_list, dtype=torch.float))
         render_fps = n_rendered_frames / torch.sum(torch.tensor(render_time_list, dtype=torch.float))
         render_fps_with_lod_preprocess = n_rendered_frames / torch.sum(torch.tensor(render_time_with_lod_preprocess_list, dtype=torch.float))
@@ -247,9 +265,10 @@ def main():
         metrics_writer.writerow(["RenderFPS", "{}".format(render_fps)])
         metrics_writer.writerow(["RenderFPSwithLOD", "{}".format(render_fps_with_lod_preprocess)])
         metrics_writer.writerow(["AverageNGaussians", "{}".format(average_n_gaussians)])
+        metrics_writer.writerow(["PeakNGaussians", "{}".format(peak_n_gaussians)])
 
         print(mean_row)
-        print("FPS={}, RenderFPS={}, RenderFPSwithLOD={}, AverageNGaussians={}".format(fps, render_fps, render_fps_with_lod_preprocess, average_n_gaussians))
+        print("FPS={}, RenderFPS={}, RenderFPSwithLOD={}, (Average, Peak)NGaussians=({}, {})".format(fps, render_fps, render_fps_with_lod_preprocess, average_n_gaussians, peak_n_gaussians))
 
 
 main()

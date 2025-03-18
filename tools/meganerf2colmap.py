@@ -1,5 +1,5 @@
 # modified from utils/meganerf2colmap.py
-
+# fmt: off
 import argparse
 import json
 import os
@@ -65,21 +65,13 @@ def main():
             pass
 
     colmap_db_path = os.path.join(colmap_dir, "distorted", "colmap.db")
-    assert (
-        subprocess.call(
-            [
-                colmap_exe_path,
-                "feature_extractor",
-                "--database_path",
-                colmap_db_path,
-                "--image_path",
-                image_dir,
-                "--ImageReader.camera_model",
-                camera_model,
-            ]
-        )
-        == 0
-    )
+    assert subprocess.call([
+        colmap_exe_path,
+        "feature_extractor",
+        "--database_path", colmap_db_path,
+        "--image_path", image_dir,
+        "--ImageReader.camera_model", camera_model,
+    ]) == 0
 
     colmap_db = sqlite3.connect(colmap_db_path)
 
@@ -101,13 +93,10 @@ def main():
     def update_camera_params(camera_id: int, params: np.ndarray):
         cur = colmap_db.cursor()
         try:
-            cur.execute(
-                "UPDATE cameras SET params = ? WHERE camera_id = ?",
-                [
-                    array_to_blob(params),
-                    camera_id,
-                ],
-            )
+            cur.execute("UPDATE cameras SET params = ? WHERE camera_id = ?", [
+                array_to_blob(params),
+                camera_id,
+            ])
             colmap_db.commit()
         finally:
             cur.close()
@@ -126,28 +115,22 @@ def main():
     cameras = {}
     points = {}
 
-    c2w_transform = torch.tensor(
-        [
-            [0, -1, 0, 0],
-            [1, 0, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-        ],
-        dtype=torch.float,
-    ).T
-    RDF_TO_DRB_H = torch.tensor(
-        [
-            [0, 1, 0, 0],
-            [1, 0, 0, 0],
-            [0, 0, -1, 0],
-            [0, 0, 0, 1],
-        ],
-        dtype=torch.float,
-    )
+    c2w_transform = torch.tensor([
+        [0, -1, 0, 0],
+        [1, 0, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+    ], dtype=torch.float).T
+    RDF_TO_DRB_H = torch.tensor([
+        [0, 1, 0, 0],
+        [1, 0, 0, 0],
+        [0, 0, -1, 0],
+        [0, 0, 0, 1],
+    ], dtype=torch.float)
 
     image_infos = {}
     image_splits = {"train": [], "val": []}
-    for src_path, metadata_path, image_name, split in image_metadata_pairs:
+    for src_path, metadata_path, image_name, _ in image_metadata_pairs:
         metadata = torch.load(metadata_path, map_location="cpu")
         image_id, camera_id = select_image(image_name)
 
@@ -220,42 +203,24 @@ def main():
     colmap.write_cameras_binary(cameras, os.path.join(sparse_manually_model_dir, "cameras.bin"))
     colmap.write_points3D_binary(points, os.path.join(sparse_manually_model_dir, "points3D.bin"))
 
-    assert (
-        subprocess.call(
-            [
-                colmap_exe_path,
-                "exhaustive_matcher",
-                "--database_path",
-                colmap_db_path,
-            ]
-        )
-        == 0
-    )
+    assert subprocess.call([
+        colmap_exe_path,
+        "exhaustive_matcher",
+        "--database_path",
+        colmap_db_path,
+    ]) == 0
 
     sparse_dir_triangulated = os.path.join(colmap_dir, "distorted", "sparse_triangulated")
     if not os.path.exists(sparse_dir_triangulated):
         os.makedirs(sparse_dir_triangulated, exist_ok=True)
-        assert (
-            subprocess.call(
-                [
-                    colmap_exe_path,
-                    "point_triangulator",
-                    "--database_path",
-                    colmap_db_path,
-                    "--image_path",
-                    image_dir,
-                    "--input_path",
-                    sparse_manually_model_dir,
-                    "--output_path",
-                    sparse_dir_triangulated,
-                    "--Mapper.ba_use_gpu",
-                    "1",
-                    "--Mapper.ba_gpu_index",
-                    args.gpu_id,
-                ]
-            )
-            == 0
-        )
+        assert subprocess.call([
+            colmap_exe_path,
+            "point_triangulator",
+            "--database_path", colmap_db_path,
+            "--image_path", image_dir,
+            "--input_path", sparse_manually_model_dir,
+            "--output_path", sparse_dir_triangulated,
+        ]) == 0
 
     if args.refine:
         # use the intrinsics and extrinsics provided by MegaNeRF will produce a suboptimal result,
@@ -264,44 +229,24 @@ def main():
         sparse_dir = os.path.join(colmap_dir, "distorted", "sparse")
         if not os.path.exists(sparse_dir):
             os.makedirs(sparse_dir, exist_ok=True)
-            assert (
-                subprocess.call(
-                    [
-                        colmap_exe_path,
-                        "bundle_adjuster",
-                        "--input_path",
-                        sparse_dir_triangulated,
-                        "--output_path",
-                        sparse_dir,
-                        "--BundleAdjustment.use_gpu",
-                        "1",
-                        "--BundleAdjustment.gpu_index",
-                        args.gpu_id,
-                        "--BundleAdjustment.function_tolerance",
-                        "0.000001",
-                    ]
-                )
-                == 0
-            )
+            assert subprocess.call([
+                colmap_exe_path,
+                "bundle_adjuster",
+                "--input_path", sparse_dir_triangulated,
+                "--output_path", sparse_dir,
+                "--BundleAdjustment.function_tolerance", "0.000001",
+            ]) == 0
 
         dense_dir = os.path.join(colmap_dir, "undistorted")
         if not os.path.exists(dense_dir):
             os.makedirs(dense_dir, exist_ok=True)
-            assert (
-                subprocess.call(
-                    [
-                        colmap_exe_path,
-                        "image_undistorter",
-                        "--image_path",
-                        image_dir,
-                        "--input_path",
-                        sparse_dir,
-                        "--output_path",
-                        dense_dir,
-                    ]
-                )
-                == 0
-            )
+            assert subprocess.call([
+                colmap_exe_path,
+                "image_undistorter",
+                "--image_path", image_dir,
+                "--input_path", sparse_dir,
+                "--output_path", dense_dir,
+            ]) == 0
         if os.path.exists(os.path.join(dense_dir, "images")) and not os.path.exists(os.path.join(colmap_dir, "images")):
             os.rename(os.path.join(dense_dir, "images"), os.path.join(colmap_dir, "images"))
         if os.path.exists(os.path.join(dense_dir, "sparse")) and not os.path.exists(os.path.join(colmap_dir, "sparse")):
