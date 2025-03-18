@@ -1,3 +1,5 @@
+# modified from utils/train_partitions.py
+
 import argparse
 import csv
 import os

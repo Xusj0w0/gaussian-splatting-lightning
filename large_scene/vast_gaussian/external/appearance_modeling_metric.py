@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+
 from internal.metrics.metric import Metric, MetricImpl
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
 
@@ -35,4 +36,3 @@ class AppearanceModelingMetricsImpl(VanillaMetricsImpl):
             "rgb_diff": True,
             "ssim": True,
         }
-

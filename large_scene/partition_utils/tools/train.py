@@ -1,9 +1,11 @@
-import argparse
-from utils.partition_training_utils import ModifiedPartitionTraining, ModifiedPartitionTrainingConfig
+import jsonargparse
+
+from large_scene.partition_utils.utils.train.training_utils import (
+    ModifiedPartitionTraining, ModifiedPartitionTrainingConfig)
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = jsonargparse.ArgumentParser()
     ModifiedPartitionTrainingConfig.configure_argparser(parser)
     ModifiedPartitionTraining.start_with_configured_argparser(parser, config_cls=ModifiedPartitionTrainingConfig)
 

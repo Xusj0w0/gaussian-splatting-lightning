@@ -8,6 +8,9 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 import yaml
+from large_scene.
+from large_scene..partition_utils import (OctreeScene,
+                                                         OctreeSceneConfig)
 from matplotlib import pyplot as plt
 from tqdm.auto import tqdm
 
@@ -15,9 +18,8 @@ import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from large_scene.OctreePartition.partition_utils import OctreeScene, OctreeSceneConfig
-from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 from internal.utils.partitioning_utils import Partitioning
+from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 
 
 @dataclass
@@ -76,7 +78,9 @@ class GridPartitioning:
         self.scene = OctreeScene(scene_config=scene_config)
         self.output_path = self.config.output_path
         os.makedirs(osp.join(self.output_path, "partition_infos"), exist_ok=True)
-        yaml.safe_dump(asdict(self.config), open(osp.join(self.output_path, "partition_infos", "partition_config.yaml"), "w"))
+        yaml.safe_dump(
+            asdict(self.config), open(osp.join(self.output_path, "partition_infos", "partition_config.yaml"), "w")
+        )
 
     @staticmethod
     def load_manhattan_transformation(manhattan_path: str):
@@ -102,13 +106,17 @@ class GridPartitioning:
             track_lengths = []
 
             for p_id in range(num_points):
-                binary_point_line_properties = colmap_utils.read_next_bytes(fid, num_bytes=43, format_char_sequence="QdddBBBd")
+                binary_point_line_properties = colmap_utils.read_next_bytes(
+                    fid, num_bytes=43, format_char_sequence="QdddBBBd"
+                )
                 point3D_id = binary_point_line_properties[0]
                 xyz = torch.tensor(binary_point_line_properties[1:4])
                 rgb = torch.tensor(binary_point_line_properties[4:7])
                 error = torch.tensor(binary_point_line_properties[7])
                 track_length = colmap_utils.read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
-                _ = colmap_utils.read_next_bytes(fid, num_bytes=8 * track_length, format_char_sequence="ii" * track_length)
+                _ = colmap_utils.read_next_bytes(
+                    fid, num_bytes=8 * track_length, format_char_sequence="ii" * track_length
+                )
                 xyzs.append(xyz)
                 rgbs.append(rgb)
                 errors.append(error)
@@ -124,7 +132,9 @@ class GridPartitioning:
 
     def read_scene(self):
         dataparser_config = Colmap(split_mode="reconstruction", points_from="random")
-        dataparser: ColmapDataParser = dataparser_config.instantiate(path=self.dataset_path, output_path=os.getcwd(), global_rank=0)
+        dataparser: ColmapDataParser = dataparser_config.instantiate(
+            path=self.dataset_path, output_path=os.getcwd(), global_rank=0
+        )
         points3D_path = osp.join(dataparser.detect_sparse_model_dir(), "points3D.bin")
         dataparser_outputs = dataparser.get_outputs()
 
@@ -137,7 +147,9 @@ class GridPartitioning:
 
     def build_lod_grid(self, xyz, camera_centers: torch.Tensor):
         camera_infos = torch.cat([camera_centers, camera_centers.new_ones((camera_centers.shape[0], 1))], dim=-1)
-        self.standard_dist, self.max_level = GridGaussianUtils.get_levels_by_distances(xyz, camera_infos, fork=self.config.fork)
+        self.standard_dist, self.max_level = GridGaussianUtils.get_levels_by_distances(
+            xyz, camera_infos, fork=self.config.fork
+        )
         self.voxel_size, self.grid_origin = GridGaussianUtils.build_multi_level_grid(
             xyz,
             self.config.scene_bbox_enlarge_by_camera_bbox,
@@ -164,7 +176,7 @@ class GridPartitioning:
         camera_centers = image_set.cameras.camera_center
 
         reoriented_camera_centers: torch.Tensor = (
-            image_set.cameras.camera_center @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+            camera_centers @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
         )
         reoriented_xyz = xyz @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
         self.scene.camera_centers = reoriented_camera_centers[..., :2]
@@ -187,7 +199,9 @@ class GridPartitioning:
             "_visibility_threshold": self.visibility_thresh,
         }
         partition_state_dict = {}
-        for index, bbox in self.scene.partition_coordinates.get_bounding_boxes(enlarge=self.config.location_based_enlarge):
+        for index, bbox in self.scene.partition_coordinates.get_bounding_boxes(
+            enlarge=self.config.location_based_enlarge
+        ):
             partition_id_str = self.scene.partition_coordinates.get_str_id(index)
             mask = Partitioning.is_in_bounding_boxes(bbox, positions[..., :2])
             _anchors, _levels = xyz[mask], levels[mask]

@@ -2,111 +2,99 @@ import json
 import os
 import os.path as osp
 import pickle
-from argparse import ArgumentParser
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
 import torch
 import yaml
+from jsonargparse import ArgumentParser
 from matplotlib import pyplot as plt
+from partitioning_utils import VastGSScene, VastGSSceneConfig
 from tqdm.auto import tqdm
 
 import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from large_scene.VastGaussian.utils.partitioning_utils import VastGSScene, VastGSSceneConfig
 
 
 @dataclass
 class VastGSPartitiongConfig:
+    name: str
+    """project name, output dir is outputs/name"""
+
     dataset_path: str
-    output_path: str
-    manhattan_trans: str = None
-    partition_dim: List = None
+    """dataset path"""
+
+    manhattan_path: str = None
+    """manhattan transformation text file, containing 4x4 matrix"""
 
     min_track_length: int = 3
+    """ minimum track length for prefiltering point cloud """
+
     max_error: float = 2.0
-    scene_bbox_enlarge_by_camera_bbox: float = 0.2
-    location_based_enlarge: float = 0.2
-    visibility_based_partition_enlarge: float = 0.0
-    visibility_threshold: float = 0.25
+    """ maximum error for prefiltering point cloud """
 
-    @staticmethod
-    def configure_argparser(parser: ArgumentParser):
-        parser.add_argument(
-            "--dataset_path",
-            required=True,
-            type=str,
-            help="Path to dataset. Containing directories images, sparse, etc.",
-        )
-        parser.add_argument("--output_path", required=True, type=str, help="Partition info dir.")
-        parser.add_argument(
-            "--partition_dim",
-            required=True,
-            type=str,
-            help="Split number along x- and z-axis, like '2,4'",
-        )
-        parser.add_argument(
-            "--manhattan_trans", type=str, default="manhattan.txt", help="Relative path to dataset_path"
-        )
-        parser.add_argument("--min_track_length", type=int, default=3)
-        parser.add_argument("--max_error", type=float, default=2.0)
-        parser.add_argument("--scene_bbox_enlarge_by_camera_bbox", type=float, default=0.2)
-        parser.add_argument("--location_based_enlarge", type=float, default=0.2)
-        parser.add_argument("--visibility_based_partition_enlarge", type=float, default=0.0)
-        parser.add_argument("--visibility_threshold", type=float, default=0.25)
+    scene_config: VastGSSceneConfig = field(default_factory=lambda: VastGSSceneConfig())
 
-        return parser
+    @classmethod
+    def configure_argparser(cls, parser: ArgumentParser):
+        # fmt: off
+        _parser = ArgumentParser()
+        _parser.add_argument("-n", "--name", type=str, required=True, help="project name, output dir is outputs/name")
+        _parser.add_argument("-d", "--dataset_path", type=str, required=True, help="dataset path")
+        _parser.add_argument("--scene_config.partition_dim", type=list, required=True, help="partitioning dimension along x- and y-axis")
+        # fmt: on
+        parser.add_class_arguments(cls, nested_key=None)
+
+        action_to_replace = {action.dest: action for action in _parser._actions}
+        for i in range(len(parser._actions)):
+            dest = parser._actions[i].dest
+            if dest == "help":
+                continue
+            elif dest in action_to_replace:
+                parser._actions[i] = action_to_replace[dest]
 
     @classmethod
     def instantiate(cls, parser: ArgumentParser):
-        args = parser.parse_args()
-        partition_dim = [int(s) for s in args.partition_dim.split(",")]
-        if len(partition_dim) < 3:
-            partition_dim += [1]
-        assert len(partition_dim) == 3
-        args.partition_dim = partition_dim
-
-        seq = [1.0 if i == j else 0.0 for j in range(4) for i in range(4)]
-        if len(args.manhattan_trans) > 0:
-            manhattan_path = osp.join(args.dataset_path, args.manhattan_trans)
-            if osp.exists(manhattan_path):
-                try:
-                    with open(manhattan_path, "r") as f:
-                        trans_mat = " ".join([l.strip() for l in f.readlines()])
-                    seq = [float(s) for s in trans_mat.split()]
-                    assert len(seq) == 16, "Invalid manhattan transformation."
-                except:
-                    print("Parse manhattan transformation failed.")
-                    pass
-        args.manhattan_trans = ",".join([str(s) for s in seq])
-
-        return cls(**vars(args))
+        cfg = parser.instantiate_classes(parser.parse_args())
+        return cls(**vars(cfg))
 
 
 class VastGSPartitioning:
+    config: VastGSPartitiongConfig
+
     def __init__(self, config: VastGSPartitiongConfig):
         self.config = config
         self.dataset_path = config.dataset_path
-        self.manhattan_trans = self.load_manhattan_transformation(config.manhattan_trans)
-        scene_config = VastGSSceneConfig(
-            partition_dim=torch.tensor(self.config.partition_dim),
-            scene_bbox_enlarge_by_camera_bbox=self.config.scene_bbox_enlarge_by_camera_bbox,
-            location_based_enlarge=self.config.location_based_enlarge,
-            visibility_based_partition_enlarge=self.config.visibility_based_partition_enlarge,
-            visibility_threshold=self.config.visibility_threshold,
-        )
-        self.scene = VastGSScene(scene_config=scene_config)
-        self.output_path = self.config.output_path
+        self.manhattan_trans = self.load_manhattan_transformation(config.manhattan_path)
+        self.scene = VastGSScene(scene_config=self.config.scene_config)
+        self.output_path = osp.join("outputs", config.name)
         os.makedirs(osp.join(self.output_path, "partition_infos"), exist_ok=True)
-        yaml.safe_dump(
-            asdict(self.config), open(osp.join(self.output_path, "partition_infos", "partition_config.yaml"), "w")
-        )
 
-    @staticmethod
-    def load_manhattan_transformation(manhattan_str: str):
-        return torch.tensor([float(s) for s in manhattan_str.split(",")]).reshape(4, 4).float()
+    def load_manhattan_transformation(self, manhattan_file: str):
+        manhattan_mat = torch.eye(4).float()
+        if manhattan_file is None:
+            import glob
+
+            manhattan_file = glob.glob(osp.join(self.dataset_path, "**", "manhattan.txt"), recursive=True)
+        if len(manhattan_file) == 0:
+            return manhattan_mat
+        manhattan_file = manhattan_file[0]
+        if not osp.exists(manhattan_file):
+            return manhattan_mat
+
+        try:
+            with open(manhattan_file, "r") as fid:
+                manhattan_seq = []
+                for line in fid.readlines():
+                    manhattan_seq += map(float, line.strip().split())
+                assert len(manhattan_seq) == 16, "manhattan transformation should be 4x4 matrix"
+                manhattan_mat = torch.tensor(manhattan_seq).reshape(4, 4).float()
+        except:
+            pass
+
+        return manhattan_mat
 
     @staticmethod
     def load_points_from_bin(points3D_file_path: str) -> List[torch.Tensor]:
@@ -137,7 +125,7 @@ class VastGSPartitioning:
 
         return list(map(lambda x: torch.stack(x, dim=0), [xyzs, rgbs, errors, track_lengths]))
 
-    def read_scene(self):
+    def load_scene(self):
         dataparser_config = Colmap(split_mode="reconstruction", points_from="random")
         dataparser: ColmapDataParser = dataparser_config.instantiate(
             path=self.dataset_path, output_path=os.getcwd(), global_rank=0
@@ -186,7 +174,7 @@ class VastGSPartitioning:
         partition_dir = osp.join(self.output_path, "partition_infos")
         os.makedirs(partition_dir, exist_ok=True)
         self.scene.save(
-            self.output_path,
+            partition_dir,
             extra_data={
                 "up": torch.linalg.inv(self.manhattan_trans)[:3, 1],
                 "rotation_transform": self.manhattan_trans,
@@ -227,7 +215,7 @@ class VastGSPartitioning:
                             "fy": float(camera.fy),
                             "cx": camera.cx.item(),
                             "cy": camera.cy.item(),
-                            "time": camera.time.item() if camera.item is not None else None,
+                            "time": camera.time.item() if camera.time is not None else None,
                             "appearance_id": camera.appearance_id.item() if camera.appearance_id is not None else None,
                             "normalized_appearance_id": (
                                 camera.normalized_appearance_id.item()
@@ -240,7 +228,7 @@ class VastGSPartitioning:
                 json.dump(camera_list, f, indent=4, ensure_ascii=False)
 
     def partition(self):
-        image_set, (xyzs, rgbs) = self.read_scene()
+        image_set, (xyzs, rgbs) = self.load_scene()
         reoriented_camera_centers: torch.Tensor = (
             image_set.cameras.camera_center @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
         )
@@ -275,9 +263,14 @@ class VastGSPartitioning:
         self.save_partitioning_results(image_set)
 
     @classmethod
-    def start(cls, parser, config_cls=VastGSPartitiongConfig):
+    def start(cls, parser: ArgumentParser, config_cls=VastGSPartitiongConfig):
         config = config_cls.instantiate(parser)
         partitioning = cls(config)
+
+        # save yaml config
+        # when loading, configure_argparser, then `parser.parse_path('<yaml_path>')`
+        parser.save(parser.parse_args(), osp.join(partitioning.output_path, "partition_infos/config.yaml"))
+
         partitioning.partition()
 
 

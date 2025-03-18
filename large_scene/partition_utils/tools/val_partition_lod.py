@@ -9,7 +9,7 @@ import torch
 import csv
 from glob import glob
 from internal.dataparsers.colmap_dataparser import Colmap
-from utils.partition_lod_renderer import PartitionLoDRenderer
+from large_scene.partition_utils.utils.render.partition_lod_renderer import PartitionLoDRenderer
 from internal.dataset import Dataset, CacheDataLoader
 from tqdm import tqdm
 from utils.common import AsyncImageSaver
@@ -151,7 +151,7 @@ def main():
     dataparser_outputs = Colmap(
         image_dir=training_config["image_dir"],
         mask_dir=training_config["mask_dir"],
-        split_mode="reconstruction",
+        split_mode=training_config["split_mode"],
         eval_list=training_config["eval_list"],
         scene_scale=training_config["scene_scale"],
         reorient=training_config["reorient"],
@@ -161,7 +161,7 @@ def main():
 
         # CHANGED
         eval_image_select_mode="list",
-        points_from="sfm",
+        points_from="random",
     ).instantiate(
         path=full_config["data"]["path"],
         output_path=os.getcwd(),

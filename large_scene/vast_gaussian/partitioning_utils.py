@@ -3,12 +3,13 @@ import os
 import os.path as osp
 import pickle
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import matplotlib.patches as mpatches
 import numpy as np
 import torch
+from jsonargparse import ArgumentParser
 from matplotlib import pyplot as plt
 from scipy.spatial import ConvexHull
 from shapely.geometry import Polygon, box
@@ -30,26 +31,47 @@ class VastGSSceneConfig(SceneConfig):
     Specify some values that are fixed in VastGS.
     """
 
+    partition_dim: List[int] = field(default_factory=lambda: [])
+    """partition dimension along x- and y- axis. specify with --scene_config.partition_dim [2,4]"""
+
     origin: torch.Tensor = None
 
     partition_size: float = None
 
-    partition_dim: torch.Tensor = torch.tensor([2, 4, 1])  # [3]
-    """ block numbers along x-, y-, and z-axis. """
+    location_based_enlarge: float = 0.1
+    """ enlarge bounding box by `partition_size * location_based_enlarge`, used for location based camera assignment """
+
+    visibility_based_distance: float = 0.0
+    """ enlarge bounding box by `partition_size * visibility_based_distance`, used for visibility based camera assignment """
+
+    visibility_based_partition_enlarge: float = 0.0
+    """ enlarge bounding box by `partition_size * location_based_enlarge`, the points in this bounding box will be treated as inside partition """
+
+    visibility_threshold: float = 0.25
+
+    # visibility_based_distance_enlarge_on_no_location_based: float = 4.0
+    # """ distance = distance *  visibility_based_distance_enlarge_on_no_location_based """
+
+    # visibility_threshold_reduce_on_no_location_based: float = 4.0
+    # """ visibility_threshold = visibility_threshold / visibility_threshold_reduce_on_no_location_based """
+
+    convex_hull_based_visibility: bool = True
 
     scene_bbox_enlarge_by_camera_bbox: float = 0.2
     """ enlarge scene bounding box by camera bounding box. """
-
-    location_based_enlarge: float = 0.1
-    visibility_based_distance: float = 0.0
-    visibility_based_partition_enlarge: float = 0.0
-    visibility_threshold: float = 0.25
-    convex_hull_based_visibility: float = True
 
 
 @dataclass
 class VastGSScene(PartitionableScene):
     scene_config: VastGSSceneConfig
+
+    def __post_init__(self):
+        assert len(self.scene_config.partition_dim) in [2, 3], "Only 2D or 3D partition is supported."
+        if len(self.scene_config.partition_dim) == 2:
+            partition_dim = self.scene_config.partition_dim + [1]
+        else:
+            partition_dim = self.scene_config.partition_dim
+        self.partition_dim: torch.Tensor = torch.tensor(partition_dim)
 
     def get_scene_bounding_box(self):
         """
@@ -71,16 +93,16 @@ class VastGSScene(PartitionableScene):
         self.scene_config.origin = 0.5 * (scene_bbox.min + scene_bbox.max)
 
         size = scene_bbox.max - scene_bbox.min
-        size_per_partition = size / self.scene_config.partition_dim[:2]
+        size_per_partition = size / self.partition_dim[:2]
         self.scene_config.partition_size = size_per_partition.max().item()
 
-        size = self.scene_config.partition_size * self.scene_config.partition_dim[:2]
+        size = self.scene_config.partition_size * self.partition_dim[:2]
         scene_bbox = MinMaxBoundingBox(
             min=self.scene_config.origin - 0.5 * size, max=self.scene_config.origin + 0.5 * size
         )
         self.scene_bounding_box = SceneBoundingBox(
             bounding_box=scene_bbox,
-            n_partitions=self.scene_config.partition_dim[:2],
+            n_partitions=self.partition_dim[:2],
             origin_partition_offset=None,
         )
         return self.scene_bounding_box
@@ -94,7 +116,7 @@ class VastGSScene(PartitionableScene):
         """
         assert self.camera_centers is not None, "Camera centers are not available."
         num_cameras = len(self.camera_centers)
-        x_dim, y_dim, z_dim = self.scene_config.partition_dim.long().tolist()
+        x_dim, y_dim, z_dim = self.partition_dim.long().tolist()
 
         # 1. Divide cameras along x-axis
         # diff: VastGaussian uses floor, and merge remaining cameras into the last partition
@@ -132,7 +154,7 @@ class VastGSScene(PartitionableScene):
         Original implementation use camera position as boundary.
         We use the average of min-max range as boundary.
         """
-        x_dim, y_dim, z_dim = self.scene_config.partition_dim.long().tolist()
+        x_dim, y_dim, z_dim = self.partition_dim.long().tolist()
         camera_positions = deepcopy(self.camera_centers)
 
         # Calculate partition bbox by cameras in partition

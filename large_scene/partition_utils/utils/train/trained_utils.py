@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.utils.partitioning_utils import MinMaxBoundingBox
 from internal.utils.gaussian_model_loader import GaussianModelLoader
-from utils.partition_training_utils import ModifiedPartitionTraining, ModifiedPartitionTrainingConfig
+from .training_utils import ModifiedPartitionTraining, ModifiedPartitionTrainingConfig
 
 
 def get_trained_partitions(

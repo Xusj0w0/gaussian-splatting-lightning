@@ -10,7 +10,7 @@ import json
 import argparse
 import torch
 from tqdm.auto import tqdm
-from utils.partition_trained_utils import get_trained_partitions, split_partition_gaussians
+from ..utils.train.trained_utils import get_trained_partitions, split_partition_gaussians
 from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap
 from internal.models.vanilla_gaussian import VanillaGaussian
