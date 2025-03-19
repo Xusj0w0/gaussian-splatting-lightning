@@ -280,7 +280,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             eps2d=self.config.filter_2d_kernel_size,
             anti_aliased=self.config.anti_aliased,
             radius_clip=self.runtime_options.radius_clip,
-            radius_clip_from=self.runtime_options.radius_clip_from,
+            # radius_clip_from=self.runtime_options.radius_clip_from,
             camera_model=self.runtime_options.camera_model,
         )
         radii, means2d, depths, conics, compensations = projections

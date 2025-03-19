@@ -1,11 +1,13 @@
-import jsonargparse
+from jsonargparse import ArgumentParser, set_docstring_parse_options
 
 from large_scene.partition_utils.utils.train.training_utils import (
     ModifiedPartitionTraining, ModifiedPartitionTrainingConfig)
 
+set_docstring_parse_options(attribute_docstrings=True)
+
 
 def main():
-    parser = jsonargparse.ArgumentParser()
+    parser = ArgumentParser()
     ModifiedPartitionTrainingConfig.configure_argparser(parser)
     ModifiedPartitionTraining.start_with_configured_argparser(parser, config_cls=ModifiedPartitionTrainingConfig)
 

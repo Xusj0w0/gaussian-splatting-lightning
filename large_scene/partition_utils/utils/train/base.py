@@ -1,25 +1,24 @@
 # same as utils/train_partitions.py
-
+# fmt: off
+# isort: skip_file
 import concurrent.futures
+
+from typing import Union, Optional, Literal, List, Tuple, Dict, Any
 import os
-import selectors
-import subprocess
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
-
-import torch
 import yaml
+import torch
+import subprocess
+import selectors
+from dataclasses import dataclass, field
 from tqdm.auto import tqdm
-
+from concurrent.futures import ThreadPoolExecutor
 from internal.utils.partitioning_utils import PartitionCoordinates
-from utils.argparser_utils import parser_stoppable_args, split_stoppable_args
-from utils.auto_hyper_parameter import (auto_hyper_parameter,
-                                        get_default_scalable_params,
-                                        to_command_args)
-from utils.distibuted_tasks import configure_arg_parser_v2, get_task_list
+from utils.distibuted_tasks import get_task_list
+from utils.auto_hyper_parameter import auto_hyper_parameter, to_command_args, get_default_scalable_params
+from utils.argparser_utils import split_stoppable_args, parser_stoppable_args
+from utils.distibuted_tasks import configure_arg_parser_v2
 
 
 @dataclass
@@ -59,14 +58,15 @@ class PartitionTrainingConfig:
     def configure_argparser(parser, extra_epoches: int = 0):
         # TODO: replace with jsonargparse
         parser.add_argument("partition_dir")
-        parser.add_argument("--project", "-p", type=str, required=True, help="Project name")
-        parser.add_argument(
-            "--min-images", "-m", type=int, default=32, help="Ignore partitions with image number less than this value"
-        )
+        parser.add_argument("--project", "-p", type=str, required=True,
+                            help="Project name")
+        parser.add_argument("--min-images", "-m", type=int, default=32,
+                            help="Ignore partitions with image number less than this value")
         parser.add_argument("--config", "-c", type=str, nargs="*", default=None)
         parser.add_argument("--parts", default=None, nargs="*", action="extend")
         parser.add_argument("--extra-epoches", "-e", type=int, default=extra_epoches)
-        parser.add_argument("--scalable-config", type=str, default=None, help="Load scalable params from a yaml file")
+        parser.add_argument("--scalable-config", type=str, default=None,
+                            help="Load scalable params from a yaml file")
         parser.add_argument("--scale-base", type=int, default=300)
         parser.add_argument("--scalable-params", type=str, default=[], nargs="*", action="extend")
         parser.add_argument("--extra-epoch-scalable-params", type=str, default=[], nargs="*", action="extend")
@@ -84,7 +84,7 @@ class PartitionTrainingConfig:
     def parse_scalable_params(args):
         # parse scalable params
         scalable_params, extra_epoch_scalable_params = get_default_scalable_params(max_steps=args.max_steps)
-        if args.get("no_default_scalable", None) is None:
+        if args.no_default_scalable:
             scalable_params = {}
             extra_epoch_scalable_params = []
 
@@ -128,9 +128,7 @@ class PartitionTrainingConfig:
 
     @classmethod
     def instantiate_with_args(cls, args, training_args, srun_args):
-        scale_base, max_steps, scalable_params, extra_epoch_scalable_params, scale_param_mode = (
-            cls.parse_scalable_params(args)
-        )
+        scale_base, max_steps, scalable_params, extra_epoch_scalable_params, scale_param_mode = cls.parse_scalable_params(args)
 
         return cls(
             partition_dir=args.partition_dir,
@@ -165,9 +163,9 @@ class PartitionTrainingConfig:
 
 class PartitionTraining:
     def __init__(
-        self,
-        config: PartitionTrainingConfig,
-        name: str = "partitions.pt",
+            self,
+            config: PartitionTrainingConfig,
+            name: str = "partitions.pt",
     ):
         self.path = config.partition_dir
         self.config = config
@@ -191,13 +189,10 @@ class PartitionTraining:
 
         self.image_number_from = None
         if self.config.image_number_from is not None:
-            partition_data = torch.load(
-                os.path.join(
-                    self.config.image_number_from,
-                    name,
-                ),
-                map_location="cpu",
-            )
+            partition_data = torch.load(os.path.join(
+                self.config.image_number_from,
+                name,
+            ), map_location="cpu")
             self.image_number_from = (
                 PartitionCoordinates(**partition_data["partition_coordinates"]),
                 partition_data["location_based_assignments"],
@@ -252,13 +247,9 @@ class PartitionTraining:
     def get_overridable_partition_specific_args(self, partition_idx: int) -> list[str]:
         args = []
         if self.config.ff_densify:
-            density_controller = (
-                "internal.density_controllers.foreground_first_density_controller.ForegroundFirstDensityController"
-            )
+            density_controller = "internal.density_controllers.foreground_first_density_controller.ForegroundFirstDensityController"
             if self.config.t3dgs_densify:
-                density_controller = (
-                    "internal.density_controllers.taming_3dgs_density_ff_controller.Taming3DGSDensityFFController"
-                )
+                density_controller = "internal.density_controllers.taming_3dgs_density_ff_controller.Taming3DGSDensityFFController"
             args += [
                 "--model.density={}".format(density_controller),
                 "--model.density.partition={}".format(self.path),
@@ -294,46 +285,36 @@ class PartitionTraining:
         ).sum(-1)
 
     def get_trainable_partition_idx_list(
-        self,
-        min_images: int,
-        n_processes: int,
-        process_id: int,
+            self,
+            min_images: int,
+            n_processes: int,
+            process_id: int,
     ) -> list[int]:
         assigned_camera_numbers = self.get_assigned_camera_numbers()
         all_trainable_partition_indices = torch.ge(assigned_camera_numbers, min_images).nonzero().squeeze(-1).tolist()
-        return get_task_list(
-            n_processors=n_processes, current_processor_id=process_id, all_tasks=all_trainable_partition_indices
-        )
+        return get_task_list(n_processors=n_processes, current_processor_id=process_id, all_tasks=all_trainable_partition_indices)
 
     def get_partition_trained_step_filename(self, partition_idx: int):
         return "{}-trained".format(self.get_experiment_name(partition_idx))
 
     def get_partition_image_number(self, partition_idx: int) -> int:
         if self.image_number_from is None:
-            return (
-                torch.logical_or(
-                    self.scene["location_based_assignments"][partition_idx],
-                    self.scene["visibility_based_assignments"][partition_idx],
-                )
-                .sum(-1)
-                .item()
-            )
+            return torch.logical_or(
+                self.scene["location_based_assignments"][partition_idx],
+                self.scene["visibility_based_assignments"][partition_idx],
+            ).sum(-1).item()
 
-        return (
-            torch.logical_or(
-                self.image_number_from[1][partition_idx],
-                self.image_number_from[2][partition_idx],
-            )
-            .sum(-1)
-            .item()
-        )
+        return torch.logical_or(
+            self.image_number_from[1][partition_idx],
+            self.image_number_from[2][partition_idx],
+        ).sum(-1).item()
 
     def get_experiment_name(self, partition_idx: int) -> str:
         return "{}{}".format(self.get_partition_id_str(partition_idx), self.config.name_suffix)
 
     def train_a_partition(
-        self,
-        partition_idx: int,
+            self,
+            partition_idx: int,
     ):
         partition_image_number = self.get_partition_image_number(partition_idx)
         extra_epoches = self.config.extra_epoches
@@ -358,7 +339,8 @@ class PartitionTraining:
 
         # whether a trained partition
         partition_trained_step_file_path = os.path.join(
-            project_output_dir, self.get_partition_trained_step_filename(partition_idx)
+            project_output_dir,
+            self.get_partition_trained_step_filename(partition_idx)
         )
 
         try:
@@ -380,15 +362,11 @@ class PartitionTraining:
         # basic
         args = [
             "python",
-            "main.py",
-            "fit",
+            "main.py", "fit",
         ]
         # dataparser; finetune does not require setting `--data.parser`
         try:
-            args += [
-                "--data.parser",
-                self.get_default_dataparser_name(),
-            ]  # can be overridden by config file or the args later
+            args += ["--data.parser", self.get_default_dataparser_name()]  # can be overridden by config file or the args later
         except NotImplementedError:
             pass
 
@@ -414,7 +392,7 @@ class PartitionTraining:
             "--data.path={}".format(self.dataset_path),
             "--project={}".format(project_name),
             "--output={}".format(project_output_dir),
-            "--logger={}".format("tensorboard"),  # "--logger={}".format("wandb"),
+            "--logger={}".format("tensorboard"), # "--logger={}".format("wandb"),
         ]
 
         args += self.get_partition_specific_args(partition_idx)
@@ -422,16 +400,13 @@ class PartitionTraining:
         print_func = print
         run_func = subprocess.call
         if len(self.config.srun_args) > 0:
-
             def tqdm_write(i):
-                tqdm.write(
-                    "[{}] #{}({}): {}".format(
-                        time.strftime("%Y-%m-%d %H:%M:%S"),
-                        partition_idx,
-                        self.get_partition_id_str(partition_idx),
-                        i,
-                    )
-                )
+                tqdm.write("[{}] #{}({}): {}".format(
+                    time.strftime('%Y-%m-%d %H:%M:%S'),
+                    partition_idx,
+                    self.get_partition_id_str(partition_idx),
+                    i,
+                ))
 
             def run_with_tqdm_write(args):
                 return self.run_subprocess(args, tqdm_write)
@@ -440,15 +415,11 @@ class PartitionTraining:
             print_func = tqdm_write
 
             output_filename = os.path.join(self.srun_output_dir, "{}.txt".format(experiment_name))
-            args = (
-                [
-                    "srun",
-                    "--output={}".format(output_filename),
-                    "--job-name={}-{}".format(self.config.project_name, experiment_name),
-                ]
-                + self.config.srun_args
-                + args
-            )
+            args = [
+                "srun",
+                "--output={}".format(output_filename),
+                "--job-name={}-{}".format(self.config.project_name, experiment_name),
+            ] + self.config.srun_args + args
 
         ret_code = -1
         if dry_run:
@@ -468,7 +439,7 @@ class PartitionTraining:
         return partition_idx, ret_code
 
     def train_partitions(
-        self,
+            self,
     ):
         raw_trainable_partition_idx_list = self.get_trainable_partition_idx_list(
             min_images=self.config.min_images,
@@ -495,20 +466,17 @@ class PartitionTraining:
             total_trainable_partitions = len(trainable_partition_idx_list)
 
             with ThreadPoolExecutor(max_workers=total_trainable_partitions) as tpe:
-                futures = [
-                    tpe.submit(
-                        self.train_a_partition,
-                        i,
-                    )
-                    for i in trainable_partition_idx_list
-                ]
+                futures = [tpe.submit(
+                    self.train_a_partition,
+                    i,
+                ) for i in trainable_partition_idx_list]
                 finished_count = 0
                 with tqdm(
-                    concurrent.futures.as_completed(futures),
-                    total=total_trainable_partitions,
-                    miniters=1,
-                    mininterval=0,  # keep progress bar updating
-                    maxinterval=0,
+                        concurrent.futures.as_completed(futures),
+                        total=total_trainable_partitions,
+                        miniters=1,
+                        mininterval=0,  # keep progress bar updating
+                        maxinterval=0,
                 ) as t:
                     for future in t:
                         finished_count += 1
@@ -519,16 +487,14 @@ class PartitionTraining:
                         except:
                             traceback.print_exc()
                             continue
-                        tqdm.write(
-                            "[{}] #{}({}) exited with code {} | {}/{}".format(
-                                time.strftime("%Y-%m-%d %H:%M:%S"),
-                                finished_idx,
-                                self.get_partition_id_str(finished_idx),
-                                ret_code,
-                                finished_count,
-                                total_trainable_partitions,
-                            )
-                        )
+                        tqdm.write("[{}] #{}({}) exited with code {} | {}/{}".format(
+                            time.strftime('%Y-%m-%d %H:%M:%S'),
+                            finished_idx,
+                            self.get_partition_id_str(finished_idx),
+                            ret_code,
+                            finished_count,
+                            total_trainable_partitions,
+                        ))
 
     @classmethod
     def start_with_configured_argparser(cls, parser, config_cls=PartitionTrainingConfig):

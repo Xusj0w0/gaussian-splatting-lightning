@@ -39,6 +39,22 @@ class PartitionLoDRenderer(RendererConfig):
         if self.ckpt_name.endswith(".ckpt"):
             self.ckpt_name = self.ckpt_name[:self.ckpt_name.rfind(".")]
 
+        # change at runtime
+
+        level = os.environ.get("LOD_LEVEL", None)
+        if level is not None:
+            level = int(level)
+            self.names = self.names[level:level + 1]
+            self.lod_distances = []
+
+        lod_appearance_side = os.environ.get("LOD_SIDE", "")
+        if lod_appearance_side == "left":
+            self.ckpt_name = "preprocessed-retain_appearance-right_optimized"
+            print("Updated `ckpt_name` to {}".format(self.ckpt_name))
+        elif lod_appearance_side == "right":
+            self.ckpt_name = "preprocessed-retain_appearance-left_optimized"
+            print("Updated `ckpt_name` to {}".format(self.ckpt_name))
+
         return PartitionLoDRendererModule(self)
 
 
@@ -106,6 +122,7 @@ class PartitionLoDRendererModule(Renderer):
         lods_appearance_models = []
 
         for lod in tqdm(self.config.names):
+            tqdm.write(lod)
             models = []
             appearance_models = []
 
@@ -127,21 +144,24 @@ class PartitionLoDRendererModule(Renderer):
             loaded_partition_idx_list = []
             for partition_idx in tqdm(trainable_partition_idx_list, leave=False):
                 try:
-                    ckpt = torch.load(os.path.join(
+                    ckpt_file = os.path.join(
                         os.getcwd(),
                         "outputs",
                         lod,
                         "partitions",
                         partition_training.get_experiment_name(partition_idx),
                         "{}.ckpt".format(self.config.ckpt_name),
-                    ), map_location="cpu")
+                    )
+                    tqdm.write("  {}/{}".format(*ckpt_file.split(os.path.sep)[-2:]))
+                    ckpt = torch.load(ckpt_file, map_location="cpu")
                 except:
                     tqdm.write("[WARNING]Checkpoint '{}.ckpt' of partition {} of not found in {}".format(self.config.ckpt_name, partition_training.get_partition_id_str(partition_idx), lod))
                     continue
 
                 loaded_partition_idx_list.append(partition_idx)
                 gaussian_model = GaussianModelLoader.initialize_model_from_checkpoint(ckpt, device)
-                if gaussian_model.__class__.__name__ == "AppearanceFeatureGaussianModel":
+                from internal.models.appearance_feature_gaussian import AppearanceFeatureGaussianModel
+                if isinstance(gaussian_model, AppearanceFeatureGaussianModel):
                     renderer = GaussianModelLoader.initialize_renderer_from_checkpoint(ckpt, "validate", device)
                     appearance_models.append(renderer.model)
                     gaussian_model.shs_dc_backup = gaussian_model.get_shs_dc()
@@ -155,8 +175,27 @@ class PartitionLoDRendererModule(Renderer):
                     gaussian_model.shs_rest = torch.empty((gaussian_model.n_gaussians, 0, 3), device=gaussian_model.shs_dc.device)
                 gaussian_model.pre_activate_all_properties()
                 gaussian_model.freeze()
-                gaussian_model.to(device=device)
+
+                gaussian_model.opacity_comp = None
+                if hasattr(gaussian_model, "compute_3d_filter"):
+                    from internal.models.mip_splatting import MipSplattingUtils
+                    new_scales, opacity_comp = MipSplattingUtils.apply_3d_filter_on_scales(
+                        gaussian_model.get_3d_filter(),
+                        scales=gaussian_model.get_scales(),
+                        compute_opacity_compensation=gaussian_model.config.opacity_compensation,
+                    )
+                    gaussian_model.scales = gaussian_model.scale_inverse_activation(new_scales)
+                    gaussian_model.opacity_comp = opacity_comp
+
+                    new_names = list(gaussian_model.property_names)
+                    new_names.remove(gaussian_model._filter_3d_name)
+                    del gaussian_model.gaussians[gaussian_model._filter_3d_name]
+                    gaussian_model._names = tuple(new_names)
+
+                if self.config.partition_size is not None:
+                    gaussian_model.to(device="cpu")
                 models.append(gaussian_model)
+                torch.cuda.empty_cache()
 
             lods.append(models)
             lods_appearance_models.append(appearance_models)
@@ -174,9 +213,14 @@ class PartitionLoDRendererModule(Renderer):
 
         # get partition 3D bounding boxes
         partition_min_max_z = []
+        print(len(self.lods[0]))
+        print("self.partition_bounding_boxes.min.shape={}".format(self.partition_bounding_boxes.min.shape))
         for partition_model in self.lods[0]:
-            partition_z_value = partition_model.get_means() @ self.orientation_transform[:, -1:] + self.translation[-1]
-            partition_min_max_z.append(torch.stack([torch.quantile(partition_z_value, 0.005), torch.quantile(partition_z_value, 0.995)]))
+            partition_z_value = partition_model.get_means() @ self.orientation_transform[:, -1:]
+            partition_min_max_z.append(torch.stack([torch.quantile(partition_z_value, 0.005), torch.quantile(partition_z_value, 0.995)]) + torch.tensor([
+                -1e-3,
+                1e-3,
+            ], dtype=torch.float, device=self.orientation_transform.device))
         partition_min_max_z = torch.stack(partition_min_max_z)
         # print(partition_min_max_z)
         partition_full_2d_bounding_box = []
@@ -197,6 +241,8 @@ class PartitionLoDRendererModule(Renderer):
         partition_full_2d_bounding_box = torch.stack(partition_full_2d_bounding_box)  # [N_partitions, 4, 2]
         partition_min_max_z = partition_min_max_z[:, None, :].repeat(1, 4, 1)
         # from top to bottom
+        print(partition_full_2d_bounding_box.shape)
+        print(partition_min_max_z.shape)
         self.partition_full_3d_bounding_box = (torch.concat([
             torch.concat([partition_full_2d_bounding_box, partition_min_max_z[..., 1:2]], dim=-1),
             torch.concat([partition_full_2d_bounding_box, partition_min_max_z[..., 0:1]], dim=-1),
@@ -213,7 +259,6 @@ class PartitionLoDRendererModule(Renderer):
                 previous = i
 
             self.lod_thresholds = torch.tensor(self.config.lod_distances, dtype=torch.float, device=device) * self.default_partition_size
-            
 
         # initialize partition lod states
         self.n_partitions = len(self.lods[0])
@@ -324,6 +369,8 @@ class PartitionLoDRendererModule(Renderer):
                 gaussian_model.gaussians["shs"][:, 0] = gaussian_model.shs_dc_backup.squeeze(1) + shs_dc + 0.5 / C0
                 if appearance_model.config.with_opacity:
                     gaussian_model.gaussians["opacities"] = torch.clamp_max(gaussian_model.opacities_backup + predicts[..., 3:], max=1.)
+                    if gaussian_model.opacity_comp is not None:
+                        gaussian_model.gaussians["opacities"] *= gaussian_model.opacity_comp.unsqueeze(-1)
 
         self.previous_appearance_id = appearance_id
 

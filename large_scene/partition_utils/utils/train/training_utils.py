@@ -25,10 +25,13 @@ class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
 
     """
     partition_dir: str = field(init=False)
-    eval: bool = False
-    scale_param_mode: str = "none"
-    scalable_config: str = None
-    no_defualt_scalable: bool = False
+    eval: bool = True
+    no_default_scalable: bool = False
+    scalable_config: str = field(
+        default_factory=lambda: osp.normpath(
+            osp.join(__file__, "../..", "scalable_param_configs/default.yaml")
+        )
+    )
 
     def __post_init__(self):
         super().__post_init__()
@@ -38,39 +41,44 @@ class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
 
     @classmethod
     def configure_argparser(cls, parser: ArgumentParser, extra_epoches: int = 0):
-        _parser = ArgumentParser()
-        # _parser.add_argument("partition_dir")
-        _parser.add_argument("--project-name", "-p", type=str, required=True,
-                            help="Project name")
-        _parser.add_argument("--eval", action="store_true")
-        _parser.add_argument("--min-images", "-m", type=int, default=32,
-                            help="Ignore partitions with image number less than this value")
-        _parser.add_argument("--config-file", "-c", type=str, nargs="*", default=None)
-        _parser.add_argument("--partition_id_strs", default=None, nargs="*", action="extend")
-        _parser.add_argument("--extra-epoches", "-e", type=int, default=extra_epoches)
-        _parser.add_argument("--scalable-config", type=str, default=None,
-                            help="Load scalable params from a yaml file")
-        _parser.add_argument("--scale-base", type=int, default=300)
-        _parser.add_argument("--scalable-params", default=[], nargs="*", action="extend")
-        _parser.add_argument("--extra-epoch-scalable-params", default=[], nargs="*", action="extend")
-        _parser.add_argument("--scale-param-mode", default="none")
-        _parser.add_argument("--max-steps", default=30_000)
-        _parser.add_argument("--no-default-scalable", action="store_true")
-        _parser.add_argument("--dry-run", action="store_true")
-        _parser.add_argument("--name-suffix", default="")
-        _parser.add_argument("--ff-densify", action="store_true")
-        _parser.add_argument("--t3dgs-densify", action="store_true")
-        _parser.add_argument("--image-number-from", type=str)
-        configure_arg_parser_v2(_parser)
-
         parser.add_class_arguments(cls)
-        _actions = {action.dest: action for action in _parser._actions}
-        for i in range(len(parser._actions)):
-            dest = parser._actions[i].dest
-            if dest == "help":
-                continue
-            elif dest in _actions:
-                parser._actions[i] = _actions[dest]
+
+        # modify parser
+        container = ArgumentParser()
+        # _parser.add_argument("partition_dir")
+        container.add_argument("--project-name", "-p", type=str, required=True,
+                            help="Project name")
+        container.add_argument("--eval", action="store_true")
+        container.add_argument("--min-images", "-m", type=int, default=32,
+                            help="Ignore partitions with image number less than this value")
+        container.add_argument("--config-file", "-c", type=str, nargs="*", default=None)
+        container.add_argument("--partition_id_strs", default=None, nargs="*", action="extend")
+        container.add_argument("--extra-epoches", "-e", type=int, default=extra_epoches)
+        container.add_argument("--scalable-config", type=str, default=None,
+                            help="Load scalable params from a yaml file")
+        container.add_argument("--scale-base", type=int, default=300)
+        container.add_argument("--scalable-params", default=[], nargs="*", action="extend")
+        container.add_argument("--extra-epoch-scalable-params", default=[], nargs="*", action="extend")
+        container.add_argument("--scale-param-mode", type=str, default="linear")
+        container.add_argument("--max-steps", type=int, default=30_000)
+        container.add_argument("--no-default-scalable", action="store_true")
+        container.add_argument("--dry-run", action="store_true", default=False)
+        container.add_argument("--name-suffix", default="")
+        container.add_argument("--ff-densify", action="store_true", default=False)
+        container.add_argument("--t3dgs-densify", action="store_true", default=False)
+        container.add_argument("--image-number-from", type=str, default=None)
+        configure_arg_parser_v2(container)
+
+        def return_default(a, b):
+            return b if a is None else a
+
+        action_dict = {action.dest: action for action in container._actions if "help" not in action.dest}
+        for i, action in enumerate(parser._actions):
+            if action.dest in action_dict:
+                for property in ["option_strings", "_typehint", "required", "nargs", "choices", "const"]:
+                    setattr(parser._actions[i], property, getattr(action_dict[action.dest], property, None))
+                parser._actions[i].help = return_default(action_dict[action.dest].help, action.help)
+                parser._actions[i].default = return_default(action_dict[action.dest].default, action.default)
 
     @classmethod
     def instantiate_with_args(cls, parser: ArgumentParser, args, training_args, srun_args):

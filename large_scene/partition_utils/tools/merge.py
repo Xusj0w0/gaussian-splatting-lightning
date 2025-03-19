@@ -1,6 +1,6 @@
 # fmt: off
 # isort: skip_file
-# same as utils/merge_partition.py
+# same as utils/merge_partition_v2.py
 # modify trained_partition_utils, change import path of utils.fuse_appearance_embeddings_into_shs_dc
 
 import os

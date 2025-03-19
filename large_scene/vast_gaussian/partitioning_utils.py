@@ -32,11 +32,11 @@ class VastGSSceneConfig(SceneConfig):
     """
 
     partition_dim: List[int] = field(default_factory=lambda: [])
-    """partition dimension along x- and y- axis. specify with --scene_config.partition_dim [2,4]"""
+    """ partition dimension along x- and y- axis. specify with --scene_config.partition_dim 2 4 """
 
-    origin: torch.Tensor = None
+    origin: torch.Tensor = field(default=None, init=False)
 
-    partition_size: float = None
+    partition_size: float = field(default=None, init=False)
 
     location_based_enlarge: float = 0.1
     """ enlarge bounding box by `partition_size * location_based_enlarge`, used for location based camera assignment """
@@ -48,14 +48,10 @@ class VastGSSceneConfig(SceneConfig):
     """ enlarge bounding box by `partition_size * location_based_enlarge`, the points in this bounding box will be treated as inside partition """
 
     visibility_threshold: float = 0.25
-
-    # visibility_based_distance_enlarge_on_no_location_based: float = 4.0
-    # """ distance = distance *  visibility_based_distance_enlarge_on_no_location_based """
-
-    # visibility_threshold_reduce_on_no_location_based: float = 4.0
-    # """ visibility_threshold = visibility_threshold / visibility_threshold_reduce_on_no_location_based """
+    """ camera visibility threshold, used for visibility based camera assignment """
 
     convex_hull_based_visibility: bool = True
+    """ convex hull based visibility calculation """
 
     scene_bbox_enlarge_by_camera_bbox: float = 0.2
     """ enlarge scene bounding box by camera bounding box. """

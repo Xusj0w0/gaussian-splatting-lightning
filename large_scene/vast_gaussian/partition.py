@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 import yaml
-from jsonargparse import ArgumentParser
+from jsonargparse import ArgumentParser, set_docstring_parse_options
 from matplotlib import pyplot as plt
 from partitioning_utils import VastGSScene, VastGSSceneConfig
 from tqdm.auto import tqdm
@@ -17,17 +17,19 @@ from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
 
+set_docstring_parse_options(attribute_docstrings=True)
+
 
 @dataclass
 class VastGSPartitiongConfig:
     name: str
-    """project name, output dir is outputs/name"""
+    """ project name, output dir is `outputs/name` """
 
     dataset_path: str
-    """dataset path"""
+    """ path to dataset """
 
     manhattan_path: str = None
-    """manhattan transformation text file, containing 4x4 matrix"""
+    """ path to manhattan transformation text file, containing 4x4 matrix """
 
     min_track_length: int = 3
     """ minimum track length for prefiltering point cloud """
@@ -39,21 +41,25 @@ class VastGSPartitiongConfig:
 
     @classmethod
     def configure_argparser(cls, parser: ArgumentParser):
-        # fmt: off
-        _parser = ArgumentParser()
-        _parser.add_argument("-n", "--name", type=str, required=True, help="project name, output dir is outputs/name")
-        _parser.add_argument("-d", "--dataset_path", type=str, required=True, help="dataset path")
-        _parser.add_argument("--scene_config.partition_dim", type=list, required=True, help="partitioning dimension along x- and y-axis")
-        # fmt: on
         parser.add_class_arguments(cls, nested_key=None)
 
-        action_to_replace = {action.dest: action for action in _parser._actions}
-        for i in range(len(parser._actions)):
-            dest = parser._actions[i].dest
-            if dest == "help":
-                continue
-            elif dest in action_to_replace:
-                parser._actions[i] = action_to_replace[dest]
+        # modify parser
+        container = ArgumentParser()
+        container.add_argument("-n", "--name", type=str, required=True)
+        container.add_argument("-d", "--dataset_path", type=str, required=True)
+        container.add_argument("--scene_config.partition_dim", type=int, nargs="+", required=True, default=[])
+
+        def return_default(a, b):
+            return b if a is None else a
+
+        action_dict = {action.dest: action for action in container._actions if "help" not in action.dest}
+        for i, action in enumerate(parser._actions):
+            if action.dest in action_dict:
+                for property in ["option_strings", "_typehint", "required", "nargs", "choices", "const"]:
+                    setattr(parser._actions[i], property, getattr(action_dict[action.dest], property, None))
+                parser._actions[i].help = return_default(action_dict[action.dest].help, action.help)
+                parser._actions[i].default = return_default(action_dict[action.dest].default, action.default)
+
 
     @classmethod
     def instantiate(cls, parser: ArgumentParser):

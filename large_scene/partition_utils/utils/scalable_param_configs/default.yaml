@@ -1,0 +1,10 @@
+no_default: True
+mode: none
+max_steps: 60000
+scalable:
+  model.gaussian.optimization.means_lr_scheduler.init_args.max_steps: 60000
+  model.density.densification_interval: 200
+  model.density.opacity_reset_interval: 6000
+  model.density.densify_from_iter: 1000
+  model.density.densify_until_iter: 30000
+
