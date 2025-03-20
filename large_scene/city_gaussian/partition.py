@@ -60,7 +60,7 @@ class CityGSPartitiongConfig:
         argument_modifier = {
             "name": {"option_strings": ["-n", "--name"], "_typehint": str, "required": True},
             "dataset_path": {"option_strings": ["-d", "--dataset_path"], "_typehint": str, "required": True},
-            "scene_config.partition_dim": {"_typehint": int, "required": True, "nargs": "+", "default": [0.01, 0.01, 0.01]},
+            "scene_config.partition_dim": {"_typehint": int, "required": True, "nargs": "+", "default": []},
             "scene_config.radius_bounding_box_ratio": {"_typehint": float, "nargs": 6, "default": []},
         }
         # fmt: on

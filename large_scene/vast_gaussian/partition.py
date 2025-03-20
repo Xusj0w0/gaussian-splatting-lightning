@@ -48,7 +48,7 @@ class VastGSPartitiongConfig:
         argument_modifier = {
             "name": {"option_strings": ["-n", "--name"], "_typehint": str, "required": True},
             "dataset_path": {"option_strings": ["-d", "--dataset_path"], "_typehint": str, "required": True},
-            "scene_config.partition_dim": {"_typehint": int, "required": True, "nargs": "+", "default": [0.01, 0.01, 0.01]},
+            "scene_config.partition_dim": {"_typehint": int, "required": True, "nargs": "+", "default": []},
         }
         
         for i, action in enumerate(parser._actions):
