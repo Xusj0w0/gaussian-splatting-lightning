@@ -1,6 +1,7 @@
 import os
 import os.path as osp
 from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
 from jsonargparse import ArgumentParser
@@ -25,8 +26,54 @@ class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
 
     """
     partition_dir: str = field(init=False)
+
+    project_name: str
+    """Project name"""
+
+    min_images: int = 32
+    """Ignore partitions with image number less than this value"""
+
+    n_processes: int = 1
+
+    process_id: int = 1
+    """Start from 1"""
+
+    ignore_slurm: bool = True
+
+    dry_run: bool=False
+
+    extra_epoches: int = 0
+
+    name_suffix: str = ""
+
+    ff_densify: bool = False
+
+    t3dgs_densify: bool = False
+
+    max_steps: int = 30_000
+
+    scale_base: int = 300
+
+    scalable_params: Optional[Dict[str, int]] = field(default_factory=lambda: {})
+
+    extra_epoch_scalable_params: Optional[List[str]] = field(default_factory=lambda: [])
+
+    scale_param_mode: Literal["linear", "sqrt", "none"] = "none"
+
+    partition_id_strs: Optional[List[str]] = None
+
+    training_args: Union[Tuple, List] = None
+
+    config_file: Optional[List[str]] = None
+
+    image_number_from: Optional[str] = None
+
+    srun_args: List[str] = field(default_factory=lambda: [])
+
     eval: bool = True
+
     no_default_scalable: bool = False
+
     scalable_config: str = field(
         default_factory=lambda: osp.normpath(
             osp.join(__file__, "../..", "scalable_param_configs/default.yaml")
@@ -42,43 +89,7 @@ class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
     @classmethod
     def configure_argparser(cls, parser: ArgumentParser, extra_epoches: int = 0):
         parser.add_class_arguments(cls)
-
-        # modify parser
-        container = ArgumentParser()
-        # _parser.add_argument("partition_dir")
-        container.add_argument("--project-name", "-p", type=str, required=True,
-                            help="Project name")
-        container.add_argument("--eval", action="store_true")
-        container.add_argument("--min-images", "-m", type=int, default=32,
-                            help="Ignore partitions with image number less than this value")
-        container.add_argument("--config-file", "-c", type=str, nargs="*", default=None)
-        container.add_argument("--partition_id_strs", default=None, nargs="*", action="extend")
-        container.add_argument("--extra-epoches", "-e", type=int, default=extra_epoches)
-        container.add_argument("--scalable-config", type=str, default=None,
-                            help="Load scalable params from a yaml file")
-        container.add_argument("--scale-base", type=int, default=300)
-        container.add_argument("--scalable-params", default=[], nargs="*", action="extend")
-        container.add_argument("--extra-epoch-scalable-params", default=[], nargs="*", action="extend")
-        container.add_argument("--scale-param-mode", type=str, default="linear")
-        container.add_argument("--max-steps", type=int, default=30_000)
-        container.add_argument("--no-default-scalable", action="store_true")
-        container.add_argument("--dry-run", action="store_true", default=False)
-        container.add_argument("--name-suffix", default="")
-        container.add_argument("--ff-densify", action="store_true", default=False)
-        container.add_argument("--t3dgs-densify", action="store_true", default=False)
-        container.add_argument("--image-number-from", type=str, default=None)
-        configure_arg_parser_v2(container)
-
-        def return_default(a, b):
-            return b if a is None else a
-
-        action_dict = {action.dest: action for action in container._actions if "help" not in action.dest}
-        for i, action in enumerate(parser._actions):
-            if action.dest in action_dict:
-                for property in ["option_strings", "_typehint", "required", "nargs", "choices", "const"]:
-                    setattr(parser._actions[i], property, getattr(action_dict[action.dest], property, None))
-                parser._actions[i].help = return_default(action_dict[action.dest].help, action.help)
-                parser._actions[i].default = return_default(action_dict[action.dest].default, action.default)
+        
 
     @classmethod
     def instantiate_with_args(cls, parser: ArgumentParser, args, training_args, srun_args):

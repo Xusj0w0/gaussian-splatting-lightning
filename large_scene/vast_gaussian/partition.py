@@ -44,22 +44,19 @@ class VastGSPartitiongConfig:
         parser.add_class_arguments(cls, nested_key=None)
 
         # modify parser
-        container = ArgumentParser()
-        container.add_argument("-n", "--name", type=str, required=True)
-        container.add_argument("-d", "--dataset_path", type=str, required=True)
-        container.add_argument("--scene_config.partition_dim", type=int, nargs="+", required=True, default=[])
-
-        def return_default(a, b):
-            return b if a is None else a
-
-        action_dict = {action.dest: action for action in container._actions if "help" not in action.dest}
+        # fmt: off
+        argument_modifier = {
+            "name": {"option_strings": ["-n", "--name"], "_typehint": str, "required": True},
+            "dataset_path": {"option_strings": ["-d", "--dataset_path"], "_typehint": str, "required": True},
+            "scene_config.partition_dim": {"_typehint": int, "required": True, "nargs": "+", "default": [0.01, 0.01, 0.01]},
+        }
+        
         for i, action in enumerate(parser._actions):
-            if action.dest in action_dict:
-                for property in ["option_strings", "_typehint", "required", "nargs", "choices", "const"]:
-                    setattr(parser._actions[i], property, getattr(action_dict[action.dest], property, None))
-                parser._actions[i].help = return_default(action_dict[action.dest].help, action.help)
-                parser._actions[i].default = return_default(action_dict[action.dest].default, action.default)
-
+            if action.dest in argument_modifier:
+                for property in ["option_strings", "_typehint", "required", "nargs", "choices", "const", "default"]:
+                    p = argument_modifier[action.dest].get(property, None)
+                    if p is not None:
+                        setattr(parser._actions[i], property, p)
 
     @classmethod
     def instantiate(cls, parser: ArgumentParser):

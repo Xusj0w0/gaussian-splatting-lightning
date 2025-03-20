@@ -118,7 +118,10 @@ class CityGSScene(PartitionableScene):
         Input un-reoriented cameras, and manhattan_trans
         """
 
-        if isinstance(self.scene_config.radius_bounding_box_ratio, list) and len(self.scene_config.radius_bounding_box_ratio) == 6:
+        if (
+            isinstance(self.scene_config.radius_bounding_box_ratio, list)
+            and len(self.scene_config.radius_bounding_box_ratio) == 6
+        ):
             bounding_box = self.camera_center_based_bounding_box
             if getattr(self, "camera_center_based_bounding_box", None) is None:
                 bounding_box = self.get_bounding_box_by_camera_centers()
@@ -126,8 +129,12 @@ class CityGSScene(PartitionableScene):
                 min=torch.tensor(self.scene_config.radius_bounding_box_ratio[0::2]),
                 max=torch.tensor(self.scene_config.radius_bounding_box_ratio[1::2]),
             )
-            radius_bbox_min = (1.0 - radius_bbox_ratios.min) * bounding_box.min + radius_bbox_ratios.min * bounding_box.max
-            radius_bbox_max = (1.0 - radius_bbox_ratios.max) * bounding_box.min + radius_bbox_ratios.max * bounding_box.max
+            radius_bbox_min = (
+                1.0 - radius_bbox_ratios.min
+            ) * bounding_box.min + radius_bbox_ratios.min * bounding_box.max
+            radius_bbox_max = (
+                1.0 - radius_bbox_ratios.max
+            ) * bounding_box.min + radius_bbox_ratios.max * bounding_box.max
             self.radius_bounding_box = MinMaxBoundingBox(min=radius_bbox_min, max=radius_bbox_max)
         else:
             camera_centers: torch.Tensor = cameras.camera_center  # [N, 3]
@@ -153,7 +160,7 @@ class CityGSScene(PartitionableScene):
 
         # calculate origin, partition size and scene bounding box
         scene_bbox_min = torch.quantile(points, self.scene_config.outlier_ratio, dim=0)
-        scene_bbox_max = torch.quantile(points, 1. - self.scene_config.outlier_ratio, dim=0)
+        scene_bbox_max = torch.quantile(points, 1.0 - self.scene_config.outlier_ratio, dim=0)
 
         self.scene_config.origin = (scene_bbox_min + scene_bbox_max) / 2
         self.scene_config.partition_size = ((scene_bbox_max - scene_bbox_min) / self.partition_dim)[:2].max().item()

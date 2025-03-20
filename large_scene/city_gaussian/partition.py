@@ -56,23 +56,21 @@ class CityGSPartitiongConfig:
         parser.add_class_arguments(cls, nested_key=None)
 
         # modify parser
-        container = ArgumentParser()
-        container.add_argument("-n", "--name", type=str, required=True)
-        container.add_argument("-d", "--dataset_path", type=str, required=True)
-        container.add_argument("--scene_config.partition_dim", type=int, nargs="+", required=True, default=[])
-        container.add_argument("--scene_config.gaussian_bbox_enlarge_step", type=float, nargs=3, default=[0.01, 0.01, 0.01])
-        container.add_argument("--scene_config.radius_bounding_box_ratio", type=float, nargs=6, default=[])
+        # fmt: off
+        argument_modifier = {
+            "name": {"option_strings": ["-n", "--name"], "_typehint": str, "required": True},
+            "dataset_path": {"option_strings": ["-d", "--dataset_path"], "_typehint": str, "required": True},
+            "scene_config.partition_dim": {"_typehint": int, "required": True, "nargs": "+", "default": [0.01, 0.01, 0.01]},
+            "scene_config.radius_bounding_box_ratio": {"_typehint": float, "nargs": 6, "default": []},
+        }
+        # fmt: on
 
-        def return_default(a, b):
-            return b if a is None else a
-
-        action_dict = {action.dest: action for action in container._actions if "help" not in action.dest}
         for i, action in enumerate(parser._actions):
-            if action.dest in action_dict:
-                for property in ["option_strings", "_typehint", "required", "nargs", "choices", "const"]:
-                    setattr(parser._actions[i], property, getattr(action_dict[action.dest], property, None))
-                parser._actions[i].help = return_default(action_dict[action.dest].help, action.help)
-                parser._actions[i].default = return_default(action_dict[action.dest].default, action.default)
+            if action.dest in argument_modifier:
+                for property in ["option_strings", "_typehint", "required", "nargs", "choices", "const", "default"]:
+                    p = argument_modifier[action.dest].get(property, None)
+                    if p is not None:
+                        setattr(parser._actions[i], property, p)
 
     @classmethod
     def instantiate(cls, parser: ArgumentParser):
@@ -156,7 +154,9 @@ class CityGSPartitioning:
         dataset_path = data_params["path"]
         dataparser_config = data_params["parser"]
         dataparser_config.points_from = "random"
-        dataparser: ColmapDataParser = dataparser_config.instantiate(path=dataset_path, output_path=os.getcwd(), global_rank=0)
+        dataparser: ColmapDataParser = dataparser_config.instantiate(
+            path=dataset_path, output_path=os.getcwd(), global_rank=0
+        )
         dataparser_outputs = dataparser.get_outputs()
         return dataparser_outputs.train_set
 
@@ -202,7 +202,9 @@ class CityGSPartitioning:
             self.scene.is_camera_in_partition, self.scene.is_partitions_visible_to_cameras
         )
         written_idx_list = []
-        for partition_idx in tqdm(list(range(is_images_assigned_to_partitions.shape[0])), desc="Saving image lists and cameras"):
+        for partition_idx in tqdm(
+            list(range(is_images_assigned_to_partitions.shape[0])), desc="Saving image lists and cameras"
+        ):
             partition_image_indices = is_images_assigned_to_partitions[partition_idx].nonzero().squeeze(-1).tolist()
             partition_id_str = self.scene.partition_coordinates.get_str_id(partition_idx)
             if len(partition_image_indices) == 0:
@@ -233,7 +235,9 @@ class CityGSPartitioning:
                             "time": camera.time.item() if camera.time is not None else None,
                             "appearance_id": camera.appearance_id.item() if camera.appearance_id is not None else None,
                             "normalized_appearance_id": (
-                                camera.normalized_appearance_id.item() if camera.normalized_appearance_id is not None else None
+                                camera.normalized_appearance_id.item()
+                                if camera.normalized_appearance_id is not None
+                                else None
                             ),
                         }
                     )
@@ -247,7 +251,9 @@ class CityGSPartitioning:
         complete_properties = model.properties
         for partition_idx in tqdm(range(len(self.scene.partition_coordinates)), desc="Saving partition ply files"):
             partition_id_str = self.scene.partition_coordinates.get_str_id(partition_idx)
-            incomplete_properties = {k: v[self.scene.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()}
+            incomplete_properties = {
+                k: v[self.scene.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
+            }
             model.properties = incomplete_properties
             dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
             GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
@@ -299,7 +305,9 @@ class CityGSPartitioning:
         # else:
         #     self.scene.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
         #     pickle.dump(self.scene.camera_visibilities, open(camera_visibilities_path, "wb"))
-        self.scene.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
+        self.scene.calculate_camera_visibilities(
+            coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color
+        )
         # assign cameras based on visibilities
         self.scene.visibility_based_partition_assignment()
 
@@ -315,6 +323,11 @@ class CityGSPartitioning:
     def start(cls, parser, config_cls=CityGSPartitiongConfig):
         config = config_cls.instantiate(parser)
         partitioning = cls(config)
+
+        # save yaml config
+        # when loading, configure_argparser, then `parser.parse_path('<yaml_path>')`
+        parser.save(parser.parse_args(), osp.join(partitioning.output_path, "partition_infos/config.yaml"))
+
         partitioning.partition()
 
 

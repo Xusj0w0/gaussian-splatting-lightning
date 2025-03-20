@@ -6,6 +6,7 @@ tmp
 .env
 *.pkl
 
+experiments
 cuda_src
 **/test_scripts
 
