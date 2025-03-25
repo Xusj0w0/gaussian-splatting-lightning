@@ -1,6 +1,7 @@
 # fmt: off
 # isort: skip_file
 # same as utils/merge_partition_v2.py
+# replace split_partition_gaussians with classmethod of Partition
 # modify trained_partition_utils, change import path of utils.fuse_appearance_embeddings_into_shs_dc
 
 import os
@@ -10,7 +11,7 @@ import json
 import argparse
 import torch
 from tqdm.auto import tqdm
-from ..utils.train.trained_utils import get_trained_partitions, split_partition_gaussians
+from large_scene.utils.train.trained_utils import get_trained_partitions, split_partition_gaussians
 from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap
 from internal.models.vanilla_gaussian import VanillaGaussian
@@ -22,10 +23,11 @@ from internal.renderers.gsplat_mip_splatting_renderer_v2 import GSplatMipSplatti
 from internal.density_controllers.vanilla_density_controller import VanillaDensityController
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 
+from large_scene.utils.partition import Partition
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("partition_dir")
+    # parser.add_argument("partition_dir")
     parser.add_argument("--project", "-p", type=str, required=False,
                         help="Project Name")
     parser.add_argument("--output_path", "-o", type=str, required=False)
@@ -195,10 +197,14 @@ def main():
     torch.autograd.set_grad_enabled(False)
 
     partition_training, mergable_partitions, orientation_transformation = get_trained_partitions(
-        partition_dir=args.partition_dir,
+        # partition_dir=args.partition_dir,
         project_name=args.project,
         min_images=args.min_images,
     )
+
+    # instantiate partition obj
+    partition_config_path = os.path.join(partition_training.config.partition_dir, "config.yaml")
+    partitioning = Partition.load_partition(partition_config_path)
 
     image_name_to_camera = None
 
@@ -255,10 +261,10 @@ def main():
                     bounding_box,
                 ))
 
-            gaussian_model, _, _ = split_partition_gaussians(
+            gaussian_model, _, _ = partitioning.split_partition_gaussians(
                 ckpt,
                 bounding_box,
-                orientation_transformation,
+                partition_training.scene,
             )
 
             if isinstance(gaussian_model, AppearanceFeatureGaussianModel) and not args.retain_appearance:

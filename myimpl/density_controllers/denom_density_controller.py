@@ -1,16 +1,15 @@
 from typing import List
 
-import torch
 import lightning
+import torch
+
 from internal.density_controllers.vanilla_density_controller import (
-    VanillaDensityController,
-    VanillaDensityControllerImpl,
-)
+    VanillaDensityController, VanillaDensityControllerImpl)
 from internal.models.vanilla_gaussian import VanillaGaussianModel
 
 
 class DenomDensityController(VanillaDensityController):
-    success_ratio: float = 0.1
+    success_ratio: float = 0.5
 
     def instantiate(self, *args, **kwargs):
         return DenomDensityControllerImpl(self)
@@ -44,7 +43,7 @@ class DenomDensityControllerImpl(VanillaDensityControllerImpl):
         self.prune_denom[visibility_filter] += 1
 
     def _prune_points(self, mask, gaussian_model, optimizers):
-        prune_mask = self.prune_denom > self.config.success_ratio * self.config.densification_interval
+        prune_mask = self.prune_denom > self.config.success_ratio * self.config.opacity_reset_interval
         mask = torch.logical_and(mask, prune_mask)
         self.prune_denom[prune_mask] = 0
 

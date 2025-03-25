@@ -8,6 +8,13 @@ from plyfile import PlyData, PlyElement
 import internal.utils.colmap as colmap_utils
 
 
+def make_parser():
+    parser = argparse.ArgumentParser(description="Convert COLMAP point loud to PLY format")
+    parser.add_argument("input_path", type=str, help="Path to the input COLMAP sparse model")
+    parser.add_argument("--output_path", type=str, help="Path to the output PLY file", default=None)
+    return parser
+
+
 def save_plyfile(filename, points3D: Dict):
     xyz = np.stack([v.xyz for v in points3D.values()], axis=0)
     rgb = np.stack([v.rgb for v in points3D.values()], axis=0)
@@ -21,10 +28,7 @@ def save_plyfile(filename, points3D: Dict):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert COLMAP point loud to PLY format")
-    parser.add_argument("input_path", type=str, help="Path to the input COLMAP sparse model")
-    parser.add_argument("--output_path", type=str, help="Path to the output PLY file", default=None)
-    args = parser.parse_args()
+    args = make_parser().parse_args()
 
     # detect model type
     model_type = ".bin"

@@ -72,6 +72,8 @@ class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
 
     eval: bool = True
 
+    eval_step: int = 32
+
     no_default_scalable: bool = False
 
     scalable_config: str = field(
@@ -83,7 +85,7 @@ class ModifiedPartitionTrainingConfig(PartitionTrainingConfig):
     def __post_init__(self):
         super().__post_init__()
         self.partition_dir = osp.normpath(
-            osp.join(__file__, "../../../../..", "outputs", self.project_name, "partition_infos")
+            osp.join(__file__, "../../../..", "outputs", self.project_name, "partition_infos")
         )
 
     @classmethod
@@ -127,14 +129,25 @@ class ModifiedPartitionTraining(PartitionTraining):
         return "Colmap"
 
     def get_dataset_specific_args(self, partition_idx: int) -> list[str]:
-        return super().get_dataset_specific_args(partition_idx) + [
+        eval_list = os.path.join(self.dataset_path, "splits/val_images.txt")
+        if osp.exists(eval_list):
+            args = [
+                "--data.parser.eval_image_select_mode=list",
+                "--data.parser.eval_list={}".format(eval_list),
+            ]
+        else:
+            args = [
+                "--data.parser.eval_image_select_mode=step",
+                "--data.parser.eval_step={}".format(self.config.eval_step),
+            ]
+        args += [
             "--data.parser.image_list={}".format(
                 os.path.join(self.path, "partitions", self.get_partition_id_str(partition_idx), "image_list.txt")
             ),
-            "--data.parser.eval_image_select_mode=list",
-            "--data.parser.eval_list={}".format(os.path.join(self.dataset_path, "splits/val_images.txt")),
             "--data.parser.split_mode={}".format("experiment" if self.config.eval else "reconstruction"),
         ]
+        return super().get_dataset_specific_args(partition_idx) + args
+ 
 
     @property
     def project_output_dir(self) -> str:
@@ -144,6 +157,6 @@ class ModifiedPartitionTraining(PartitionTraining):
     @staticmethod
     def get_project_output_dir_by_name(project_name: str) -> str:
         return osp.join(
-            osp.normpath(osp.join(osp.dirname(__file__), "../../../..")),
+            osp.normpath(osp.join(osp.dirname(__file__), "../../..")),
             "outputs", project_name,
         )

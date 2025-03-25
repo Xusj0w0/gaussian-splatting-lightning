@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import os.path as osp
@@ -13,61 +14,149 @@ from jsonargparse import ArgumentParser
 from matplotlib import pyplot as plt
 from scipy.spatial import ConvexHull
 from shapely.geometry import Polygon, box
+from tqdm import tqdm
 
 import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
+from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
+from internal.dataparsers.dataparser import ImageSet
+from internal.utils.graphics_utils import BasicPointCloud
 from internal.utils.partitioning_utils import (MinMaxBoundingBox,
                                                MinMaxBoundingBoxes,
-                                               PartitionableScene,
                                                PartitionCoordinates,
-                                               Partitioning, SceneBoundingBox,
-                                               SceneConfig)
+                                               Partitioning, SceneBoundingBox)
+
+from ..base.partitionable_scene import (PartitionableScene,
+                                        PartitionableSceneConfig)
 
 
 @dataclass
-class VastGSSceneConfig(SceneConfig):
-    """
-    Deprecate origin, partition_size.
-    Specify some values that are fixed in VastGS.
-    """
+class VastSceneConfig(PartitionableSceneConfig):
+    min_track_length: int = 3
+    """ minimum track length for prefiltering point cloud """
 
-    partition_dim: List[int] = field(default_factory=lambda: [])
-    """ partition dimension along x- and y- axis. specify with --scene_config.partition_dim 2 4 """
+    max_error: float = 2.0
+    """ maximum error for prefiltering point cloud """
 
-    origin: torch.Tensor = field(default=None, init=False)
-
-    partition_size: float = field(default=None, init=False)
-
-    location_based_enlarge: float = 0.1
-    """ enlarge bounding box by `partition_size * location_based_enlarge`, used for location based camera assignment """
-
-    visibility_based_distance: float = 0.0
-    """ enlarge bounding box by `partition_size * visibility_based_distance`, used for visibility based camera assignment """
-
-    visibility_based_partition_enlarge: float = 0.0
-    """ enlarge bounding box by `partition_size * location_based_enlarge`, the points in this bounding box will be treated as inside partition """
-
-    visibility_threshold: float = 0.25
-    """ camera visibility threshold, used for visibility based camera assignment """
-
-    convex_hull_based_visibility: bool = True
-    """ convex hull based visibility calculation """
-
-    scene_bbox_enlarge_by_camera_bbox: float = 0.2
-    """ enlarge scene bounding box by camera bounding box. """
+    def instantiate(self):
+        return VastScene(self)
 
 
 @dataclass
-class VastGSScene(PartitionableScene):
-    scene_config: VastGSSceneConfig
+class VastScene(PartitionableScene):
 
-    def __post_init__(self):
-        assert len(self.scene_config.partition_dim) in [2, 3], "Only 2D or 3D partition is supported."
-        if len(self.scene_config.partition_dim) == 2:
-            partition_dim = self.scene_config.partition_dim + [1]
+    scene_config: VastSceneConfig = field(default_factory=lambda: VastSceneConfig())
+
+    def partition(self, dataset_path: str, output_path: str):
+        image_set, point_cloud = self.load_sparse_model(dataset_path)
+
+        reoriented_camera_centers: torch.Tensor = (
+            image_set.cameras.camera_center @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+        )
+        reoriented_points3D: torch.Tensor = (
+            point_cloud.points @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+        )
+        self.camera_centers = reoriented_camera_centers[..., :2]
+
+        # get bounding boxes
+        self.get_bounding_box_by_points(reoriented_points3D)
+        self.get_bounding_box_by_camera_centers()
+        # get scene bbox by enlarged camera centers
+        self.get_scene_bounding_box()
+        # extend to scene bbox
+        self.build_partition_coordinates()
+        # get bbox bounded by camera centers (for location based assignment and plot)
+        bounded_cordinates = self.bound_partition_coordinates_by_camera_bbox()
+        partition_coordinates = self.partition_coordinates
+
+        # assign cameras to partitions
+        # location based assignment, use bounded coordinates
+        self.partition_coordinates = bounded_cordinates
+        self.camera_center_based_partition_assignment()
+        # cube based visibility calculation, use orig coordinates
+        self.partition_coordinates = partition_coordinates
+        vertices = self.get_partition_cube_vertices(reoriented_points3D)
+        bbox_centers = vertices.reshape(-1, 8, 3).mean(dim=1)
+        inversed_manhattan_trans = torch.linalg.inv(self.manhattan_trans)
+        vertices_inverse_manhattan_transformed = (
+            vertices @ inversed_manhattan_trans[:3, :3].T + inversed_manhattan_trans[:3, -1]
+        )
+        self.calculate_camera_visibilities(
+            point_getter=self.get_point_getter_fn(
+                image_set.cameras,
+                vertices_inverse_manhattan_transformed,
+                bbox_centers,
+            ),
+            device=image_set.cameras.R.device,
+        )
+        self.visibility_based_partition_assignment()
+
+        # save plots, use bounded coordinates
+        self.partition_coordinates = bounded_cordinates
+        self.save_plots(
+            output_path,
+            BasicPointCloud(points=reoriented_points3D, colors=point_cloud.colors, normals=point_cloud.normals),
+        )
+        # save results, use orig coordinates
+        self.partition_coordinates = partition_coordinates
+        self.save_partitioning_results(output_path, image_set)
+
+    def get_extra_data(self):
+        extra_data = super().get_extra_data()
+        extra_data.update(
+            {"up": torch.linalg.inv(self.manhattan_trans)[:3, 1], "rotation_transform": self.manhattan_trans}
+        )
+        return extra_data
+
+    @staticmethod
+    def load_points_from_bin(points3D_file_path: str) -> List[torch.Tensor]:
+        with open(points3D_file_path, "rb") as fid:
+            num_points = colmap_utils.read_next_bytes(fid, 8, "Q")[0]
+
+            xyzs = []
+            rgbs = []
+            errors = []
+            track_lengths = []
+
+            for p_id in range(num_points):
+                binary_point_line_properties = colmap_utils.read_next_bytes(
+                    fid, num_bytes=43, format_char_sequence="QdddBBBd"
+                )
+                point3D_id = binary_point_line_properties[0]
+                xyz = torch.tensor(binary_point_line_properties[1:4])
+                rgb = torch.tensor(binary_point_line_properties[4:7])
+                error = torch.tensor(binary_point_line_properties[7])
+                track_length = colmap_utils.read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
+                _ = colmap_utils.read_next_bytes(
+                    fid, num_bytes=8 * track_length, format_char_sequence="ii" * track_length
+                )
+                xyzs.append(xyz)
+                rgbs.append(rgb)
+                errors.append(error)
+                track_lengths.append(torch.tensor(track_length))
+
+        return list(map(lambda x: torch.stack(x, dim=0), [xyzs, rgbs, errors, track_lengths]))
+
+    def load_sparse_model(self, dataset_path: str):
+        dataparser_config = Colmap(split_mode="reconstruction", points_from="random")
+        dataparser: ColmapDataParser = dataparser_config.instantiate(
+            path=dataset_path, output_path=os.getcwd(), global_rank=0
+        )
+        points3D_path = osp.join(dataparser.detect_sparse_model_dir(), "points3D.bin")
+        dataparser_outputs = dataparser.get_outputs()
+
+        image_set: ImageSet = dataparser_outputs.train_set
+
+        if not osp.exists(osp.join("tmp", "points3D.pkl")):
+            xyzs, rgbs, errors, track_lengths = self.load_points_from_bin(points3D_path)
+            pickle.dump([xyzs, rgbs, errors, track_lengths], open(osp.join("tmp", "points3D.pkl"), "wb"))
         else:
-            partition_dim = self.scene_config.partition_dim
-        self.partition_dim: torch.Tensor = torch.tensor(partition_dim)
+            xyzs, rgbs, errors, track_lengths = pickle.load(open(osp.join("tmp", "points3D.pkl"), "rb"))
+        mask = torch.logical_and(
+            torch.ge(track_lengths, self.scene_config.min_track_length),
+            torch.le(errors, self.scene_config.max_error),
+        )
+        return image_set, BasicPointCloud(points=xyzs[mask], colors=rgbs[mask], normals=None)
 
     def get_scene_bounding_box(self):
         """
@@ -218,26 +307,27 @@ class VastGSScene(PartitionableScene):
 
         return self.partition_coordinates
 
-    def save_plot(self, func: Callable, path: str, *args, **kwargs):
-        fig, ax = plt.subplots()
-        func(ax, *args, **kwargs)
-        plt.savefig(path, dpi=600)
-        plt.close(fig)
-
-    def set_plot_ax_limit(self, ax, plot_enlarge: float = 0.25):
-        enlarged_min = self.scene_bounding_box.bounding_box.min - plot_enlarge * (
-            self.scene_bounding_box.bounding_box.max - self.scene_bounding_box.bounding_box.min
+    def bound_partition_coordinates_by_camera_bbox(self):
+        bbox = self.camera_center_based_bounding_box
+        ids, xys, sizes = [], [], []
+        for id, xy, size in self.partition_coordinates:
+            ids.append(id)
+            _bbox = MinMaxBoundingBox(min=xy, max=xy + size)
+            bounded_box = MinMaxBoundingBox(
+                min=torch.maximum(_bbox.min, bbox.min),
+                max=torch.minimum(_bbox.max, bbox.max),
+            )
+            xys.append(bounded_box.min)
+            sizes.append(bounded_box.max - bounded_box.min)
+        return PartitionCoordinates(
+            id=torch.stack(ids, dim=0),
+            xy=torch.stack(xys, dim=0),
+            size=torch.stack(sizes, dim=0),
         )
-        enlarged_max = self.scene_bounding_box.bounding_box.max + plot_enlarge * (
-            self.scene_bounding_box.bounding_box.max - self.scene_bounding_box.bounding_box.min
-        )
-        ax.set_xlim([enlarged_min[0], enlarged_max[0]])
-        ax.set_ylim([enlarged_min[1], enlarged_max[1]])
 
     def visibility_based_partition_assignment(self):
         # [N_partitions, N_cameras]
         self.is_partitions_visible_to_cameras = self.camera_visibilities > self.scene_config.visibility_threshold
-        # self.is_partitions_visible_to_cameras = self.intersection_area.T > self.scene_config.visibility_threshold
         return self.is_partitions_visible_to_cameras
 
     def get_partition_cube_vertices(self, xyzs: torch.Tensor):

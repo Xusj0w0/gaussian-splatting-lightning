@@ -1,5 +1,0 @@
-model:
-  renderer: 
-    class_path: large_scene.VastGaussian.external.gsplat_appearance_renderer.GSplatAppearanceRenderer
-  metric:
-    class_path: large_scene.VastGaussian.external.appearance_modeling_metric.AppearanceModelingMetrics

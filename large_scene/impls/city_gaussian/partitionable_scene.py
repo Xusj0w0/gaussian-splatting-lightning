@@ -1,58 +1,49 @@
+import json
 import math
 import os
 import os.path as osp
 import pickle
+import shutil
+import subprocess
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import matplotlib.patches as mpatches
 import numpy as np
 import torch
+import yaml
+from jsonargparse import ArgumentParser
 from matplotlib import pyplot as plt
-from tqdm.auto import tqdm
+from shapely.geometry import Polygon, box
+from tqdm import tqdm
 
+import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
-from internal.dataset import CacheDataLoader
+from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
+from internal.dataparsers.dataparser import ImageSet
 from internal.models.vanilla_gaussian import (VanillaGaussian,
                                               VanillaGaussianModel)
 from internal.renderers.renderer import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
+from internal.utils.gaussian_model_loader import GaussianModelLoader
+from internal.utils.gaussian_utils import GaussianPlyUtils
+from internal.utils.graphics_utils import BasicPointCloud
 from internal.utils.partitioning_utils import (MinMaxBoundingBox,
                                                MinMaxBoundingBoxes,
-                                               PartitionableScene,
                                                PartitionCoordinates,
-                                               Partitioning, SceneBoundingBox,
-                                               SceneConfig)
+                                               Partitioning, SceneBoundingBox)
+from internal.utils.sh_utils import eval_sh
+
+from ..base.partitionable_scene import (PartitionableScene,
+                                        PartitionableSceneConfig)
 
 
 @dataclass
-class CityGSSceneConfig(SceneConfig):
-    """
-    Deprecate origin, partition_size.
-    Specify some values that are fixed in VastGS.
-    """
-
-    partition_dim: List[int] = field(default_factory=lambda: [])
-    """ partition dimension along x- and y- axis. specify with --scene_config.partition_dim 2 4 """
-
-    origin: torch.Tensor = field(default=None, init=False)
-
-    partition_size: float = field(default=None, init=False)
-
-    location_based_enlarge: float = 0.05
-    """ enlarge bounding box by `partition_size * location_based_enlarge`, used for location based camera assignment """
-
-    visibility_based_distance: float = 0.0
-    """ enlarge bounding box by `partition_size * visibility_based_distance`, used for visibility based camera assignment """
-
-    visibility_based_partition_enlarge: float = 0.0
-    """ enlarge bounding box by `partition_size * location_based_enlarge`, the points in this bounding box will be treated as inside partition """
-
-    visibility_threshold: float = 0.08
-    """ camera visibility threshold, visibility is defined as 1 - ssim(remove_part, full). 
-    If the rendered image after removing a certain area is similar to the rendering result that includes that area (1-ssim low), 
-    it indicates that the photo does not contain the removed area. """
+class CitySceneConfig(PartitionableSceneConfig):
+    down_sample_factor: int = 4
+    """ down sample factor when coarse training """
 
     num_gaussians_per_partition_threshold: int = 25_000
     """ keep enlarging bounding box if number of gaussians in it is lower than this threshold """
@@ -65,10 +56,15 @@ class CityGSSceneConfig(SceneConfig):
 
     outlier_ratio: float = 0.01
 
+    def instantiate(self):
+        return CityScene(self)
+
 
 @dataclass
-class CityGSScene(PartitionableScene):
-    scene_config: CityGSSceneConfig
+class CityScene(PartitionableScene):
+    scene_config: CitySceneConfig = field(default_factory=lambda: CitySceneConfig())
+
+    gaussian_bbox_enlarge_step: torch.Tensor = field(init=False)
 
     radius_bounding_box: MinMaxBoundingBox = field(default=None, init=False)
     """ Need to be saved for subsequent contraction calculation """
@@ -77,26 +73,163 @@ class CityGSScene(PartitionableScene):
     """ indicate each gaussian in which partition, [N_partition, N_gaussian] """
 
     def __post_init__(self):
-        assert len(self.scene_config.partition_dim) in [2, 3], "Only 2D or 3D partition is supported."
-        if len(self.scene_config.partition_dim) == 2:
-            partition_dim = self.scene_config.partition_dim + [1]
+        super().__post_init__()
+        self.gaussian_bbox_enlarge_step = torch.tensor(self.scene_config.gaussian_bbox_enlarge_step)
+
+    def partition(self, dataset_path: str, output_path: str):
+        device = torch.device("cuda")
+        # coarse training
+        coarse_model, renderer, image_set, ckpt = self.load_coarse_model(dataset_path, output_path, device)
+
+        # calculate points' xyz
+        camera_centers = image_set.cameras.camera_center
+        camera_centers_transformed = camera_centers @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+        means = coarse_model.get_xyz.detach().clone().cpu()
+        means_transformed = means @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+
+        # visualize gaussian point cloud, viewdirs is manhattan coordinates' z axis
+        dir_pp = -self.manhattan_trans[2, :3].repeat(means.shape[0], 1)
+        shs_view = coarse_model.get_features.transpose(1, 2).view(-1, 3, (coarse_model.max_sh_degree + 1) ** 2)
+        rgb = eval_sh(coarse_model.active_sh_degree, shs_view.detach().cpu(), dir_pp)
+        rgb = torch.clamp(rgb + 0.5, 0.0, 1.0).detach().cpu().numpy() * 255.0
+
+        # means and cameras are not transformed
+        self.camera_centers = camera_centers_transformed
+        self.get_scene_bounding_box(means_transformed, image_set.cameras)
+        self.build_partition_coordinates()
+
+        # location based assignment
+        self.camera_center_based_partition_assignment()
+
+        # partition gaussian model based on num gaussians
+        self.location_based_gaussian_assignment(means_transformed)
+
+        # render image with one of the partitions removed
+        bg_color = ckpt["hyper_parameters"]["background_color"]
+        self.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
+        # assign cameras based on visibilities
+        self.visibility_based_partition_assignment()
+
+        self.partition_coordinates = PartitionCoordinates(
+            id=self.partition_coordinates.id[:, :2],
+            xy=self.partition_coordinates.xy[:, :2],
+            size=self.partition_coordinates.size[:, :2],
+        )
+        self.save_plots(output_path, BasicPointCloud(points=means_transformed, colors=rgb, normals=None))
+        self.save_partitioning_results(output_path, image_set, coarse_model)
+
+    @classmethod
+    def is_in_partition(
+        cls, coordinates: torch.Tensor, partition_bbox: MinMaxBoundingBox, scene_infos: Dict, *args, **kwargs
+    ):
+        radius_bbox = MinMaxBoundingBox(**scene_infos["extra_data"]["radius_bounding_box"])
+        manhattan_trans = scene_infos["extra_data"]["rotation_transform"]
+        coordinates_trans = coordinates @ manhattan_trans[:3, :3].T + manhattan_trans[:3, -1]
+
+        coordinates_contracted = cls.contract(coordinates_trans, radius_bbox, torch.inf, *args, **kwargs)
+
+        is_ge_min = torch.prod(torch.ge(coordinates_contracted[..., :2], partition_bbox.min), dim=-1)
+        is_lt_max = torch.prod(torch.lt(coordinates_contracted[..., :2], partition_bbox.max), dim=-1)
+        is_in_partition = torch.logical_and(is_ge_min, is_lt_max)
+        return is_in_partition
+
+    def save_partitioning_results(self, output_path: str, image_set: ImageSet, model: VanillaGaussianModel):
+        super().save_partitioning_results(output_path, image_set)
+
+        partition_dir = osp.join(output_path, "partition_infos")
+        for d in os.listdir(osp.join(partition_dir, "partitions")):
+            fulldir = osp.join(partition_dir, "partitions", d)
+            if osp.isdir(fulldir):
+                shutil.copy(osp.join(output_path, "coarse", "cfg_args"), osp.join(fulldir, "cfg_args"))
+
+        complete_properties = model.properties
+        for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
+            partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
+            incomplete_properties = {
+                k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
+            }
+            model.properties = incomplete_properties
+            dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
+            GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
+        model.properties = complete_properties
+
+    def get_extra_data(self):
+        extra_data = super().get_extra_data()
+        extra_data.update(
+            {
+                "up": torch.linalg.inv(self.manhattan_trans)[:3, 1],
+                "rotation_transform": self.manhattan_trans,
+                "radius_bounding_box": asdict(self.radius_bounding_box),
+                "gaussians_in_partitions": self.gaussians_in_partitions,
+            }
+        )
+        return extra_data
+
+    def coarse_train(self, dataset_path: str, output_path: str):
+        args = [
+            "python",
+            "main.py",
+            "fit",
+            "--project=coarse",
+            "--output={}".format(output_path),
+            "-n=coarse",
+            "--data.path={}".format(dataset_path),
+            "--data.parser=Colmap",
+        ]
+        if next((Path(output_path) / "coarse").rglob("*.ckpt"), None) is not None:
+            ckpt_path = GaussianModelLoader.search_load_file(osp.join(output_path, "coarse"))
+            config_path = next((Path(output_path) / "coarse").rglob("config.yaml"), None)
+            if config_path is not None:
+                config = yaml.safe_load(open(str(config_path), "r"))
+                max_steps = config["trainer"]["max_steps"]
+                ckpt_step = int(osp.splitext(osp.basename(ckpt_path))[0].split("step=")[1])
+                if ckpt_step >= max_steps:  # training finished
+                    return
+            args += [
+                "--config={}".format(str(config_path)) if config_path is not None else "",
+                "--ckpt_path={}".format(ckpt_path),
+            ]
         else:
-            partition_dim = self.scene_config.partition_dim
-        self.partition_dim: torch.Tensor = torch.tensor(partition_dim)
-        self.gaussian_bbox_enlarge_step: torch.Tensor = torch.tensor(self.scene_config.gaussian_bbox_enlarge_step)
+            args += [
+                "--data.parser.down_sample_factor={}".format(self.scene_config.down_sample_factor),
+                "--data.parser.split_mode=experiment",
+                "--data.parser.eval_image_select_mode=list",
+                "--data.parser.eval_list={}".format(osp.join(dataset_path, "splits/val_images.txt")),
+                "--data.async_caching=true",
+                "--data.train_max_num_images_to_cache=256",
+                "--logger=tensorboard",
+            ]
+        print(" ".join(args))
+        subprocess.run(args)
+
+    def load_coarse_model(
+        self, dataset_path: str, output_path: str, device: torch.device
+    ) -> Tuple[VanillaGaussianModel, Renderer, ImageSet, Dict[str, Any]]:
+        self.coarse_train(dataset_path, output_path)
+
+        # load coarse model and render
+        ckpt_path = GaussianModelLoader.search_load_file(osp.join(output_path, "coarse"))
+        coarse_model, renderer, ckpt = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
+            ckpt_path, device, pre_activate=False
+        )
+        # load images and loader
+        image_set: ImageSet = self.load_imageset(ckpt["datamodule_hyper_parameters"])
+        return coarse_model, renderer, image_set, ckpt
+
+    def load_imageset(self, data_params: Dict[str, Any]):
+        dataset_path = data_params["path"]
+        dataparser_config = data_params["parser"]
+        dataparser_config.points_from = "random"
+        dataparser: ColmapDataParser = dataparser_config.instantiate(
+            path=dataset_path, output_path=os.getcwd(), global_rank=0
+        )
+        dataparser_outputs = dataparser.get_outputs()
+        return dataparser_outputs.train_set
 
     def plot_scene_bounding_box(self, ax):
-        ax.set_aspect("equal", adjustable="box")
+        super().plot_scene_bounding_box(ax)
+
         # fmt: off
-        ax.scatter(self.camera_centers[:, 0], self.camera_centers[:, 1], s=0.2)
-        ax.add_artist(mpatches.Rectangle(
-            self.scene_bounding_box.bounding_box.min.tolist(),
-            self.scene_bounding_box.bounding_box.max[0] - self.scene_bounding_box.bounding_box.min[0],
-            self.scene_bounding_box.bounding_box.max[1] - self.scene_bounding_box.bounding_box.min[1],
-            fill=False,
-            color="green",
-            label="scene_bbox",
-        ))
         ax.add_artist(mpatches.Rectangle(
             self.radius_bounding_box.min.tolist(),
             self.radius_bounding_box.max[0] - self.radius_bounding_box.min[0],
@@ -106,18 +239,8 @@ class CityGSScene(PartitionableScene):
             label="radius_bbox",
         ))
         # fmt: on
-        self.set_plot_ax_limit(ax)
 
-    def get_scene_bounding_box(
-        self,
-        points: torch.Tensor,
-        cameras: Cameras,
-        manhattan_trans: Optional[torch.Tensor] = None,
-    ):
-        """
-        Input un-reoriented cameras, and manhattan_trans
-        """
-
+    def get_scene_bounding_box(self, points: torch.Tensor, cameras: Cameras):
         if (
             isinstance(self.scene_config.radius_bounding_box_ratio, list)
             and len(self.scene_config.radius_bounding_box_ratio) == 6
@@ -144,9 +267,9 @@ class CityGSScene(PartitionableScene):
             A, b = MtMs.mean(dim=0), torch.bmm(MtMs, camera_centers.unsqueeze(-1)).squeeze(-1).mean(dim=0)
             # solve Ax=b
             focus_point = torch.linalg.inv(A) @ b  # [3]
-            focus_point_transformed = manhattan_trans[:3, :3] @ focus_point + manhattan_trans[:3, -1]
+            focus_point_transformed = self.manhattan_trans[:3, :3] @ focus_point + self.manhattan_trans[:3, -1]
 
-            camera_centers_transformed = camera_centers @ manhattan_trans[:3, :3].T + manhattan_trans[:3, -1]
+            camera_centers_transformed = camera_centers @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
             camera_centers_centered = camera_centers_transformed - focus_point_transformed
             radius = torch.median(torch.abs(camera_centers_centered), dim=0).values
             if radius.min() / radius.max() < 0.02:
@@ -172,14 +295,11 @@ class CityGSScene(PartitionableScene):
 
         return self.scene_bounding_box
 
-    def bound_coordinates_by_scene_bbox(self, coordinates):
-        coordinates = torch.maximum(coordinates, self.scene_bounding_box.bounding_box.min)
-        coordinates = torch.minimum(coordinates, self.scene_bounding_box.bounding_box.max)
-        return coordinates
-
+    @classmethod
     def contract(
-        self,
+        cls,
         points: torch.Tensor,
+        radius_bbox: MinMaxBoundingBox,
         ord: float = 2,
         eps: float = 1e-6,
         inversed: bool = False,
@@ -194,13 +314,13 @@ class CityGSScene(PartitionableScene):
             scale[between_1_and_2] = 1.0 / (norm[between_1_and_2] * (2 - norm[between_1_and_2]))
             points_uncontracted = points * scale.unsqueeze(-1)
             points_unnormalized = (
-                (points_uncontracted + 1.0) / 2.0 * (self.radius_bounding_box.max - self.radius_bounding_box.min)
-            ) + self.radius_bounding_box.min
+                (points_uncontracted + 1.0) / 2.0 * (radius_bbox.max - radius_bbox.min)
+            ) + radius_bbox.min
             points_unnormalized[equal_to_2] = torch.where(is_positive, torch.inf, -torch.inf)
             return points_unnormalized
         else:
             points_normalized = (
-                (points - self.radius_bounding_box.min) / (self.radius_bounding_box.max - self.radius_bounding_box.min)
+                (points - radius_bbox.min) / (radius_bbox.max - radius_bbox.min)
             ) * 2 - 1  # normalize points in radius to [-1, 1]
             norm: torch.Tensor = torch.linalg.norm(points_normalized, ord=ord, dim=-1)
             mask = norm > 1.0
@@ -226,7 +346,7 @@ class CityGSScene(PartitionableScene):
         """
         input points are transformed. enlarge in contracted coordinates.
         """
-        points_contracted = self.contract(points, ord=torch.inf)
+        points_contracted = self.contract(points, self.radius_bounding_box, ord=torch.inf)
 
         bboxes = self.partition_coordinates.get_bounding_boxes()
         # enlarged_min, enlarged_max = [], []
@@ -257,17 +377,9 @@ class CityGSScene(PartitionableScene):
         )
         self.is_camera_in_partition = Partitioning.is_in_bounding_boxes(
             bounding_boxes=MinMaxBoundingBoxes(min=bounding_boxes.min, max=bounding_boxes.max),
-            coordinates=self.contract(self.camera_centers, ord=torch.inf),
+            coordinates=self.contract(self.camera_centers, self.radius_bounding_box, ord=torch.inf),
         )
         return self.is_camera_in_partition
-
-    @staticmethod
-    def is_in_partition(coordinates: torch.Tensor, bbox: MinMaxBoundingBox):
-        xy_min, xy_max = bbox.min, bbox.max
-        is_gt_min = torch.prod(torch.ge(coordinates, xy_min), dim=-1)  # [N_coordinates]
-        is_le_max = torch.prod(torch.le(coordinates, xy_max), dim=-1)  # [N_coordinates]
-        is_in_partition = is_gt_min * is_le_max != 0
-        return is_in_partition
 
     def calculate_camera_visibilities(
         self,
@@ -324,9 +436,3 @@ class CityGSScene(PartitionableScene):
     def visibility_based_partition_assignment(self):
         self.is_partitions_visible_to_cameras = self.camera_visibilities > self.scene_config.visibility_threshold
         return self.is_partitions_visible_to_cameras
-
-    def save_plot(self, func: Callable, path: str, *args, **kwargs):
-        fig, ax = plt.subplots()
-        func(ax, *args, **kwargs)
-        plt.savefig(path, dpi=600)
-        plt.close(fig)
