@@ -1,14 +1,15 @@
 data:
-  path: datasets/MegaNeRF/residence/colmap
+  path: datasets/MatrixCity/small_city/aerial/colmap
   parser:
-    class_path: internal.dataparsers.colmap_dataparser.Colmap
+    class_path: internal.dataparsers.Colmap
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
-      eval_list: datasets/MegaNeRF/residence/colmap/splits/val_images.txt
-      down_sample_factor: 4
+      eval_list: datasets/MatrixCity/small_city/aerial/colmap/splits/val_images.txt
+      down_sample_factor: 1
   train_max_num_images_to_cache: 256
-
+  num_workers: 2
+  async_caching: true
 model:
   gaussian:
     init_args:
@@ -17,5 +18,3 @@ model:
         means_lr_scheduler:
           init_args:
             lr_final: 0.00000064
-        scales_lr: 0.004
-  

@@ -66,12 +66,12 @@ class VastScene(PartitionableScene):
         # extend to scene bbox
         self.build_partition_coordinates()
         # get bbox bounded by camera centers (for location based assignment and plot)
-        bounded_cordinates = self.bound_partition_coordinates_by_camera_bbox()
+        bounded_coordinates = self.bound_partition_coordinates_by_camera_bbox()
         partition_coordinates = self.partition_coordinates
 
         # assign cameras to partitions
         # location based assignment, use bounded coordinates
-        self.partition_coordinates = bounded_cordinates
+        self.partition_coordinates = bounded_coordinates
         self.camera_center_based_partition_assignment()
         # cube based visibility calculation, use orig coordinates
         self.partition_coordinates = partition_coordinates
@@ -92,7 +92,7 @@ class VastScene(PartitionableScene):
         self.visibility_based_partition_assignment()
 
         # save plots, use bounded coordinates
-        self.partition_coordinates = bounded_cordinates
+        self.partition_coordinates = bounded_coordinates
         self.save_plots(
             output_path,
             BasicPointCloud(points=reoriented_points3D, colors=point_cloud.colors, normals=point_cloud.normals),
@@ -147,11 +147,7 @@ class VastScene(PartitionableScene):
 
         image_set: ImageSet = dataparser_outputs.train_set
 
-        if not osp.exists(osp.join("tmp", "points3D.pkl")):
-            xyzs, rgbs, errors, track_lengths = self.load_points_from_bin(points3D_path)
-            pickle.dump([xyzs, rgbs, errors, track_lengths], open(osp.join("tmp", "points3D.pkl"), "wb"))
-        else:
-            xyzs, rgbs, errors, track_lengths = pickle.load(open(osp.join("tmp", "points3D.pkl"), "rb"))
+        xyzs, rgbs, errors, track_lengths = self.load_points_from_bin(points3D_path)
         mask = torch.logical_and(
             torch.ge(track_lengths, self.scene_config.min_track_length),
             torch.le(errors, self.scene_config.max_error),

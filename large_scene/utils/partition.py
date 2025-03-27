@@ -11,7 +11,9 @@ from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.partitioning_utils import MinMaxBoundingBox
 from large_scene.impls.base import PartitionableScene, PartitionableSceneConfig
-from large_scene.impls.city_gaussian import CityScene, CitySceneConfig
+from large_scene.impls.city_gaussian import (CityScene, CitySceneConfig,
+                                             UncontractedCityScene,
+                                             UncontractedCitySceneConfig)
 from large_scene.impls.vast_gaussian import VastScene, VastSceneConfig
 
 
@@ -99,23 +101,3 @@ class Partition:
         args = parser.parse_path(config_path)
         cfg = parser.instantiate_classes(args)
         return cls(**cfg)
-
-    def split_partition_gaussians(
-        self, ckpt: Dict, partition_bounding_box: MinMaxBoundingBox, scene_infos: Dict
-    ) -> tuple[
-        VanillaGaussianModel,
-        dict[str, torch.Tensor],
-        torch.Tensor,
-    ]:
-        model = GaussianModelLoader.initialize_model_from_checkpoint(ckpt, "cpu")
-        is_in_partition = self.scene.is_in_partition(model.get_means(), partition_bounding_box, scene_infos)
-
-        inside_part = {}
-        outside_part = {}
-        for k, v in model.properties.items():
-            inside_part[k] = v[is_in_partition]
-            outside_part[k] = v[~is_in_partition]
-
-        model.properties = inside_part
-
-        return model, outside_part, is_in_partition

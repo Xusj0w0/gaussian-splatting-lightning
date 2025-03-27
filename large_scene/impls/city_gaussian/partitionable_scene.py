@@ -120,14 +120,16 @@ class CityScene(PartitionableScene):
 
     @classmethod
     def is_in_partition(
-        cls, coordinates: torch.Tensor, partition_bbox: MinMaxBoundingBox, scene_infos: Dict, *args, **kwargs
+        cls,
+        coordinates: torch.Tensor,
+        partition_bbox: MinMaxBoundingBox,
+        manhattan_trans: torch.Tensor,
+        radius_bbox: MinMaxBoundingBox,
+        *args,
+        **kwargs,
     ):
-        radius_bbox = MinMaxBoundingBox(**scene_infos["extra_data"]["radius_bounding_box"])
-        manhattan_trans = scene_infos["extra_data"]["rotation_transform"]
         coordinates_trans = coordinates @ manhattan_trans[:3, :3].T + manhattan_trans[:3, -1]
-
         coordinates_contracted = cls.contract(coordinates_trans, radius_bbox, torch.inf, *args, **kwargs)
-
         is_ge_min = torch.prod(torch.ge(coordinates_contracted[..., :2], partition_bbox.min), dim=-1)
         is_lt_max = torch.prod(torch.lt(coordinates_contracted[..., :2], partition_bbox.max), dim=-1)
         is_in_partition = torch.logical_and(is_ge_min, is_lt_max)

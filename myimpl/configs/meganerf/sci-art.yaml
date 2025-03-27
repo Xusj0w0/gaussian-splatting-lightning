@@ -1,12 +1,12 @@
 data:
-  path: datasets/MegaNeRF/residence/colmap
+  path: datasets/MegaNeRF/sci-art/colmap
   parser:
     class_path: internal.dataparsers.colmap_dataparser.Colmap
     init_args:
+      down_sample_factor: 4
       split_mode: experiment
       eval_image_select_mode: list
-      eval_list: datasets/MegaNeRF/residence/colmap/splits/val_images.txt
-      down_sample_factor: 4
+      eval_list: datasets/MegaNeRF/sci-art/colmap/splits/val_images.txt
   train_max_num_images_to_cache: 256
 
 model:
@@ -18,4 +18,6 @@ model:
           init_args:
             lr_final: 0.00000064
         scales_lr: 0.004
-  
+  density:
+    init_args:
+      densification_interval: 100

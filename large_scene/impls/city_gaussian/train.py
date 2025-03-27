@@ -4,13 +4,13 @@ import sys
 
 from jsonargparse import ArgumentParser, set_docstring_parse_options
 
-from large_scene.utils.train.training_utils import (
-    ModifiedPartitionTraining, ModifiedPartitionTrainingConfig)
+from large_scene.utils.partition_training import (PartitionTraining,
+                                                  PartitionTrainingConfig)
 
 set_docstring_parse_options(attribute_docstrings=True)
 
 
-class CityGSParitionTraining(ModifiedPartitionTraining):
+class CityGSParitionTraining(PartitionTraining):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -24,8 +24,8 @@ class CityGSParitionTraining(ModifiedPartitionTraining):
 
 def main():
     parser = ArgumentParser()
-    ModifiedPartitionTrainingConfig.configure_argparser(parser)
-    CityGSParitionTraining.start_with_configured_argparser(parser, config_cls=ModifiedPartitionTrainingConfig)
+    PartitionTrainingConfig.configure_argparser(parser)
+    CityGSParitionTraining.start_with_configured_argparser(parser, config_cls=PartitionTrainingConfig)
 
 
 if __name__ == "__main__":

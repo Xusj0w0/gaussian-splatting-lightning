@@ -117,7 +117,7 @@ class PartitionLoDRendererModule(Renderer):
 
         # load partitions' models
         from internal.utils.gaussian_model_loader import GaussianModelLoader
-        from ..train.trained_utils import ModifiedPartitionTraining, ModifiedPartitionTrainingConfig
+        from .partition_training import PartitionTraining, PartitionTrainingConfig
         lods = []  # [N_lods, N_partitions]
         lods_appearance_models = []
 
@@ -126,7 +126,7 @@ class PartitionLoDRendererModule(Renderer):
             models = []
             appearance_models = []
 
-            partition_training = ModifiedPartitionTraining(ModifiedPartitionTrainingConfig(
+            partition_training = PartitionTraining(PartitionTrainingConfig(
                 partition_dir=self.config.data,
                 project_name=lod,
                 min_images=self.config.min_images,

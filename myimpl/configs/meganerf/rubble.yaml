@@ -1,0 +1,12 @@
+data:
+  path: datasets/MegaNeRF/rubble/colmap
+  parser:
+    class_path: internal.dataparsers.Colmap
+    init_args:
+      split_mode: experiment
+      eval_image_select_mode: list
+      eval_list: datasets/MegaNeRF/rubble/colmap/splits/val_images.txt
+      down_sample_factor: 4
+  train_max_num_images_to_cache: 256
+  num_workers: 2
+  async_caching: true

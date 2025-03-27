@@ -12,10 +12,10 @@ ENV_VARS=(
     PYTHONPATH
 )
 
-CUDA_LIST=(1 2)
+CUDA_LIST=(1 2 3)
 NUM_PROC=${#CUDA_LIST[@]}
 
-DATASET_PATH=$PWD/datasets/MegaNeRF/residence/colmap
+DATASET_PATH=$PWD/datasets/MatrixCity/small_city/aerial/colmap
 PARTITION_DATA_PATH="$PWD/outputs/residence/partition_infos"
 PROJECT_NAME="residence"
 TRAINING_SCRIPT="$PWD/large_scene/CityGaussian/partition_training.py"
