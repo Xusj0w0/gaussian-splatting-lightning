@@ -7,3 +7,6 @@
 [submodule "third_party/CityGaussian"]
 	path = third_party/CityGaussian
 	url = https://github.com/DekuLiuTesla/CityGaussian.git
+[submodule "third_party/viser"]
+	path = third_party/viser
+	url = https://github.com/nerfstudio-project/viser.git
