@@ -166,8 +166,8 @@ def main():
     async_image_saver = AsyncImageSaver(is_rgb=True)
 
     def image_saver(predicts, batch):
-        render = torch.clamp_max(predicts["render"], max=1.0).to(torch.uint8).permute(1, 2, 0).cpu()
-        gt = batch[1][1].to(torch.uint8).permute(1, 2, 0).cpu()
+        render = (torch.clamp_max(predicts["render"], max=1.0) * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
+        gt = (batch[1][1] * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
         montage = torch.cat([render, gt], dim=1)
         diff = torch.abs(render.float() - gt.float())
 

@@ -256,6 +256,26 @@ class UncontractedCityScene(PartitionableScene):
 
         return bbox_dict
 
+    def save_partitioning_results(self, output_path: str, image_set: ImageSet, model: VanillaGaussianModel):
+        super().save_partitioning_results(output_path, image_set)
+
+        partition_dir = osp.join(output_path, "partition_infos")
+        for d in os.listdir(osp.join(partition_dir, "partitions")):
+            fulldir = osp.join(partition_dir, "partitions", d)
+            if osp.isdir(fulldir):
+                shutil.copy(osp.join(output_path, "coarse", "cfg_args"), osp.join(fulldir, "cfg_args"))
+
+        complete_properties = model.properties
+        for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
+            partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
+            incomplete_properties = {
+                k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
+            }
+            model.properties = incomplete_properties
+            dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
+            GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
+        model.properties = complete_properties
+
     def get_extra_data(self):
         extra_data = super().get_extra_data()
         extra_data.update(

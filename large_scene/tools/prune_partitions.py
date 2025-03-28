@@ -77,8 +77,8 @@ def main():
         PartitionTrainingConfig(
             project_name=args.project_name,
             min_images=args.min_images,
-            n_processes=args.n_processes,
-            process_id=args.process_id,
+            n_processes=1,
+            process_id=1,
             dry_run=False,
             extra_epoches=0,
         )

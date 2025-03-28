@@ -1,13 +1,11 @@
-from jsonargparse import ArgumentParser, set_docstring_parse_options
+import argparse
 
 from large_scene.utils.partition_training import (PartitionTraining,
                                                   PartitionTrainingConfig)
 
-set_docstring_parse_options(attribute_docstrings=True)
-
 
 def main():
-    parser = ArgumentParser()
+    parser = argparse.ArgumentParser()
     PartitionTrainingConfig.configure_argparser(parser)
     PartitionTraining.start_with_configured_argparser(parser, config_cls=PartitionTrainingConfig)
 

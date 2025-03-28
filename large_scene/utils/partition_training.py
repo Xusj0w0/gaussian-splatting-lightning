@@ -11,10 +11,11 @@ from tqdm import tqdm
 from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.partitioning_utils import MinMaxBoundingBox
-from utils.distibuted_tasks import configure_arg_parser_v2
-from utils.train_partitions import PartitionTraining as PartitionTrainingBase
-from utils.train_partitions import \
+from large_scene.impls.base.partition_training import \
+    PartitionTraining as PartitionTrainingBase
+from large_scene.impls.base.partition_training import \
     PartitionTrainingConfig as PartitionTrainingConfigBase
+from utils.distibuted_tasks import configure_arg_parser_v2
 
 from .partition import Partition
 
@@ -108,7 +109,7 @@ class PartitionTraining(PartitionTrainingBase):
         init_model_path = osp.join(self.path, "partitions", self.get_partition_id_str(partition_idx), "gaussian_model.ply")
         if osp.exists(init_model_path):
             args += [
-                "--data.parser.init_model_path={}".format(init_model_path),
+                "--model.initialize_from={}".format(init_model_path),
             ]
         return args
  
