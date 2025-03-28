@@ -22,10 +22,10 @@ from utils.common import AsyncImageSaver
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("ckpt", type=str, help="path to checkpoint file")
+    parser.add_argument("--ckpt", type=str, required=True, help="path to checkpoint file")
     parser.add_argument("--dataset_path", type=str, help="path to dataset")
     parser.add_argument("--down_sample_factor", type=int, default=4, help="down sample factor in training phase")
-    parser.add_argument("--output", type=str, help="path to evaluation outputs")
+    parser.add_argument("--output", type=str, required=True, help="path to evaluation outputs")
     return parser.parse_args()
 
 
