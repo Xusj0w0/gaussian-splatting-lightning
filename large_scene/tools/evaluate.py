@@ -133,6 +133,8 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
         )
 
     renderer = RendererWithMetrics()
+    # avoid loading point cloud
+    dataparser_config.points_from == "random"
     dataparser_outputs: DataParserOutputs = dataparser_config.instantiate(
         path=dataset_path,
         output_path=os.getcwd(),

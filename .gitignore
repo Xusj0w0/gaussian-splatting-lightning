@@ -7,7 +7,7 @@ tmp
 *.pkl
 
 experiments
-cuda_src
+**/cuda_src
 **/test_scripts
 
 .idea
