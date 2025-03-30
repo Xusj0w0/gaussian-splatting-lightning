@@ -23,27 +23,31 @@ import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from internal.models.vanilla_gaussian import (VanillaGaussian,
-                                              VanillaGaussianModel)
+from internal.models.vanilla_gaussian import VanillaGaussian, VanillaGaussianModel
 from internal.renderers.renderer import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import GaussianPlyUtils
 from internal.utils.graphics_utils import BasicPointCloud
-from internal.utils.partitioning_utils import (MinMaxBoundingBox,
-                                               MinMaxBoundingBoxes,
-                                               PartitionCoordinates,
-                                               Partitioning, SceneBoundingBox)
+from internal.utils.partitioning_utils import (
+    MinMaxBoundingBox,
+    MinMaxBoundingBoxes,
+    PartitionCoordinates,
+    Partitioning,
+    SceneBoundingBox,
+)
 from internal.utils.sh_utils import eval_sh
 
-from ..base.partitionable_scene import (PartitionableScene,
-                                        PartitionableSceneConfig)
+from ..base.partitionable_scene import PartitionableScene, PartitionableSceneConfig
 
 
 @dataclass
 class CitySceneConfig(PartitionableSceneConfig):
     down_sample_factor: int = 4
     """ down sample factor when coarse training """
+
+    config: str = None
+    """ path to config file for coarse training """
 
     num_gaussians_per_partition_threshold: int = 25_000
     """ keep enlarging bounding box if number of gaussians in it is lower than this threshold """
@@ -53,6 +57,8 @@ class CitySceneConfig(PartitionableSceneConfig):
 
     radius_bounding_box_ratio: List[float] = field(default_factory=lambda: [])
     """ ratios of radius bounding box to camera center bounding box, [xmin, xmax, ymin, ymax, zmin, zmax] """
+
+    visibility_threshold: float = 0.05
 
     outlier_ratio: float = 0.01
 
@@ -147,9 +153,7 @@ class CityScene(PartitionableScene):
         complete_properties = model.properties
         for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
             partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
-            incomplete_properties = {
-                k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
-            }
+            incomplete_properties = {k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()}
             model.properties = incomplete_properties
             dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
             GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
@@ -168,16 +172,8 @@ class CityScene(PartitionableScene):
         return extra_data
 
     def coarse_train(self, dataset_path: str, output_path: str):
-        args = [
-            "python",
-            "main.py",
-            "fit",
-            "--project=coarse",
-            "--output={}".format(output_path),
-            "-n=coarse",
-            "--data.path={}".format(dataset_path),
-            "--data.parser=Colmap",
-        ]
+        args = ["python", "main.py", "fit"]
+
         if next((Path(output_path) / "coarse").rglob("*.ckpt"), None) is not None:
             ckpt_path = GaussianModelLoader.search_load_file(osp.join(output_path, "coarse"))
             config_path = next((Path(output_path) / "coarse").rglob("config.yaml"), None)
@@ -192,6 +188,8 @@ class CityScene(PartitionableScene):
                 "--ckpt_path={}".format(ckpt_path),
             ]
         else:
+            if self.scene_config.config is not None:
+                args += ["--config={}".format(self.scene_config.config)]
             args += [
                 "--data.parser.down_sample_factor={}".format(self.scene_config.down_sample_factor),
                 "--data.parser.split_mode=experiment",
@@ -201,6 +199,13 @@ class CityScene(PartitionableScene):
                 "--data.train_max_num_images_to_cache=256",
                 "--logger=tensorboard",
             ]
+        args += [
+            "--project=coarse",
+            "--output={}".format(output_path),
+            "-n=coarse",
+            "--data.path={}".format(dataset_path),
+            "--data.parser=Colmap",
+        ]
         print(" ".join(args))
         subprocess.run(args)
 
@@ -222,9 +227,7 @@ class CityScene(PartitionableScene):
         dataset_path = data_params["path"]
         dataparser_config = data_params["parser"]
         dataparser_config.points_from = "random"
-        dataparser: ColmapDataParser = dataparser_config.instantiate(
-            path=dataset_path, output_path=os.getcwd(), global_rank=0
-        )
+        dataparser: ColmapDataParser = dataparser_config.instantiate(path=dataset_path, output_path=os.getcwd(), global_rank=0)
         dataparser_outputs = dataparser.get_outputs()
         return dataparser_outputs.train_set
 
@@ -243,10 +246,7 @@ class CityScene(PartitionableScene):
         # fmt: on
 
     def get_scene_bounding_box(self, points: torch.Tensor, cameras: Cameras):
-        if (
-            isinstance(self.scene_config.radius_bounding_box_ratio, list)
-            and len(self.scene_config.radius_bounding_box_ratio) == 6
-        ):
+        if isinstance(self.scene_config.radius_bounding_box_ratio, list) and len(self.scene_config.radius_bounding_box_ratio) == 6:
             bounding_box = self.camera_center_based_bounding_box
             if getattr(self, "camera_center_based_bounding_box", None) is None:
                 bounding_box = self.get_bounding_box_by_camera_centers()
@@ -254,12 +254,8 @@ class CityScene(PartitionableScene):
                 min=torch.tensor(self.scene_config.radius_bounding_box_ratio[0::2]),
                 max=torch.tensor(self.scene_config.radius_bounding_box_ratio[1::2]),
             )
-            radius_bbox_min = (
-                1.0 - radius_bbox_ratios.min
-            ) * bounding_box.min + radius_bbox_ratios.min * bounding_box.max
-            radius_bbox_max = (
-                1.0 - radius_bbox_ratios.max
-            ) * bounding_box.min + radius_bbox_ratios.max * bounding_box.max
+            radius_bbox_min = (1.0 - radius_bbox_ratios.min) * bounding_box.min + radius_bbox_ratios.min * bounding_box.max
+            radius_bbox_max = (1.0 - radius_bbox_ratios.max) * bounding_box.min + radius_bbox_ratios.max * bounding_box.max
             self.radius_bounding_box = MinMaxBoundingBox(min=radius_bbox_min, max=radius_bbox_max)
         else:
             camera_centers: torch.Tensor = cameras.camera_center  # [N, 3]
@@ -315,9 +311,7 @@ class CityScene(PartitionableScene):
             scale = norm.new_ones(norm.shape)
             scale[between_1_and_2] = 1.0 / (norm[between_1_and_2] * (2 - norm[between_1_and_2]))
             points_uncontracted = points * scale.unsqueeze(-1)
-            points_unnormalized = (
-                (points_uncontracted + 1.0) / 2.0 * (radius_bbox.max - radius_bbox.min)
-            ) + radius_bbox.min
+            points_unnormalized = ((points_uncontracted + 1.0) / 2.0 * (radius_bbox.max - radius_bbox.min)) + radius_bbox.min
             points_unnormalized[equal_to_2] = torch.where(is_positive, torch.inf, -torch.inf)
             return points_unnormalized
         else:

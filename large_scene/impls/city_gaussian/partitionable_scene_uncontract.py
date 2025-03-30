@@ -45,6 +45,11 @@ class UncontractedCitySceneConfig(PartitionableSceneConfig):
     down_sample_factor: int = 4
     """ down sample factor when coarse training """
 
+    config: str = None
+    """ path to config file for coarse training """
+
+    visibility_threshold: float = 0.05
+
     def instantiate(self):
         return UncontractedCityScene(self)
 
@@ -288,16 +293,8 @@ class UncontractedCityScene(PartitionableScene):
         return extra_data
 
     def coarse_train(self, dataset_path: str, output_path: str):
-        args = [
-            "python",
-            "main.py",
-            "fit",
-            "--project=coarse",
-            "--output={}".format(output_path),
-            "-n=coarse",
-            "--data.path={}".format(dataset_path),
-            "--data.parser=Colmap",
-        ]
+        args = ["python", "main.py", "fit"]
+
         if next((Path(output_path) / "coarse").rglob("*.ckpt"), None) is not None:
             ckpt_path = GaussianModelLoader.search_load_file(osp.join(output_path, "coarse"))
             config_path = next((Path(output_path) / "coarse").rglob("config.yaml"), None)
@@ -312,6 +309,8 @@ class UncontractedCityScene(PartitionableScene):
                 "--ckpt_path={}".format(ckpt_path),
             ]
         else:
+            if self.scene_config.config is not None:
+                args += ["--config={}".format(self.scene_config.config)]
             args += [
                 "--data.parser.down_sample_factor={}".format(self.scene_config.down_sample_factor),
                 "--data.parser.split_mode=experiment",
@@ -321,6 +320,13 @@ class UncontractedCityScene(PartitionableScene):
                 "--data.train_max_num_images_to_cache=256",
                 "--logger=tensorboard",
             ]
+        args += [
+            "--project=coarse",
+            "--output={}".format(output_path),
+            "-n=coarse",
+            "--data.path={}".format(dataset_path),
+            "--data.parser=Colmap",
+        ]
         print(" ".join(args))
         subprocess.run(args)
 
