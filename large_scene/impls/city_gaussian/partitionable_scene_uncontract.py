@@ -395,35 +395,25 @@ class UncontractedCityScene(PartitionableScene):
             dtype=torch.float32,
         )
         torch.cuda.empty_cache()
+        bg_color = torch.tensor(bg_color).to(device)
         # build incomplete gaussian model
         complete_properties = coarse_model.properties
-        for partition_idx in range(len(self.gaussians_in_partitions)):
-            mask = ~self.gaussians_in_partitions[partition_idx].to(device)
-            incomplete_properties = {k: v[mask] for k, v in complete_properties.items()}
+        with torch.no_grad():
+            for camera_idx, camera in enumerate(tqdm(cameras)):
+                camera = camera.to_device(device=device)
+                render_full = renderer(camera, coarse_model, bg_color)["render"]
 
-            with torch.no_grad():
-                for camera_idx, camera in enumerate(tqdm(cameras)):
-                    camera = camera.to_device(device=device)
-                    # completely rendered
-                    coarse_model.properties = complete_properties
-                    completely_rendered = renderer(
-                        camera,
-                        coarse_model,
-                        torch.tensor(bg_color).to(device),
-                    )["render"]
-
-                    # incompletely rendered
+                for partition_idx in range(len(self.gaussians_in_partitions)):
+                    mask = ~self.gaussians_in_partitions[partition_idx].to(device)
+                    incomplete_properties = {k: v[mask] for k, v in complete_properties.items()}
                     coarse_model.properties = incomplete_properties
-                    incompletely_rendered = renderer(
-                        camera,
-                        coarse_model,
-                        torch.tensor(bg_color).to(device),
-                    )["render"]
+                    render_part = renderer(camera, coarse_model, bg_color)
 
                     self.camera_visibilities[partition_idx, camera.idx].copy_(
-                        1 - ssim(incompletely_rendered.unsqueeze(0), completely_rendered.unsqueeze(0))
+                        1 - ssim(render_part.unsqueeze(0), render_full.unsqueeze(0))
                     )
-        coarse_model.properties = complete_properties
+                coarse_model.properties = complete_properties
+
         return self.camera_visibilities
 
     def visibility_based_partition_assignment(self):

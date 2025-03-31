@@ -23,22 +23,21 @@ import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from internal.models.vanilla_gaussian import VanillaGaussian, VanillaGaussianModel
+from internal.models.vanilla_gaussian import (VanillaGaussian,
+                                              VanillaGaussianModel)
 from internal.renderers.renderer import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import GaussianPlyUtils
 from internal.utils.graphics_utils import BasicPointCloud
-from internal.utils.partitioning_utils import (
-    MinMaxBoundingBox,
-    MinMaxBoundingBoxes,
-    PartitionCoordinates,
-    Partitioning,
-    SceneBoundingBox,
-)
+from internal.utils.partitioning_utils import (MinMaxBoundingBox,
+                                               MinMaxBoundingBoxes,
+                                               PartitionCoordinates,
+                                               Partitioning, SceneBoundingBox)
 from internal.utils.sh_utils import eval_sh
 
-from ..base.partitionable_scene import PartitionableScene, PartitionableSceneConfig
+from ..base.partitionable_scene import (PartitionableScene,
+                                        PartitionableSceneConfig)
 
 
 @dataclass
@@ -153,7 +152,9 @@ class CityScene(PartitionableScene):
         complete_properties = model.properties
         for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
             partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
-            incomplete_properties = {k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()}
+            incomplete_properties = {
+                k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
+            }
             model.properties = incomplete_properties
             dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
             GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
@@ -227,7 +228,9 @@ class CityScene(PartitionableScene):
         dataset_path = data_params["path"]
         dataparser_config = data_params["parser"]
         dataparser_config.points_from = "random"
-        dataparser: ColmapDataParser = dataparser_config.instantiate(path=dataset_path, output_path=os.getcwd(), global_rank=0)
+        dataparser: ColmapDataParser = dataparser_config.instantiate(
+            path=dataset_path, output_path=os.getcwd(), global_rank=0
+        )
         dataparser_outputs = dataparser.get_outputs()
         return dataparser_outputs.train_set
 
@@ -246,7 +249,10 @@ class CityScene(PartitionableScene):
         # fmt: on
 
     def get_scene_bounding_box(self, points: torch.Tensor, cameras: Cameras):
-        if isinstance(self.scene_config.radius_bounding_box_ratio, list) and len(self.scene_config.radius_bounding_box_ratio) == 6:
+        if (
+            isinstance(self.scene_config.radius_bounding_box_ratio, list)
+            and len(self.scene_config.radius_bounding_box_ratio) == 6
+        ):
             bounding_box = self.camera_center_based_bounding_box
             if getattr(self, "camera_center_based_bounding_box", None) is None:
                 bounding_box = self.get_bounding_box_by_camera_centers()
@@ -254,8 +260,12 @@ class CityScene(PartitionableScene):
                 min=torch.tensor(self.scene_config.radius_bounding_box_ratio[0::2]),
                 max=torch.tensor(self.scene_config.radius_bounding_box_ratio[1::2]),
             )
-            radius_bbox_min = (1.0 - radius_bbox_ratios.min) * bounding_box.min + radius_bbox_ratios.min * bounding_box.max
-            radius_bbox_max = (1.0 - radius_bbox_ratios.max) * bounding_box.min + radius_bbox_ratios.max * bounding_box.max
+            radius_bbox_min = (
+                1.0 - radius_bbox_ratios.min
+            ) * bounding_box.min + radius_bbox_ratios.min * bounding_box.max
+            radius_bbox_max = (
+                1.0 - radius_bbox_ratios.max
+            ) * bounding_box.min + radius_bbox_ratios.max * bounding_box.max
             self.radius_bounding_box = MinMaxBoundingBox(min=radius_bbox_min, max=radius_bbox_max)
         else:
             camera_centers: torch.Tensor = cameras.camera_center  # [N, 3]
@@ -311,7 +321,9 @@ class CityScene(PartitionableScene):
             scale = norm.new_ones(norm.shape)
             scale[between_1_and_2] = 1.0 / (norm[between_1_and_2] * (2 - norm[between_1_and_2]))
             points_uncontracted = points * scale.unsqueeze(-1)
-            points_unnormalized = ((points_uncontracted + 1.0) / 2.0 * (radius_bbox.max - radius_bbox.min)) + radius_bbox.min
+            points_unnormalized = (
+                (points_uncontracted + 1.0) / 2.0 * (radius_bbox.max - radius_bbox.min)
+            ) + radius_bbox.min
             points_unnormalized[equal_to_2] = torch.where(is_positive, torch.inf, -torch.inf)
             return points_unnormalized
         else:
@@ -398,35 +410,25 @@ class CityScene(PartitionableScene):
             dtype=torch.float32,
         )
         torch.cuda.empty_cache()
+        bg_color = torch.tensor(bg_color).to(device)
         # build incomplete gaussian model
         complete_properties = coarse_model.properties
-        for partition_idx in range(len(self.gaussians_in_partitions)):
-            mask = ~self.gaussians_in_partitions[partition_idx].to(device)
-            incomplete_properties = {k: v[mask] for k, v in complete_properties.items()}
+        with torch.no_grad():
+            for camera_idx, camera in enumerate(tqdm(cameras)):
+                camera = camera.to_device(device=device)
+                render_full = renderer(camera, coarse_model, bg_color)["render"]
 
-            with torch.no_grad():
-                for camera_idx, camera in enumerate(tqdm(cameras)):
-                    camera = camera.to_device(device=device)
-                    # completely rendered
-                    coarse_model.properties = complete_properties
-                    completely_rendered = renderer(
-                        camera,
-                        coarse_model,
-                        torch.tensor(bg_color).to(device),
-                    )["render"]
-
-                    # incompletely rendered
+                for partition_idx in range(len(self.gaussians_in_partitions)):
+                    mask = ~self.gaussians_in_partitions[partition_idx].to(device)
+                    incomplete_properties = {k: v[mask] for k, v in complete_properties.items()}
                     coarse_model.properties = incomplete_properties
-                    incompletely_rendered = renderer(
-                        camera,
-                        coarse_model,
-                        torch.tensor(bg_color).to(device),
-                    )["render"]
+                    render_part = renderer(camera, coarse_model, bg_color)
 
                     self.camera_visibilities[partition_idx, camera.idx].copy_(
-                        1 - ssim(incompletely_rendered.unsqueeze(0), completely_rendered.unsqueeze(0))
+                        1 - ssim(render_part.unsqueeze(0), render_full.unsqueeze(0))
                     )
-        coarse_model.properties = complete_properties
+                coarse_model.properties = complete_properties
+
         return self.camera_visibilities
 
     def visibility_based_partition_assignment(self):
