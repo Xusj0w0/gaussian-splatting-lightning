@@ -1,3 +1,6 @@
+max_steps: 60000
+trainer:
+  max_steps: 60000
 data:
   path: datasets/MatrixCity
   parser:
@@ -18,3 +21,7 @@ model:
         means_lr_scheduler:
           init_args:
             lr_final: 0.00000064
+            max_steps: 60000
+  density:
+    init_args:
+      densify_until_iter: 30000
