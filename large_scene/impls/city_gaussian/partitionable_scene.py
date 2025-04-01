@@ -39,6 +39,8 @@ from internal.utils.sh_utils import eval_sh
 from ..base.partitionable_scene import (PartitionableScene,
                                         PartitionableSceneConfig)
 
+__all__ = ["CitySceneConfig", "CityScene"]
+
 
 @dataclass
 class CitySceneConfig(PartitionableSceneConfig):

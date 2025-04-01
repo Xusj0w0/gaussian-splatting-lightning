@@ -6,6 +6,7 @@ import argparse
 import gc
 import torch
 import json
+import shutil
 from tqdm.auto import tqdm
 from internal.cameras.cameras import Cameras
 from internal.utils.light_gaussian import get_count_and_score, calculate_v_imp_score, get_prune_mask
@@ -20,7 +21,7 @@ def parse_args():
     # parser.add_argument("partition_dir")
     parser.add_argument("--project_name", "-p", type=str, required=True, help="Project name")
     parser.add_argument("--min-images", type=int, default=32)
-    parser.add_argument("--prune-percent", type=float, default=0.6)
+    parser.add_argument("--prune-percent", type=float, default=0.6, help="Remove ratio")
     configure_arg_parser_v2(parser)
     return parser.parse_args()
 
@@ -87,6 +88,17 @@ def main():
 
     n_before_pruning = 0
     n_after_pruning = 0
+
+    orig_project_dir = os.path.dirname(partition_training.project_output_dir)
+    new_project_dir = os.path.join(os.path.dirname(orig_project_dir), f"{os.path.basename(orig_project_dir)}-pruned_{args.prune_percent}")
+    partition_info_dir = partition_training.config.partition_dir
+    new_partition_info_dir = os.path.join(new_project_dir, os.path.relpath(partition_info_dir, orig_project_dir))
+    os.makedirs(os.path.abspath(new_partition_info_dir), exist_ok=True)
+    for file in ["config.yaml", "partitions.pt"]:
+        os.symlink(
+            os.path.join(os.path.abspath(partition_info_dir), file),
+            os.path.join(os.path.abspath(new_partition_info_dir), file),
+        )
 
     with tqdm(trained_partitions) as t:
         for partition_idx, partition_id_str, ckpt_file, bounding_box in t:
@@ -175,11 +187,20 @@ def main():
                     ckpt["state_dict"][i] = torch.zeros((gaussian_model.n_gaussians, *ckpt["state_dict"][i].shape[1:]))
 
             # save checkpoint
-            checkpoint_save_dir = os.path.join(os.path.dirname(os.path.dirname(ckpt_file)), "pruned_checkpoints")
-            os.makedirs(checkpoint_save_dir, exist_ok=True)
-            checkpoint_save_path = os.path.join(checkpoint_save_dir, f"latest-opacity_pruned-{args.prune_percent}.ckpt")
+            checkpoint_save_path = os.path.join(new_project_dir, os.path.relpath(ckpt_file, orig_project_dir))
+            os.makedirs(os.path.dirname(checkpoint_save_path), exist_ok=True)
+            # checkpoint_save_dir = os.path.join(os.path.dirname(os.path.dirname(ckpt_file)), "pruned_checkpoints")
+            # os.makedirs(checkpoint_save_dir, exist_ok=True)
+            # checkpoint_save_path = os.path.join(checkpoint_save_dir, f"latest-opacity_pruned-{args.prune_percent}.ckpt")
             t.set_postfix_str("Saving...")
             torch.save(ckpt, checkpoint_save_path)
+
+            # copy trained files
+            partition_dir = os.path.dirname(os.path.dirname(ckpt_file))
+            trained_file = os.path.join(os.path.dirname(partition_dir), f"{os.path.basename(ckpt_file)}-trained")
+            shutil.copy(
+                trained_file, os.path.join(os.path.abspath(new_project_dir), os.path.relpath(trained_file, orig_project_dir))
+            )
 
             del ckpt
             del gaussian_model

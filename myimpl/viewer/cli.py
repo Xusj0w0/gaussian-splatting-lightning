@@ -1,28 +1,8 @@
 import argparse
-import time
 
 import torch
-import viser
 
-from internal.viewer.viewer import Viewer
-from myimpl.utils.viser_campose_controller import CamPoseController
-
-
-class CustomViewer(Viewer):
-    def start(self, block: bool = True, *args, **kwargs):
-        super().start(block=False, *args, **kwargs)
-
-        render_folder_id = self.max_res_when_static._impl.parent_container_id
-        render_folder_handle: viser.GuiFolderHandle = self._server.gui._container_handle_from_id[render_folder_id]
-        general_tab_id = render_folder_handle._parent_container_id
-        general_tab_handle: viser.GuiTabHandle = self._server.gui._container_handle_from_id[general_tab_id]
-        tabs: viser.GuiTabGroupHandle = general_tab_handle._parent
-
-        self._campose_controller = CamPoseController(self, self._server, tabs)
-
-        if block:
-            while True:
-                time.sleep(999)
+from myimpl.viewer.viewer import Viewer
 
 
 def cli():
@@ -105,11 +85,7 @@ def cli():
 
     # create viewer
     viewer_init_args = {key: getattr(args, key) for key in vars(args)}
-    viewer = CustomViewer(**viewer_init_args)
+    viewer = Viewer(**viewer_init_args)
 
     # start viewer server
     viewer.start()
-
-
-if __name__ == "__main__":
-    cli()

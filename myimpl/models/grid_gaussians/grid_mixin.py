@@ -11,6 +11,8 @@ from internal.utils.network_factory import NetworkFactory
 
 from .grid_gaussian import GridGaussianModel
 
+__all__ = ["ScaffoldGaussianMixin", "ScaffoldGaussianModelMixin", "ScaffoldOptimizationConfigMixin"]
+
 
 @dataclass
 class ScaffoldOptimizationConfigMixin:

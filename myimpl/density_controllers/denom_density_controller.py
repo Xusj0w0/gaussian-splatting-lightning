@@ -7,6 +7,8 @@ from internal.density_controllers.vanilla_density_controller import (
     VanillaDensityController, VanillaDensityControllerImpl)
 from internal.models.vanilla_gaussian import VanillaGaussianModel
 
+__all__ = ["DenomDensityController", "DenomDensityControllerImpl"]
+
 
 class DenomDensityController(VanillaDensityController):
     success_ratio: float = 0.5

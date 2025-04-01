@@ -17,6 +17,13 @@ from myimpl.models.grid_gaussians import (GridGaussianModel,
                                           ScaffoldGaussianModelMixin)
 from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 
+__all__ = [
+    "GridGaussianDensityController",
+    "GridGaussianDensityControllerImpl",
+    "GridDensityContollerUtils",
+    "CandidateAnchors",
+]
+
 
 @dataclass
 class GridGaussianDensityController(VanillaDensityController):

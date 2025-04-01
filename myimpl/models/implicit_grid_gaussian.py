@@ -9,6 +9,13 @@ from myimpl.models.grid_gaussians import (GridGaussian, GridGaussianModel,
                                           ScaffoldGaussianModelMixin,
                                           ScaffoldOptimizationConfigMixin)
 
+__all__ = [
+    "ImplicitGridGaussian",
+    "ImplicitGridGaussianModel",
+    "ImplicitLoDGridGaussian",
+    "ImplicitLoDGridGaussianModel",
+]
+
 
 @dataclass
 class ImplicitGridOptimizationConfig(GridOptimizationConfig, ScaffoldOptimizationConfigMixin):

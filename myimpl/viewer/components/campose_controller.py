@@ -1,4 +1,3 @@
-import base64
 import io
 import traceback
 from types import MethodType
@@ -12,6 +11,8 @@ import viser
 from internal.renderers.renderer import Renderer
 from internal.viewer.client import ClientThread
 from internal.viewer.viewer import Viewer
+
+__all__ = ["CamPoseController"]
 
 
 def register_camera_pose_controller():

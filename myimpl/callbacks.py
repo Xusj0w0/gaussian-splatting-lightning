@@ -6,6 +6,8 @@ from lightning.pytorch.callbacks import Callback
 
 from internal.gaussian_splatting import GaussianSplatting
 
+__all__ = ["RecordGradient"]
+
 
 class RecordGradient(Callback):
     @staticmethod

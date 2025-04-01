@@ -23,6 +23,8 @@ from internal.utils.partitioning_utils import \
     PartitionableScene as _PartitionableScene
 from internal.utils.partitioning_utils import SceneConfig as _SceneConfig
 
+__all__ = ["PartitionableScene", "PartitionableSceneConfig"]
+
 
 class SceneConfigBase:
     """To get class_path and init_args"""

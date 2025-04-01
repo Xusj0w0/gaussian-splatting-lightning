@@ -4,6 +4,8 @@ import torch
 
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
 
+__all__ = ["ScaffoldMetrics", "ScaffoldMetricsImpl"]
+
 
 @dataclass
 class ScaffoldMetrics(VanillaMetrics):

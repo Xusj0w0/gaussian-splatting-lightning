@@ -17,7 +17,7 @@ from utils.common import AsyncImageSaver
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("yaml")
+    parser.add_argument("--yaml") # TODO
     parser.add_argument("--val-side", "--side", "--val-on", type=str, default="auto")
     parser.add_argument("--level", "-l", type=int, default=None)
     parser.add_argument("--disable-tbc", action="store_true", default=False)
@@ -96,6 +96,7 @@ def validate(dataloader, renderer, metric_calculator, image_saver):
 @torch.no_grad()
 def main():
     args = parse_args()
+    args.yaml = "outputs/mc-5_5-60k/lod_render.yaml"
 
     with open(args.yaml, "r") as f:
         config = yaml.safe_load(f)
@@ -150,7 +151,7 @@ def main():
 
     # load validation set
     # load a config to get the test set list
-    project_dir = os.path.join(os.getcwd(), "outputs", config["names"][0], "partitions")
+    project_dir = os.path.join(os.getcwd(), config["data"], "../partitions")
     trained_file_list = list(glob(os.path.join(project_dir, "*-trained")))
     first_partition_dir = os.path.join(project_dir, trained_file_list[0][:-8])
     config_rel_path = list(glob("**/config.yaml", root_dir=first_partition_dir, recursive=True))[0]

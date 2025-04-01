@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 from sklearn.neighbors import NearestNeighbors
 
+__alll__ = ["init_weight", "knn", "GridGaussianUtils"]
+
 
 def init_weight(module: nn.Module):
     if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d):

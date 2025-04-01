@@ -19,6 +19,7 @@ from utils.distibuted_tasks import configure_arg_parser_v2
 
 from .partition import Partition
 
+__all__ = ["PartitionTrainingConfig", "PartitionTraining"]
 
 # fmt: off
 @dataclass

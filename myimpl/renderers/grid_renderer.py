@@ -20,6 +20,8 @@ from myimpl.models.grid_gaussians import (GridGaussianModel,
 from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
                                                   ImplicitLoDGridGaussianModel)
 
+__all__ = ["GridGaussianRenderer", "GridGaussianRendererModule"]
+
 
 @dataclass
 class AppearanceModelConfig:
@@ -451,8 +453,8 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             getattr(viewer.gaussian_model, "get_levels", None) is not None
             and viewer.gaussian_model.get_levels.shape[0] > 0
         ):
-            with tabs.add_tab("LoD"):
-                self._lod_options = LoDOptions(viewer, server)
+            with tabs.add_tab("Octree"):
+                self._lod_options = ViewerOptions(viewer, server)
 
 
 from viser import ViserServer
@@ -460,7 +462,7 @@ from viser import ViserServer
 from internal.viewer.viewer import Viewer
 
 
-class LoDOptions:
+class ViewerOptions:
     def __init__(self, viewer: Viewer, server: ViserServer):
         self.viewer = viewer
         self.server = server

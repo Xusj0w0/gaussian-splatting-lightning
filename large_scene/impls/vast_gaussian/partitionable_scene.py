@@ -29,6 +29,8 @@ from internal.utils.partitioning_utils import (MinMaxBoundingBox,
 from ..base.partitionable_scene import (PartitionableScene,
                                         PartitionableSceneConfig)
 
+__all__ = ["VastScene", "VastSceneConfig"]
+
 
 @dataclass
 class VastSceneConfig(PartitionableSceneConfig):

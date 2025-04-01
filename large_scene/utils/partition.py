@@ -16,6 +16,8 @@ from large_scene.impls.city_gaussian import (CityScene, CitySceneConfig,
                                              UncontractedCitySceneConfig)
 from large_scene.impls.vast_gaussian import VastScene, VastSceneConfig
 
+__all__ = ["Partition"]
+
 
 class Partition:
     def __init__(
