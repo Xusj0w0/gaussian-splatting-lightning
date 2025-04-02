@@ -8,10 +8,10 @@ import torch.nn as nn
 
 from internal.cameras.cameras import Camera, Cameras
 from internal.utils.general_utils import inverse_sigmoid
-from myimpl.models.grid_gaussians.grid_gaussian import (GridGaussian,
-                                                        GridGaussianModel,
-                                                        GridOptimizationConfig)
-from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
+
+from .grid_gaussian import (GridGaussian, GridGaussianModel,
+                            GridOptimizationConfig)
+from .utils import GridGaussianUtils
 
 __all__ = ["LoDGridGaussian", "LoDGridOptimizationConfig", "LoDGridGaussianModel"]
 
@@ -126,6 +126,9 @@ class LoDGridGaussianModel(GridGaussianModel):
         pass
 
     def setup_from_pcd(self, xyz, rgb, cameras: Cameras, *args, **kwargs):
+        if int(GridGaussianUtils.chunk_size_max / xyz.shape[0]) < 64:
+            xyz = xyz[::64]
+            rgb = rgb[::64]
         points = torch.from_numpy(xyz).to(cameras[0].device).float()
         cam_centers = cameras.camera_center
         camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)

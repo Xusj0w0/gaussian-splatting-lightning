@@ -9,7 +9,7 @@ import torch
 import csv
 from glob import glob
 from internal.dataparsers.colmap_dataparser import Colmap
-from large_scene.utils.partition_lod_renderer import PartitionLoDRenderer
+from myimpl.renderers.partition_lod_renderer import PartitionLoDRenderer
 from internal.dataset import Dataset, CacheDataLoader
 from tqdm import tqdm
 from utils.common import AsyncImageSaver
@@ -17,7 +17,7 @@ from utils.common import AsyncImageSaver
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--yaml") # TODO
+    parser.add_argument("yaml")
     parser.add_argument("--val-side", "--side", "--val-on", type=str, default="auto")
     parser.add_argument("--level", "-l", type=int, default=None)
     parser.add_argument("--disable-tbc", action="store_true", default=False)

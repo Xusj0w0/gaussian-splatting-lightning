@@ -176,7 +176,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             features = features.squeeze(dim=-1)
         cat_local_view = torch.cat([features, viewdirs], dim=1)
 
-        opacities = pc.get_opacity_mlp(cat_local_view)
+        opacities = pc.get_opacity_mlp(features)  # try: remove viewdirs
         if prog_ratio is not None and transition_mask is not None:
             prog = prog_ratio[anchor_mask]
             transition = transition_mask[anchor_mask]

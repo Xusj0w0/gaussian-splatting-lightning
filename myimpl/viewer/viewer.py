@@ -104,7 +104,7 @@ class Viewer(_Viewer):
             model.pre_activate_all_properties()
             model.eval()
             # from internal.renderers.partition_lod_renderer import PartitionLoDRenderer
-            from large_scene.utils.partition_lod_renderer import \
+            from myimpl.renderers.partition_lod_renderer import \
                 PartitionLoDRenderer
             with open(model_paths[0], "r") as f:
                 lod_config = yaml.safe_load(f)
@@ -260,9 +260,9 @@ class Viewer(_Viewer):
         super().start(block=False, *args, **kwargs)
 
         render_folder_id = self.max_res_when_static._impl.parent_container_id
-        render_folder_handle: viser.GuiFolderHandle = self._server.gui._container_handle_from_id[render_folder_id]
-        general_tab_id = render_folder_handle._parent_container_id
-        general_tab_handle: viser.GuiTabHandle = self._server.gui._container_handle_from_id[general_tab_id]
+        render_folder_handle: viser.GuiFolderHandle = self._server.gui._container_handle_from_uuid[render_folder_id]
+        general_tab_id = render_folder_handle._impl.parent_container_id
+        general_tab_handle: viser.GuiTabHandle = self._server.gui._container_handle_from_uuid[general_tab_id]
         tabs: viser.GuiTabGroupHandle = general_tab_handle._parent
 
         self._campose_controller = CamPoseController(self, self._server, tabs)

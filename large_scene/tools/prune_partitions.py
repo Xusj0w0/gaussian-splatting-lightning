@@ -197,7 +197,7 @@ def main():
 
             # copy trained files
             partition_dir = os.path.dirname(os.path.dirname(ckpt_file))
-            trained_file = os.path.join(os.path.dirname(partition_dir), f"{os.path.basename(ckpt_file)}-trained")
+            trained_file = os.path.join(os.path.dirname(partition_dir), f"{os.path.basename(partition_dir)}-trained")
             shutil.copy(
                 trained_file, os.path.join(os.path.abspath(new_project_dir), os.path.relpath(trained_file, orig_project_dir))
             )

@@ -29,11 +29,11 @@ class CamPoseController:
         self.viewer = viewer
         self.server = server
 
-        for label, tab in zip(tabs._labels, tabs._tabs):
+        for label, tab_id in zip(tabs._tab_labels, tabs._tab_container_ids):
             if label == "General":
                 break
 
-        with tab:
+        with server.gui._container_handle_from_uuid[tab_id]:
             with server.gui.add_folder("Camera Pose"):
                 self.qvec_text = server.gui.add_text(label="qvec", initial_value="")
                 self.pos_text = server.gui.add_text(label="pos", initial_value="")

@@ -2,13 +2,13 @@ max_steps: 60000
 trainer:
   max_steps: 60000
 data:
-  path: datasets/MatrixCity
+  path: datasets/MatrixCity/small_city/aerial
   parser:
     class_path: internal.dataparsers.Colmap
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
-      eval_list: datasets/MatrixCity/splits/val_images.txt
+      eval_list: datasets/MatrixCity/small_city/aerial/splits/val_images.txt
       down_sample_factor: 1
   train_max_num_images_to_cache: 256
   num_workers: 2

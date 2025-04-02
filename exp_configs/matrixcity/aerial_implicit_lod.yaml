@@ -1,0 +1,42 @@
+max_steps: 100_000
+trainer:
+  max_steps: 100_000
+data:
+  path: datasets/MatrixCity/small_city/aerial
+  parser:
+    class_path: internal.dataparsers.Colmap
+    init_args:
+      split_mode: experiment
+      eval_image_select_mode: list
+      eval_list: datasets/MatrixCity/small_city/aerial/splits/val_images.txt
+      down_sample_factor: 1
+      points_from: ply
+      ply_file: sparse/point_cloud.ply
+  train_max_num_images_to_cache: 256
+  test_max_num_images_to_cache: 256
+  val_max_num_images_to_cache: 256
+  num_workers: 8
+  async_caching: true
+model:
+  gaussian:
+    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
+    init_args:
+      base_layer: 10
+      optimization:
+        anchors_lr_init: 0.0
+        scales_lr: 0.007
+        offsets_lr_init: 0.01
+        offsets_lr_scheduler:
+          init_args:
+            max_steps: 100_000
+            lr_final: 0.0001
+        anchor_features_lr: 0.0075
+        mlp_scheduler:
+          init_args:
+            max_steps: 100_000
+  renderer:
+    class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
+  metric:
+    class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
+  density:
+    class_path: myimpl.density_controllers.grid_density_controller.GridGaussianDensityController

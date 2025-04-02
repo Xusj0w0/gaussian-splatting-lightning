@@ -12,10 +12,9 @@ from internal.density_controllers.density_controller import \
     Utils as OptimizerManipulation
 from internal.density_controllers.vanilla_density_controller import (
     VanillaDensityController, VanillaDensityControllerImpl)
-from myimpl.models.grid_gaussians import (GridGaussianModel,
+from myimpl.models.grid_gaussians import (GridGaussianModel, GridGaussianUtils,
                                           LoDGridGaussianModel,
                                           ScaffoldGaussianModelMixin)
-from myimpl.utils.grid_gaussian_utils import GridGaussianUtils
 
 __all__ = [
     "GridGaussianDensityController",
@@ -403,16 +402,11 @@ class GridDensityContollerUtils:
         if use_chunk:
             chunk_size = 4096
             max_iters = existing_grids.shape[0] // chunk_size + (1 if existing_grids.shape[0] % chunk_size != 0 else 0)
-            remove_duplicates_list = []
+            remove_mask = torch.zeros(candidate_grids.shape[0], dtype=torch.bool, device=candidate_grids.device)
             for i in range(max_iters):
-                cur_remove_duplicates = (
-                    (candidate_grids.unsqueeze(1) == existing_grids[i * chunk_size : (i + 1) * chunk_size, :])
-                    .all(-1)
-                    .any(-1)
-                    .view(-1)
-                )
-                remove_duplicates_list.append(cur_remove_duplicates)
-            remove_mask = reduce(torch.logical_or, remove_duplicates_list)
+                cur_existing_grids = existing_grids[i * chunk_size : (i + 1) * chunk_size, :]
+                cur_remove_duplicates = (candidate_grids.unsqueeze(1) == cur_existing_grids).all(-1).any(-1).view(-1)
+                remove_mask = torch.logical_or(remove_mask, cur_remove_duplicates)
         else:
             remove_mask = (candidate_grids.unsqueeze(1) == existing_grids).all(-1).any(-1).view(-1)
         return ~remove_mask

@@ -304,6 +304,7 @@ class GSplatV1RendererModule(Renderer):
             "opacities": opacities[0],
             "projections": projections,
             "isects": isects,
+            "conics": conics,
         }
 
     def setup_web_viewer_tabs(self, viewer, server, tabs):

@@ -13,14 +13,12 @@ from tqdm.auto import tqdm
 from threading import Lock
 
 from internal.renderers import RendererOutputInfo
-from internal.renderers.gsplat_v1_renderer import GSplatV1, spherical_harmonics  # GSplatV1Renderer 
+from internal.renderers.gsplat_v1_renderer import GSplatV1, GSplatV1Renderer, spherical_harmonics
 from internal.renderers.renderer import RendererConfig, Renderer
 from internal.cameras import Camera
 from internal.models.gaussian import GaussianModel
 from internal.models.vanilla_gaussian import VanillaGaussian
 from internal.utils.sh_utils import RGB2SH, C0
-
-from myimpl.renderers.gsplat_means2d_track_renderer import GSplatMeans2dTrackRenderer
 
 __all__ = ["PartitionLoDRenderer", "PartitionLoDRendererModule", "ViewerOptions"]
 
@@ -123,7 +121,7 @@ class PartitionLoDRendererModule(Renderer):
 
         # load partitions' models
         from internal.utils.gaussian_model_loader import GaussianModelLoader
-        from .partition_training import PartitionTraining, PartitionTrainingConfig
+        from large_scene.utils.partition_training import PartitionTraining, PartitionTrainingConfig
         lods = []  # [N_lods, N_partitions]
         lods_appearance_models = []
 
@@ -434,7 +432,7 @@ class PartitionLoDRendererModule(Renderer):
         self.gaussian_model.to(device=device)
 
         # setup gsplat renderer
-        renderer_config = GSplatMeans2dTrackRenderer(
+        renderer_config = GSplatV1Renderer(
             block_size=getattr(ckpt["hyper_parameters"]["renderer"], "block_size", 16),
             anti_aliased=getattr(ckpt["hyper_parameters"]["renderer"], "anti_aliased", True),
             filter_2d_kernel_size=getattr(ckpt["hyper_parameters"]["renderer"], "filter_2d_kernel_size", 0.3),

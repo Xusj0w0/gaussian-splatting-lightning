@@ -9,8 +9,6 @@ from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.network_factory import NetworkFactory
 
-from .grid_gaussian import GridGaussianModel
-
 __all__ = ["ScaffoldGaussianMixin", "ScaffoldGaussianModelMixin", "ScaffoldOptimizationConfigMixin"]
 
 
@@ -154,7 +152,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         # create mlps
         # opacity: return 1*n_offsets
         self.gaussian_mlps["opacity"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-            n_input_dims=self.config.feature_dim + self.config.view_dim,
+            n_input_dims=self.config.feature_dim,  # try: remove viewdirs + self.config.view_dim,
             n_output_dims=self.n_offsets,
             n_layers=self.config.mlp_n_layers,
             n_neurons=self.config.feature_dim,
@@ -179,7 +177,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             n_layers=self.config.mlp_n_layers,
             n_neurons=self.config.feature_dim,
             activation="ReLU",
-            output_activation="None",
+            output_activation="Sigmoid",
         )
         if self.config.use_feature_bank > 0:
             self.gaussian_mlps["feature_bank"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
