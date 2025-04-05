@@ -87,6 +87,9 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         elif mode == "tensors":
             assert tensors is not None and "anchor_features" in tensors
             anchor_features = tensors["anchor_features"]
+            self.gaussian_mlps["opacity"].load_state_dict(tensors["opacity_mlp"])
+            self.gaussian_mlps["cov"].load_state_dict(tensors["cov_mlp"])
+            self.gaussian_mlps["color"].load_state_dict(tensors["color_mlp"])
         else:
             raise ValueError(f"Unsupported mode {mode}")
 
@@ -179,7 +182,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             activation="ReLU",
             output_activation="Sigmoid",
         )
-        if self.config.use_feature_bank > 0:
+        if self.config.use_feature_bank:
             self.gaussian_mlps["feature_bank"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
                 n_input_dims=self.config.view_dim,
                 n_output_dims=3,

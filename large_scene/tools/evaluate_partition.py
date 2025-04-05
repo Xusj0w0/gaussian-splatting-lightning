@@ -96,7 +96,6 @@ def validate(dataloader, renderer, metric_calculator, image_saver):
 @torch.no_grad()
 def main():
     args = parse_args()
-    args.yaml = "outputs/mc-5_5-60k/lod_render.yaml"
 
     with open(args.yaml, "r") as f:
         config = yaml.safe_load(f)

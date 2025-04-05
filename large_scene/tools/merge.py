@@ -8,8 +8,11 @@ import sys
 import gc
 import json
 import argparse
-import torch
 from tqdm.auto import tqdm
+from typing import Dict, Optional, Any
+from dataclasses import asdict
+import torch
+import torch.nn as nn
 from internal.cameras.cameras import Camera
 from internal.dataparsers.colmap_dataparser import Colmap
 from internal.models.vanilla_gaussian import VanillaGaussian
@@ -21,6 +24,7 @@ from internal.renderers.gsplat_mip_splatting_renderer_v2 import GSplatMipSplatti
 from internal.density_controllers.vanilla_density_controller import VanillaDensityController
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 
+from myimpl.models.grid_gaussians import ScaffoldGaussianModelMixin
 from large_scene.utils.partition import Partition
 from large_scene.utils.partition_training import PartitionTraining, PartitionTrainingConfig
 
@@ -86,13 +90,38 @@ def fuse_appearance_features(ckpt: dict, gaussian_model, cameras_json: list[dict
     gaussian_model.to(device=gaussian_device)
 
 
-def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool):
+def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool, scaffold_infos: Optional[Dict[str, Any]] = None):
     if retain_appearance:
         from internal.models.appearance_feature_gaussian import AppearanceFeatureGaussian
         ckpt["hyper_parameters"]["gaussian"] = AppearanceFeatureGaussian(
             sh_degree=max_sh_degree,
             appearance_feature_dims=ckpt["hyper_parameters"]["gaussian"].appearance_feature_dims,
         )
+    # support partition rendering of scaffold based model
+    elif scaffold_infos is not None:
+        from myimpl.models.partitionable_implicit_grid_gaussian import PartitionableImplicitGridGaussian, PartitionableImplicitLoDGridGaussian
+        anchor_partition_ids = torch.concatenate(scaffold_infos["anchor_partition_ids"], 0)
+        ckpt["state_dict"]["gaussian_model._anchor_partition_ids"] = anchor_partition_ids
+
+        # remove original gaussian_mlps states
+        keys_removed = []
+        for k in ckpt["state_dict"]:
+            if k.startswith("gaussian_model.gaussian_mlps"):
+                keys_removed.append(k)
+        for k in keys_removed:
+            del ckpt["state_dict"][k]
+        # add new states
+        ckpt["state_dict"].update({
+            f"gaussian_model.gaussian_mlps.{k}": v
+            for k, v in nn.ModuleDict(scaffold_infos["mlps"]).state_dict().items()
+        })
+
+        # modify hyperparameter
+        orig_gaussian = ckpt["hyper_parameters"]["gaussian"]
+        if ckpt["state_dict"].get("gaussian_model.gaussians.levels", None) is not None:
+            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitLoDGridGaussian(partition_ids=torch.unique(anchor_partition_ids).tolist(), **asdict(orig_gaussian))
+        else:
+            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitGridGaussian(partition_ids=torch.unique(anchor_partition_ids).tolist(), **asdict(orig_gaussian))
     else:
         # replace `AppearanceFeatureGaussian` with `VanillaGaussian`
         ckpt["hyper_parameters"]["gaussian"] = VanillaGaussian(sh_degree=max_sh_degree)
@@ -122,6 +151,9 @@ def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool):
             tile_based_culling=getattr(ckpt["hyper_parameters"]["renderer"], "tile_based_culling", False),
             model=ckpt["hyper_parameters"]["renderer"].model,
         )
+    elif scaffold_infos is not None:
+        # do not change renderer type
+        pass
     else:
         ckpt["hyper_parameters"]["renderer"] = GSplatV1Renderer(
             anti_aliased=anti_aliased,
@@ -183,7 +215,8 @@ def main():
         * Saving
     """
 
-    MERGABLE_PROPERTY_NAMES = ["means", "shs_dc", "shs_rest", "scales", "rotations", "opacities"]
+    MERGABLE_PROPERTY_NAMES = ["means", "shs_dc", "shs_rest", "scales", "rotations", "opacities",
+                               "offsets", "anchor_features", "levels", "extra_levels"]
 
     args = parse_args()
 
@@ -221,6 +254,7 @@ def main():
     def isclose(a, b):
         return torch.isclose(a, b, atol=1e-4)
 
+    scaffold_infos = None
     with tqdm(mergable_partitions, desc="Pre-processing") as t:
         for partition_idx, partition_id_str, ckpt_file, bounding_box in t:
             t.set_description("{}".format(partition_id_str))
@@ -310,8 +344,18 @@ def main():
                 t.write("Fusing MipSplatting filters...")
                 fuse_mip_filters(gaussian_model)
 
+            if isinstance(gaussian_model, ScaffoldGaussianModelMixin):
+                if not args.preprocess:
+                    if scaffold_infos is None:
+                        scaffold_infos = {"mlps": {}, "anchor_partition_ids": []}
+                    scaffold_infos["anchor_partition_ids"].append(torch.full((gaussian_model.get_means().shape[0],), partition_idx, dtype=torch.int))
+                    for k in ["opacity", "cov", "color"]:
+                        if scaffold_infos["mlps"].get(k, None) is None:
+                            scaffold_infos["mlps"][k] = nn.ModuleDict()
+                        scaffold_infos["mlps"][k][str(partition_idx)] = getattr(gaussian_model, f"get_{k}_mlp")
+
             if args.preprocess:
-                update_ckpt(ckpt, {k: gaussian_model.get_property(k) for k in MERGABLE_PROPERTY_NAMES}, gaussian_model.max_sh_degree, retain_appearance=args.retain_appearance)
+                update_ckpt(ckpt, {k: gaussian_model.get_property(k) for k in MERGABLE_PROPERTY_NAMES if k in gaussian_model.property_names}, gaussian_model.max_sh_degree, retain_appearance=args.retain_appearance)
 
                 output_filename_suffix = ""
                 if args.retain_appearance:
@@ -329,7 +373,8 @@ def main():
                 t.write("Saved to {}".format(output_filename))
             else:
                 for i in MERGABLE_PROPERTY_NAMES:
-                    gaussians_to_merge.setdefault(i, []).append(gaussian_model.get_property(i))
+                    if i in gaussian_model.property_names:
+                        gaussians_to_merge.setdefault(i, []).append(gaussian_model.get_property(i))
 
     if args.preprocess:
         return
@@ -344,7 +389,7 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
 
-    update_ckpt(ckpt, merged_gaussians, gaussian_model.max_sh_degree, retain_appearance=args.retain_appearance)
+    update_ckpt(ckpt, merged_gaussians, gaussian_model.max_sh_degree, retain_appearance=args.retain_appearance, scaffold_infos=scaffold_infos)
 
     # save
     print("Saving...")

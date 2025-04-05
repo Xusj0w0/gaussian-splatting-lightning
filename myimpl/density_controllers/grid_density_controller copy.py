@@ -180,13 +180,11 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         if isinstance(gaussian_model, LoDGridGaussianModel):
             LoDGridDensityController.densify_anchors(self, grads_norm, primitive_mask, gaussian_model, optimizers)
         else:
-            GridDensityController.densify_anchors_paperversion(
-                self, grads_norm, primitive_mask, gaussian_model, optimizers
-            )
+            GridDensityController.densify_anchors(self, grads_norm, primitive_mask, gaussian_model, optimizers)
 
         # enlarge buffers
         num_anchors = gaussian_model.n_anchors - self._anchor_denom.shape[0]
-        self._densify_buffers(num_anchors, num_anchors * n_offsets, primitive_mask)
+        self._enlarge_buffers(num_anchors, num_anchors * n_offsets, primitive_mask)
         torch.cuda.empty_cache()
 
         # prune anchors
@@ -200,7 +198,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         self._prune_anchors(keep_mask, gaussian_model, optimizers)
 
         # prune buffers
-        self._prune_buffers(denom_mask, keep_mask, n_offsets)
+        self._prune_buffer(denom_mask, keep_mask, n_offsets)
         torch.cuda.empty_cache()
 
         # register buffer
@@ -210,7 +208,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         new_properties = OptimizerManipulator.prune_properties(keep_mask, gaussian_model, optimizers)
         gaussian_model.properties = new_properties
 
-    def _densify_buffers(self, num_anchors, num_primitives, primitive_mask):
+    def _enlarge_buffers(self, num_anchors, num_primitives, primitive_mask):
         self._anchor_denom = torch.cat([self._anchor_denom, self._anchor_denom.new_zeros((num_anchors, 1))], dim=0)
         self._anchor_opacity_accum = torch.cat(
             [self._anchor_opacity_accum, self._anchor_opacity_accum.new_zeros((num_anchors, 1))], dim=0
@@ -224,7 +222,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             [self._primitive_gradient_accum, self._primitive_gradient_accum.new_zeros((num_primitives, 1))], dim=0
         )
 
-    def _prune_buffers(self, denom_mask, keep_mask, n_offsets):
+    def _prune_buffer(self, denom_mask, keep_mask, n_offsets):
         self._primitive_denom = self._primitive_denom.view(-1, n_offsets)[keep_mask].view(-1, 1)
         self._primitive_gradient_accum = self._primitive_gradient_accum.view(-1, n_offsets)[keep_mask].view(-1, 1)
         if denom_mask.sum() > 0:
@@ -291,7 +289,7 @@ class GridDensityController:
             gaussian_model.properties = new_properties
 
     @classmethod
-    def densify_anchors_paperversion(
+    def density_anchors_paperversion(
         cls,
         controller: GridGaussianDensityControllerImpl,
         grads,
@@ -309,36 +307,6 @@ class GridDensityController:
 
             rand_mask = torch.rand_like(candidate_mask.float()).to(candidate_mask.device) > (0.5 ** (i + 1))
             candidate_mask = torch.logical_and(candidate_mask, rand_mask)
-
-            n_anchors_diff = gaussian_model.get_anchors.shape[0] - n_anchors_init
-            if n_anchors_diff <= 0:
-                if i > 0:
-                    continue
-            else:
-                candidate_mask = torch.cat(
-                    [candidate_mask, candidate_mask.new_zeros((n_anchors_diff * n_offsets,))], dim=0
-                )
-
-            all_primitives = gaussian_model.get_anchors.unsqueeze(dim=1) + (
-                gaussian_model.get_offsets * gaussian_model.get_scalings[:, :3].unsqueeze(dim=1)
-            )
-            size_factor = gaussian_model.config.update_init_factor // (gaussian_model.config.update_hierachy_factor**i)
-            cur_size = gaussian_model.voxel_size * size_factor
-
-            filtered_res: CandidateAnchors = GridFilteringUtils.filter_primitives_paperversion(
-                gaussian_model=gaussian_model,
-                all_primitives=all_primitives,
-                grad_mask=candidate_mask,
-                voxel_size=cur_size,
-                overlap=controller.config.overlap,
-            )
-
-            if filtered_res.n_anchors > 0:
-                property_dict = filtered_res.get_all_properties(gaussian_model, cur_size)
-                new_properties = OptimizerManipulator.cat_tensors_to_properties(
-                    property_dict, gaussian_model, optimizers
-                )
-                gaussian_model.properties = new_properties
 
 
 class LoDGridDensityController:
@@ -458,21 +426,18 @@ class LoDGridDensityController:
 
 class GridFilteringUtils:
     @staticmethod
-    def filter_exsiting_grids(
-        candidate_grids: torch.Tensor, existing_grids: torch.Tensor, num_overlap: int = 1, use_chunk=True
-    ):
-        count = candidate_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.int)
+    def filter_exsiting_grids(candidate_grids, existing_grids, use_chunk=True):
         if use_chunk:
             chunk_size = 4096
             max_iters = existing_grids.shape[0] // chunk_size + (1 if existing_grids.shape[0] % chunk_size != 0 else 0)
+            remove_mask = torch.zeros(candidate_grids.shape[0], dtype=torch.bool, device=candidate_grids.device)
             for i in range(max_iters):
                 cur_existing_grids = existing_grids[i * chunk_size : (i + 1) * chunk_size, :]
-                matches = (candidate_grids.unsqueeze(1) == cur_existing_grids).all(-1)
-                count += matches.sum(-1)
+                cur_remove_duplicates = (candidate_grids.unsqueeze(1) == cur_existing_grids).all(-1).any(-1).view(-1)
+                remove_mask = torch.logical_or(remove_mask, cur_remove_duplicates)
         else:
-            count = (candidate_grids.unsqueeze(1) == cur_existing_grids).all(-1).sum(-1)
-
-        return count < num_overlap
+            remove_mask = (candidate_grids.unsqueeze(1) == existing_grids).all(-1).any(-1).view(-1)
+        return ~remove_mask
 
     @staticmethod
     def filter_primitives(
@@ -489,41 +454,6 @@ class GridFilteringUtils:
         # same grids are marked with same value
         existing_grids = gaussian_model.xyz2grid(gaussian_model.get_anchors, gaussian_model.voxel_size)
         candidate_grids = gaussian_model.xyz2grid(candidate_primitives, gaussian_model.voxel_size)
-        candidate_grids, unique_indices = torch.unique(candidate_grids, return_inverse=True, dim=0)
-
-        # initial values
-        filtered_anchors = candidate_primitives.new_zeros((0, 3))
-        keep_mask = existing_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.bool)
-
-        if overlap:
-            keep_mask = existing_grids.new_ones((candidate_grids.shape[0],), dtype=torch.bool)
-            filtered_anchors = gaussian_model.grid2xyz(candidate_grids, gaussian_model.voxel_size)
-        else:
-            keep_mask = GridFilteringUtils.filter_exsiting_grids(candidate_grids, existing_grids)
-            filtered_anchors = gaussian_model.grid2xyz(candidate_grids[keep_mask], gaussian_model.voxel_size)
-
-        return CandidateAnchors(
-            anchors=filtered_anchors,
-            levels=None,
-            grad_mask=grad_mask,
-            unique_indices=unique_indices,
-            keep_mask=keep_mask,
-        )
-
-    @staticmethod
-    def filter_primitives_paperversion(
-        gaussian_model: GridGaussianModel,
-        all_primitives: torch.Tensor,  # Avoid duplicate calculations
-        grad_mask: torch.Tensor,
-        voxel_size: float,
-        overlap: bool = False,
-    ):
-        # filter by grad mask
-        candidate_primitives = all_primitives.view(-1, 3)[grad_mask]
-
-        # convert to grids and select unique grids
-        existing_grids = gaussian_model.xyz2grid(gaussian_model.get_anchors, voxel_size)
-        candidate_grids = gaussian_model.xyz2grid(candidate_primitives, voxel_size)
         candidate_grids, unique_indices = torch.unique(candidate_grids, return_inverse=True, dim=0)
 
         # initial values
@@ -652,7 +582,9 @@ class CandidateAnchors:
         # if anchors are added, shape of anchor_features may dismatch grad_mask
         anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
         # select max value of anchor features among primitives that convert to same grid
-        anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
+        anchor_features = scatter_max(
+            anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0
+        )[0]
         anchor_features = anchor_features[self.keep_mask]
         return {"anchor_features": anchor_features}
 

@@ -15,6 +15,7 @@ from internal.dataparsers import DataParserOutputs
 from internal.dataparsers.colmap_dataparser import Colmap
 from internal.dataset import CacheDataLoader, Dataset
 from internal.models.vanilla_gaussian import VanillaGaussianModel
+from internal.renderers import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from utils.common import AsyncImageSaver
@@ -109,6 +110,19 @@ class RendererWithMetrics(VanillaRenderer):
         return outputs
 
 
+class RendererWithMetricsWrapper(Renderer):
+    def __init__(self, renderer):
+        super().__init__()
+        self._renderer = renderer
+
+    def forward(self, viewpoint_camera, pc, bg_color, *args, **kwargs):
+        start_t = time.time()
+        outputs = self._renderer(viewpoint_camera, pc, bg_color, *args, **kwargs)
+        outputs["time"] = time.time() - start_t
+        outputs["n_gaussians"] = pc.n_gaussians
+        return outputs
+
+
 def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer, DataParserOutputs]:
     if args.ckpt.endswith(".ckpt"):
         ckpt = torch.load(args.ckpt, map_location="cpu")
@@ -116,7 +130,9 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
         dataset_path = ckpt["datamodule_hyper_parameters"]["path"]
         dataparser_config = ckpt["datamodule_hyper_parameters"]["parser"]
         dataparser_config.image_list = None
-        del ckpt
+        if args.dataset_path is not None:
+            dataset_path = args.dataset_path
+            dataparser_config.eval_list = osp.join(args.dataset_path, "splits/val_images.txt")
 
     elif args.ckpt.endswith(".ply"):
         assert args.dataset_path is not None, "ply model detected, dataset path should be specified"
@@ -132,7 +148,9 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
             down_sample_factor=args.down_sample_factor,
         )
 
-    renderer = RendererWithMetrics()
+    renderer = ckpt["hyper_parameters"]["renderer"].instantiate()
+    renderer.setup(stage="validation")
+    renderer = RendererWithMetricsWrapper(renderer)
     # avoid loading point cloud
     dataparser_config.points_from == "random"
     dataparser_outputs: DataParserOutputs = dataparser_config.instantiate(

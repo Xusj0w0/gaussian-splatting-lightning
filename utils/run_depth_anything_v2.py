@@ -22,7 +22,8 @@ configure_arg_parser(parser)
 args = parser.parse_args()
 
 sys.path.insert(0, args.da2_path)
-from depth_anything_v2.dpt import DepthAnythingV2
+# from depth_anything_v2.dpt import DepthAnythingV2
+from external.depth_anything_v2.depth_anything_v2.dpt import DepthAnythingV2
 
 if args.output is None:
     args.output = os.path.join(os.path.dirname(args.image_dir), "estimated_depths")

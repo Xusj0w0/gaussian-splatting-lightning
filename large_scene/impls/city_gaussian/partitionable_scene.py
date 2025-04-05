@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from glob import glob
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -29,12 +30,16 @@ from internal.renderers.renderer import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import GaussianPlyUtils
-from internal.utils.graphics_utils import BasicPointCloud
+from internal.utils.graphics_utils import (BasicPointCloud,
+                                           fetch_ply_without_rgb_normalization,
+                                           store_ply)
 from internal.utils.partitioning_utils import (MinMaxBoundingBox,
                                                MinMaxBoundingBoxes,
                                                PartitionCoordinates,
                                                Partitioning, SceneBoundingBox)
 from internal.utils.sh_utils import eval_sh
+from myimpl.models.grid_gaussians import GridGaussianModel
+from myimpl.utils.grid_gaussian_loader import GridGaussianUtils
 
 from ..base.partitionable_scene import (PartitionableScene,
                                         PartitionableSceneConfig)
@@ -91,17 +96,11 @@ class CityScene(PartitionableScene):
         # calculate points' xyz
         camera_centers = image_set.cameras.camera_center
         camera_centers_transformed = camera_centers @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+        self.camera_centers = camera_centers_transformed
+
         means = coarse_model.get_xyz.detach().clone().cpu()
         means_transformed = means @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
 
-        # visualize gaussian point cloud, viewdirs is manhattan coordinates' z axis
-        dir_pp = -self.manhattan_trans[2, :3].repeat(means.shape[0], 1)
-        shs_view = coarse_model.get_features.transpose(1, 2).view(-1, 3, (coarse_model.max_sh_degree + 1) ** 2)
-        rgb = eval_sh(coarse_model.active_sh_degree, shs_view.detach().cpu(), dir_pp)
-        rgb = torch.clamp(rgb + 0.5, 0.0, 1.0).detach().cpu().numpy() * 255.0
-
-        # means and cameras are not transformed
-        self.camera_centers = camera_centers_transformed
         self.get_scene_bounding_box(means_transformed, image_set.cameras)
         self.build_partition_coordinates()
 
@@ -122,7 +121,10 @@ class CityScene(PartitionableScene):
             xy=self.partition_coordinates.xy[:, :2],
             size=self.partition_coordinates.size[:, :2],
         )
-        self.save_plots(output_path, BasicPointCloud(points=means_transformed, colors=rgb, normals=None))
+        # load point cloud for visualization
+        self.save_plots(
+            output_path,
+        )
         self.save_partitioning_results(output_path, image_set, coarse_model)
 
     @classmethod
@@ -158,9 +160,33 @@ class CityScene(PartitionableScene):
                 k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
             }
             model.properties = incomplete_properties
-            dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
-            GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
+            self.save_gaussian_in_partition(osp.join(partition_dir, "partitions", partition_id_str), model)
         model.properties = complete_properties
+
+    def save_gaussian_in_partition(self, dst_dir: str, model: VanillaGaussianModel):
+        if isinstance(model, VanillaGaussianModel):
+            dst_path = osp.join(dst_dir, "gaussian_model.ply")
+            GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
+        elif isinstance(model, GridGaussianModel):
+            dst_path = osp.join(dst_dir, "gaussian_model.pt")
+            pt = GridGaussianUtils.tensors_from_model(model)
+            torch.save(pt, dst_path)
+        else:
+            raise ValueError("unsupported model type")
+
+    def load_point_cloud(self, dataset_path):
+        ply_path = osp.join(dataset_path, "point_cloud.ply")
+        if osp.exists(ply_path):
+            point_cloud = fetch_ply_without_rgb_normalization(ply_path)
+            points, colors = torch.from_numpy(point_cloud.points), torch.from_numpy(point_cloud.colors)
+        else:
+            points3D_path = osp.join(dataset_path, "sparse", "**", "points3D.bin")
+            points3D_path = list(glob(points3D_path, recursive=True))
+            assert len(points3D_path) > 0, "points3D.bin not found"
+            points, colors, _, _ = self.load_points_from_bin(points3D_path[0])
+        if not osp.exists(ply_path):
+            store_ply(ply_path, points, colors)
+        return BasicPointCloud(points=points, colors=colors, normals=None)
 
     def get_extra_data(self):
         extra_data = super().get_extra_data()
@@ -168,7 +194,9 @@ class CityScene(PartitionableScene):
             {
                 "up": torch.linalg.inv(self.manhattan_trans)[:3, 1],
                 "rotation_transform": self.manhattan_trans,
-                "radius_bounding_box": asdict(self.radius_bounding_box),
+                "radius_bounding_box": (
+                    asdict(self.radius_bounding_box) if self.radius_bounding_box is not None else None
+                ),
                 "gaussians_in_partitions": self.gaussians_in_partitions,
             }
         )
@@ -235,20 +263,6 @@ class CityScene(PartitionableScene):
         )
         dataparser_outputs = dataparser.get_outputs()
         return dataparser_outputs.train_set
-
-    def plot_scene_bounding_box(self, ax):
-        super().plot_scene_bounding_box(ax)
-
-        # fmt: off
-        ax.add_artist(mpatches.Rectangle(
-            self.radius_bounding_box.min.tolist(),
-            self.radius_bounding_box.max[0] - self.radius_bounding_box.min[0],
-            self.radius_bounding_box.max[1] - self.radius_bounding_box.min[1],
-            fill=False,
-            color="red",
-            label="radius_bbox",
-        ))
-        # fmt: on
 
     def get_scene_bounding_box(self, points: torch.Tensor, cameras: Cameras):
         if (
@@ -424,7 +438,7 @@ class CityScene(PartitionableScene):
                     mask = ~self.gaussians_in_partitions[partition_idx].to(device)
                     incomplete_properties = {k: v[mask] for k, v in complete_properties.items()}
                     coarse_model.properties = incomplete_properties
-                    render_part = renderer(camera, coarse_model, bg_color)
+                    render_part = renderer(camera, coarse_model, bg_color)["render"]
 
                     self.camera_visibilities[partition_idx, camera.idx].copy_(
                         1 - ssim(render_part.unsqueeze(0), render_full.unsqueeze(0))

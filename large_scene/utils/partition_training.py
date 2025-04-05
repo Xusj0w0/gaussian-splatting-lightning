@@ -25,6 +25,7 @@ __all__ = ["PartitionTrainingConfig", "PartitionTraining"]
 @dataclass
 class PartitionTrainingConfig(PartitionTrainingConfigBase):
     partition_dir: str = field(init=False)
+    initialize_from: str = None
     def __post_init__(self):
         super().__post_init__()
         self.partition_dir = osp.normpath(
@@ -37,6 +38,8 @@ class PartitionTrainingConfig(PartitionTrainingConfigBase):
         # parser.add_argument("partition_dir")
         parser.add_argument("--project", "-p", type=str, required=True,
                             help="Project name")
+        # add initialize
+        parser.add_argument("--initialize_from", type=str, help="Initialization file, gaussian_model.ply or gaussian_model.pt")
         parser.add_argument("--min-images", "-m", type=int, default=32,
                             help="Ignore partitions with image number less than this value")
         parser.add_argument("--config", "-c", type=str, nargs="*", default=None)
@@ -48,8 +51,8 @@ class PartitionTrainingConfig(PartitionTrainingConfigBase):
         parser.add_argument("--scalable-params", type=str, default=[], nargs="*", action="extend")
         parser.add_argument("--extra-epoch-scalable-params", type=str, default=[], nargs="*", action="extend")
         parser.add_argument("--scale-param-mode", type=str, default="none")
-        parser.add_argument("--max-steps", type=int, default=30_000)
-        parser.add_argument("--no-default-scalable", action="store_true")
+        parser.add_argument("--max-steps", type=int, default=30_000, required=True)
+        parser.add_argument("--no-default-scalable", type=bool, default=True)
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--name-suffix", type=str, default="")
         parser.add_argument("--ff-densify", action="store_true", default=False)
@@ -85,6 +88,14 @@ class PartitionTrainingConfig(PartitionTrainingConfigBase):
             **cls.get_extra_init_kwargs(args),
         )
 
+    @classmethod
+    def get_extra_init_kwargs(cls, args):
+        extra_init_kwargs = super().get_extra_init_kwargs(args)
+        extra_init_kwargs.update({
+            "initialize_from": args.initialize_from
+        })
+        return extra_init_kwargs
+
 
 class PartitionTraining(PartitionTrainingBase):
     config: PartitionTrainingConfig
@@ -107,11 +118,12 @@ class PartitionTraining(PartitionTrainingBase):
         ]
 
         # city gs init
-        init_model_path = osp.join(self.path, "partitions", self.get_partition_id_str(partition_idx), "gaussian_model.ply")
-        if osp.exists(init_model_path):
-            args += [
-                "--model.initialize_from={}".format(init_model_path),
-            ]
+        if self.config.initialize_from is not None:
+            init_model_path = osp.join(self.path, "partitions", self.get_partition_id_str(partition_idx), self.config.initialize_from)
+            if osp.exists(init_model_path):
+                args += [
+                    "--model.initialize_from={}".format(init_model_path),
+                ]
         return args
  
 
@@ -177,7 +189,7 @@ class PartitionTraining(PartitionTrainingBase):
         
         model = GaussianModelLoader.initialize_model_from_checkpoint(ckpt, "cpu")
         kwargs = {'manhattan_trans': self.scene["extra_data"]["rotation_transform"]}
-        if "radius_bounding_box" in self.scene["extra_data"]:
+        if self.scene["extra_data"].get("radius_bounding_box", None) is not None:
             kwargs.update({"radius_bbox": MinMaxBoundingBox(**self.scene["extra_data"]["radius_bounding_box"])})
         is_in_partition = self.partition.scene.is_in_partition(model.get_means(), partition_bounding_box, **kwargs)
 

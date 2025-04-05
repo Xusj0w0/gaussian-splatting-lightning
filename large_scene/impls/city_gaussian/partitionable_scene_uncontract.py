@@ -38,12 +38,13 @@ from internal.utils.sh_utils import eval_sh
 
 from ..base.partitionable_scene import (PartitionableScene,
                                         PartitionableSceneConfig)
+from .partitionable_scene import CityScene
 
-__all__ = ["UncontractedCitySceneConfig", "UncontractedCityScene"]
+__all__ = ["UncontractCitySceneConfig", "UncontractCityScene"]
 
 
 @dataclass
-class UncontractedCitySceneConfig(PartitionableSceneConfig):
+class UncontractCitySceneConfig(PartitionableSceneConfig):
     down_sample_factor: int = 4
     """ down sample factor when coarse training """
 
@@ -53,17 +54,22 @@ class UncontractedCitySceneConfig(PartitionableSceneConfig):
     visibility_threshold: float = 0.05
 
     def instantiate(self):
-        return UncontractedCityScene(self)
+        return UncontractCityScene(self)
 
 
 @dataclass
-class UncontractedCityScene(PartitionableScene):
-    scene_config: UncontractedCitySceneConfig = field(default_factory=lambda: UncontractedCitySceneConfig())
+class UncontractCityScene(CityScene):
+    scene_config: UncontractCitySceneConfig = field(default_factory=lambda: UncontractCitySceneConfig())
 
     gaussian_bbox_enlarge_step: torch.Tensor = field(init=False)
 
+    radius_bounding_box: MinMaxBoundingBox = field(init=False)
+
     gaussians_in_partitions: torch.Tensor = field(default=None, init=False)
     """ indicate each gaussian in which partition, [N_partition, N_gaussian] """
+
+    def __post_init__(self):
+        PartitionableScene.__post_init__(self)
 
     def partition(self, dataset_path: str, output_path: str):
         device = torch.device("cuda")
@@ -73,17 +79,10 @@ class UncontractedCityScene(PartitionableScene):
         # calculate points' xyz
         camera_centers = image_set.cameras.camera_center
         camera_centers_transformed = camera_centers @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+        self.camera_centers = camera_centers_transformed[..., :2]
+
         means = coarse_model.get_xyz.detach().clone().cpu()
         means_transformed = means @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
-
-        # visualize gaussian point cloud, viewdirs is manhattan coordinates' z axis
-        dir_pp = -self.manhattan_trans[2, :3].repeat(means.shape[0], 1)
-        shs_view = coarse_model.get_features.transpose(1, 2).view(-1, 3, (coarse_model.max_sh_degree + 1) ** 2)
-        rgb = eval_sh(coarse_model.active_sh_degree, shs_view.detach().cpu(), dir_pp)
-        rgb = torch.clamp(rgb + 0.5, 0.0, 1.0).detach().cpu().numpy() * 255.0
-
-        # means and cameras are not transformed
-        self.camera_centers = camera_centers_transformed[..., :2]
 
         # get bounding boxes
         self.get_bounding_box_by_points(means_transformed)
@@ -99,7 +98,7 @@ class UncontractedCityScene(PartitionableScene):
         # assign cameras to partitions
         # location based assignment, use bounded coordinates
         self.partition_coordinates = bounded_coordinates
-        self.camera_center_based_partition_assignment()
+        PartitionableScene.camera_center_based_partition_assignment(self)
         # visibility calculation, use orig coordinates
         self.partition_coordinates = partition_coordinates
         # render image with one of the partitions removed
@@ -112,9 +111,27 @@ class UncontractedCityScene(PartitionableScene):
         self.visibility_based_partition_assignment()
 
         self.partition_coordinates = bounded_coordinates
-        self.save_plots(output_path, BasicPointCloud(points=means_transformed, colors=rgb, normals=None))
+        # load point cloud for visualization
+        point_cloud = self.load_point_cloud(dataset_path)
+        points3D_transformed = (
+            point_cloud.points.to(self.manhattan_trans) @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+        )
+        self.save_plots(
+            output_path, BasicPointCloud(points=points3D_transformed, colors=point_cloud.colors, normals=None)
+        )
         self.partition_coordinates = partition_coordinates
         self.save_partitioning_results(output_path, image_set, coarse_model)
+
+    @classmethod
+    def is_in_partition(
+        cls,
+        coordinates: torch.Tensor,
+        partition_bbox: MinMaxBoundingBox,
+        manhattan_trans: torch.Tensor,
+        *args,
+        **kwargs,
+    ):
+        return PartitionableScene.is_in_partition(coordinates, partition_bbox, manhattan_trans)
 
     def get_scene_bounding_box(self):
         """
@@ -263,26 +280,6 @@ class UncontractedCityScene(PartitionableScene):
 
         return bbox_dict
 
-    def save_partitioning_results(self, output_path: str, image_set: ImageSet, model: VanillaGaussianModel):
-        super().save_partitioning_results(output_path, image_set)
-
-        partition_dir = osp.join(output_path, "partition_infos")
-        for d in os.listdir(osp.join(partition_dir, "partitions")):
-            fulldir = osp.join(partition_dir, "partitions", d)
-            if osp.isdir(fulldir):
-                shutil.copy(osp.join(output_path, "coarse", "cfg_args"), osp.join(fulldir, "cfg_args"))
-
-        complete_properties = model.properties
-        for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
-            partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
-            incomplete_properties = {
-                k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
-            }
-            model.properties = incomplete_properties
-            dst_path = osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.ply")
-            GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
-        model.properties = complete_properties
-
     def get_extra_data(self):
         extra_data = super().get_extra_data()
         extra_data.update(
@@ -293,68 +290,6 @@ class UncontractedCityScene(PartitionableScene):
             }
         )
         return extra_data
-
-    def coarse_train(self, dataset_path: str, output_path: str):
-        args = ["python", "main.py", "fit"]
-
-        if next((Path(output_path) / "coarse").rglob("*.ckpt"), None) is not None:
-            ckpt_path = GaussianModelLoader.search_load_file(osp.join(output_path, "coarse"))
-            config_path = next((Path(output_path) / "coarse").rglob("config.yaml"), None)
-            if config_path is not None:
-                config = yaml.safe_load(open(str(config_path), "r"))
-                max_steps = config["trainer"]["max_steps"]
-                ckpt_step = int(osp.splitext(osp.basename(ckpt_path))[0].split("step=")[1])
-                if ckpt_step >= max_steps:  # training finished
-                    return
-            args += [
-                "--config={}".format(str(config_path)) if config_path is not None else "",
-                "--ckpt_path={}".format(ckpt_path),
-            ]
-        else:
-            if self.scene_config.config is not None:
-                args += ["--config={}".format(self.scene_config.config)]
-            args += [
-                "--data.parser.down_sample_factor={}".format(self.scene_config.down_sample_factor),
-                "--data.parser.split_mode=experiment",
-                "--data.parser.eval_image_select_mode=list",
-                "--data.parser.eval_list={}".format(osp.join(dataset_path, "splits/val_images.txt")),
-                "--data.async_caching=true",
-                "--data.train_max_num_images_to_cache=256",
-                "--logger=tensorboard",
-            ]
-        args += [
-            "--project=coarse",
-            "--output={}".format(output_path),
-            "-n=coarse",
-            "--data.path={}".format(dataset_path),
-            "--data.parser=Colmap",
-        ]
-        print(" ".join(args))
-        subprocess.run(args)
-
-    def load_coarse_model(
-        self, dataset_path: str, output_path: str, device: torch.device
-    ) -> Tuple[VanillaGaussianModel, Renderer, ImageSet, Dict[str, Any]]:
-        self.coarse_train(dataset_path, output_path)
-
-        # load coarse model and render
-        ckpt_path = GaussianModelLoader.search_load_file(osp.join(output_path, "coarse"))
-        coarse_model, renderer, ckpt = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
-            ckpt_path, device, pre_activate=False
-        )
-        # load images and loader
-        image_set: ImageSet = self.load_imageset(ckpt["datamodule_hyper_parameters"])
-        return coarse_model, renderer, image_set, ckpt
-
-    def load_imageset(self, data_params: Dict[str, Any]):
-        dataset_path = data_params["path"]
-        dataparser_config = data_params["parser"]
-        dataparser_config.points_from = "random"
-        dataparser: ColmapDataParser = dataparser_config.instantiate(
-            path=dataset_path, output_path=os.getcwd(), global_rank=0
-        )
-        dataparser_outputs = dataparser.get_outputs()
-        return dataparser_outputs.train_set
 
     def build_partition_coordinates(self):
         partition_dict = self.balanced_camera_based_division()
@@ -375,49 +310,3 @@ class UncontractedCityScene(PartitionableScene):
         self.partition_coordinates = PartitionCoordinates(id=id_tensor, xy=xy_tensor, size=sz_tensor)
 
         return self.partition_coordinates
-
-    def calculate_camera_visibilities(
-        self,
-        coarse_model: VanillaGaussianModel,
-        renderer: VanillaRenderer,
-        cameras: Cameras,
-        device: Any = "cpu",
-        bg_color: Tuple[float] = (0.0, 0.0, 0.0),
-    ):
-        """
-        For each partition:
-            1. build a incomplete gaussian model
-            2. render two image
-            3. calculate ssim between completely rendered image and incomplete one
-        """
-        from internal.utils.ssim import ssim
-
-        self.camera_visibilities = torch.zeros(
-            (len(self.partition_coordinates), len(cameras)),
-            dtype=torch.float32,
-        )
-        torch.cuda.empty_cache()
-        bg_color = torch.tensor(bg_color).to(device)
-        # build incomplete gaussian model
-        complete_properties = coarse_model.properties
-        with torch.no_grad():
-            for camera_idx, camera in enumerate(tqdm(cameras)):
-                camera = camera.to_device(device=device)
-                render_full = renderer(camera, coarse_model, bg_color)["render"]
-
-                for partition_idx in range(len(self.gaussians_in_partitions)):
-                    mask = ~self.gaussians_in_partitions[partition_idx].to(device)
-                    incomplete_properties = {k: v[mask] for k, v in complete_properties.items()}
-                    coarse_model.properties = incomplete_properties
-                    render_part = renderer(camera, coarse_model, bg_color)
-
-                    self.camera_visibilities[partition_idx, camera.idx].copy_(
-                        1 - ssim(render_part.unsqueeze(0), render_full.unsqueeze(0))
-                    )
-                coarse_model.properties = complete_properties
-
-        return self.camera_visibilities
-
-    def visibility_based_partition_assignment(self):
-        self.is_partitions_visible_to_cameras = self.camera_visibilities > self.scene_config.visibility_threshold
-        return self.is_partitions_visible_to_cameras

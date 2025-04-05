@@ -1,7 +1,7 @@
 import math
 import os
 import os.path as osp
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -9,7 +9,7 @@ import torch.nn as nn
 from plyfile import PlyData, PlyElement
 from sklearn.neighbors import NearestNeighbors
 
-__all__ = ["init_weight", "knn", "GridGaussianUtils"]
+__all__ = ["init_weight", "knn", "GridFactory"]
 
 
 def init_weight(module: nn.Module):
@@ -26,128 +26,8 @@ def knn(x, K):
     return torch.from_numpy(distances).to(x)
 
 
-class GridGaussianUtils:
+class GridFactory:
     chunk_size_max = 1 << 24
-
-    buffer_key_mapping = {
-        "_voxel_size": ("voxel_size", torch.float32),
-        "_grid_origin": ("init_pos", torch.float32),
-        "_max_level": ("levels", torch.int),
-        "_start_level": ("init_level", torch.int),
-        "_standard_dist": ("standard_dist", torch.float32),
-        "_visibility_threshold": ("visible_threshold", torch.float32),
-    }
-
-    @classmethod
-    def load_buffers(cls, plydata: PlyData):
-        # load buffers
-        infos = {}
-        for info in plydata.obj_info:
-            key, val = info.strip().split(" ", 1)
-            if "," in val:
-                infos[key] = [float(v) for v in val.split(",")]
-            else:
-                infos[key] = float(val)
-
-        buffers = {
-            buffer_name: torch.tensor(infos[key], dtype=dtype)
-            for buffer_name, (key, dtype) in cls.buffer_key_mapping.items()
-            if key in infos
-        }
-        return buffers
-
-    @classmethod
-    def load_grid_properties(cls, plydata: PlyData):
-        anchors = np.stack(
-            (
-                np.asarray(plydata.elements[0]["x"]),
-                np.asarray(plydata.elements[0]["y"]),
-                np.asarray(plydata.elements[0]["z"]),
-            ),
-            axis=1,
-        ).astype(np.float32)
-
-        levels, extra_levels = None, None
-        if "level" in plydata.elements[0]:
-            levels = np.asarray(plydata.elements[0]["level"])[..., np.newaxis].astype(np.int16)
-            extra_levels = np.asarray(plydata.elements[0]["extra_level"]).astype(np.float32)
-
-        scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
-        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
-        scales = np.zeros((anchors.shape[0], len(scale_names)))
-        for idx, attr_name in enumerate(scale_names):
-            scales[:, idx] = np.asarray(plydata.elements[0][attr_name]).astype(np.float32)
-
-        rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
-        rot_names = sorted(rot_names, key=lambda x: int(x.split("_")[-1]))
-        rots = np.zeros((anchors.shape[0], len(rot_names)))
-        for idx, attr_name in enumerate(rot_names):
-            rots[:, idx] = np.asarray(plydata.elements[0][attr_name]).astype(np.float32)
-
-        # anchor_feat
-        anchor_feat_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_anchor_feat")]
-        anchor_feat_names = sorted(anchor_feat_names, key=lambda x: int(x.split("_")[-1]))
-        anchor_feats = np.zeros((anchors.shape[0], len(anchor_feat_names)))
-        for idx, attr_name in enumerate(anchor_feat_names):
-            anchor_feats[:, idx] = np.asarray(plydata.elements[0][attr_name]).astype(np.float32)
-
-        offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_offset")]
-        offset_names = sorted(offset_names, key=lambda x: int(x.split("_")[-1]))
-        offsets = np.zeros((anchors.shape[0], len(offset_names)))
-        for idx, attr_name in enumerate(offset_names):
-            offsets[:, idx] = np.asarray(plydata.elements[0][attr_name]).astype(np.float32)
-        offsets = offsets.reshape((offsets.shape[0], 3, -1)).transpose((0, 2, 1))
-
-        prefix = "gaussians."
-        states = {
-            prefix + "means": torch.from_numpy(anchors).float(),
-            prefix + "offsets": torch.from_numpy(offsets).float(),
-            prefix + "scales": torch.from_numpy(scales).float(),
-            prefix + "anchor_features": torch.from_numpy(anchor_feats).float(),
-        }
-        if levels is not None:
-            states.update(
-                {
-                    prefix + "levels": torch.from_numpy(levels).squeeze().int(),
-                    prefix + "extra_levels": torch.from_numpy(extra_levels).int(),
-                }
-            )
-
-        return states
-
-    @classmethod
-    def load_mlp_states(cls, ckpt_path: str):
-        assert all([osp.exists(osp.join(ckpt_path, f"{f}_mlp.pt")) for f in ["color", "cov", "opacity"]])
-
-        states = {}
-        for key in ["color", "cov", "opacity"]:
-            mlp_path = osp.join(ckpt_path, f"{key}_mlp.pt")
-            state_dict = torch.jit.load(mlp_path, map_location="cpu").state_dict()
-            for k, v in state_dict.items():
-                states[f"gaussian_mlps.{key}.{k}"] = v
-        return states
-
-    @classmethod
-    def convert_orig_to_ckpt(cls, ckpt_path: str, gspl_ckpt):
-        assert osp.exists(osp.join(ckpt_path, "point_cloud.ply"))
-        ply_path = osp.join(ckpt_path, "point_cloud.ply")
-        plydata = PlyData.read(ply_path)
-
-        buffers = cls.load_buffers(plydata)
-        properties = cls.load_grid_properties(plydata)
-        mlps = cls.load_mlp_states(ckpt_path)
-
-        n_anchors = len(properties["gaussians.means"])
-        model = gspl_ckpt["hyper_parameters"]["gaussian"].instantiate()
-        model.setup_from_number(n_anchors)
-
-        state_dict = {}
-        state_dict.update(buffers)
-        state_dict.update(properties)
-        state_dict.update(mlps)
-        gspl_ckpt["state_dict"].update({"gaussian_model." + k: v for k, v in state_dict.items()})
-
-        return gspl_ckpt
 
     @staticmethod
     def max_power_of_2(n: int) -> int:

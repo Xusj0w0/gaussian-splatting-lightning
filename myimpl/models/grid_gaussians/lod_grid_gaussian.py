@@ -9,15 +9,15 @@ import torch.nn as nn
 from internal.cameras.cameras import Camera, Cameras
 from internal.utils.general_utils import inverse_sigmoid
 
-from .grid_gaussian import (GridGaussian, GridGaussianModel,
-                            GridOptimizationConfig)
-from .utils import GridGaussianUtils
+from .base import (GridGaussianBase, GridGaussianModelBase,
+                   GridOptimizationConfigBase)
+from .utils import GridFactory
 
 __all__ = ["LoDGridGaussian", "LoDGridOptimizationConfig", "LoDGridGaussianModel"]
 
 
 @dataclass
-class LoDGridOptimizationConfig(GridOptimizationConfig):
+class LoDGridOptimizationConfig(GridOptimizationConfigBase):
     progressive: bool = True
     """whether optimize anchor from coarse to fine progressively"""
 
@@ -27,7 +27,7 @@ class LoDGridOptimizationConfig(GridOptimizationConfig):
 
 
 @dataclass
-class LoDGridGaussian(GridGaussian):
+class LoDGridGaussian(GridGaussianBase):
     fork: int = 2
 
     dist2level: Literal["floor", "round", "progressive"] = "floor"
@@ -37,6 +37,9 @@ class LoDGridGaussian(GridGaussian):
 
     dist_ratio: float = 0.001
     """Filter distances between camera centers and points within (0, dist_ratio) and (1-dist_ratio, 1)"""
+
+    base_layer: int = 11
+    """The base layer of the octree"""
 
     default_voxel_size: float = 0.02
 
@@ -48,11 +51,8 @@ class LoDGridGaussian(GridGaussian):
 
     optimization: LoDGridOptimizationConfig = field(default_factory=lambda: LoDGridOptimizationConfig())
 
-    def instantiate(self, *args, **kwargs):
-        return LoDGridGaussianModel(self)
 
-
-class LoDGridGaussianModel(GridGaussianModel):
+class LoDGridGaussianModel(GridGaussianModelBase):
     """
     buffers: levels, init_level, standard_dist, voxel_size, visibility_threshold
     """
@@ -77,7 +77,7 @@ class LoDGridGaussianModel(GridGaussianModel):
 
     def setup_multi_level_grid(self, points: torch.Tensor, camera_infos: torch.Tensor, *args, **kwargs):
         # calculate levels and register
-        standard_dist, max_level = GridGaussianUtils.get_levels_by_distances(
+        standard_dist, max_level = GridFactory.get_levels_by_distances(
             points, camera_infos, self.config.dist_ratio, self.config.fork
         )
         max_level = torch.tensor(self.config.max_level) if self.config.max_level > 0 else max_level
@@ -87,7 +87,7 @@ class LoDGridGaussianModel(GridGaussianModel):
         self.register_buffer("_standard_dist", standard_dist)
 
         # calculate voxel grid and register
-        voxel_size, grid_origin = GridGaussianUtils.build_multi_level_grid(
+        voxel_size, grid_origin = GridFactory.build_multi_level_grid(
             points,
             extend_ratio=self.config.extend_ratio,
             base_layer=self.config.base_layer,
@@ -101,7 +101,7 @@ class LoDGridGaussianModel(GridGaussianModel):
         # get visibility_threshold
         vis_thresh = torch.tensor(self.config.visibility_threshold)
         if vis_thresh < 0.0:
-            positions, levels = GridGaussianUtils.multi_level_voxelize(
+            positions, levels = GridFactory.multi_level_voxelize(
                 points,
                 voxel_size=self.voxel_size,
                 max_level=self.max_level,
@@ -109,7 +109,7 @@ class LoDGridGaussianModel(GridGaussianModel):
                 grid2xyz=self.grid2xyz,
                 fork=self.config.fork,
             )
-            mask = GridGaussianUtils.weed_out_mask_by_level(
+            mask = GridFactory.weed_out_mask_by_level(
                 positions,
                 levels,
                 0.0,
@@ -126,15 +126,15 @@ class LoDGridGaussianModel(GridGaussianModel):
         pass
 
     def setup_from_pcd(self, xyz, rgb, cameras: Cameras, *args, **kwargs):
-        if int(GridGaussianUtils.chunk_size_max / xyz.shape[0]) < 64:
-            xyz = xyz[::64]
-            rgb = rgb[::64]
+        if int(GridFactory.chunk_size_max / xyz.shape[0]) < 64:
+            xyz = xyz[::16]
+            rgb = rgb[::16]
         points = torch.from_numpy(xyz).to(cameras[0].device).float()
         cam_centers = cameras.camera_center
         camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)
         self.setup_multi_level_grid(points, camera_infos)
 
-        positions, levels = GridGaussianUtils.multi_level_voxelize(
+        positions, levels = GridFactory.multi_level_voxelize(
             points,
             voxel_size=self.voxel_size,
             max_level=self.max_level,
@@ -142,7 +142,7 @@ class LoDGridGaussianModel(GridGaussianModel):
             grid2xyz=self.grid2xyz,
             fork=self.config.fork,
         )
-        weed_mask = GridGaussianUtils.weed_out_mask_by_level(
+        weed_mask = GridFactory.weed_out_mask_by_level(
             positions,
             levels,
             self.visibility_threshold,
@@ -179,9 +179,10 @@ class LoDGridGaussianModel(GridGaussianModel):
             self.set_property(name, value)
 
     def setup_from_tensors(self, tensors, *args, **kwargs):
-        assert all([n in tensors for n in self.get_buffer_names()])
-        for n in self.get_buffer_names():
-            self.register_buffer(n, tensors[n])
+        buffer_names = self.get_buffer_names()
+        for n in tensors:
+            if n in buffer_names:
+                self.register_buffer(n, tensors[n])
 
         property_dict = self.get_init_properties(tensors=tensors, mode="tensors")
         for name, value in property_dict.items():
@@ -216,7 +217,8 @@ class LoDGridGaussianModel(GridGaussianModel):
         elif mode == "tensors":
             assert tensors is not None and "levels" in tensors
             levels = tensors["levels"]
-            extra_levels = torch.zeros((levels.shape[0],), dtype=torch.float)
+            # extra_levels = torch.zeros((levels.shape[0],), dtype=torch.float)
+            extra_levels = tensors["extra_levels"]
         else:
             raise ValueError(f"Unsupported mode {mode}")
 
@@ -229,10 +231,10 @@ class LoDGridGaussianModel(GridGaussianModel):
         return property_dict
 
     def predict_level(self, dists: torch.Tensor):
-        return GridGaussianUtils.predict_level(dists, standard_dist=self.standard_dist, fork=self.config.fork)
+        return GridFactory.predict_level(dists, standard_dist=self.standard_dist, fork=self.config.fork)
 
     def map_to_int_level(self, pred_level: torch.Tensor, cur_level: int):
-        return GridGaussianUtils.map_to_int_level(pred_level, cur_level, dist2level=self.config.dist2level)
+        return GridFactory.map_to_int_level(pred_level, cur_level, dist2level=self.config.dist2level)
 
     @classmethod
     def activate_level_update(
@@ -295,7 +297,7 @@ class LoDGridGaussianModel(GridGaussianModel):
     def coarse_intervals(self):
         if getattr(self, "_coarse_intervals", None) is None:
             if self.config.optimization.progressive:
-                self._coarse_intervals: List[float] = GridGaussianUtils.get_coarse_intervals(
+                self._coarse_intervals: List[float] = GridFactory.get_coarse_intervals(
                     num_level=self.max_level - self.start_level + 1,
                     coarse_iter=self.config.optimization.coarse_iter,
                     coarse_factor=self.config.optimization.coarse_factor,
@@ -303,3 +305,13 @@ class LoDGridGaussianModel(GridGaussianModel):
             else:
                 self._coarse_intervals = []
         return self._coarse_intervals
+
+    def set_property(self, name: str, value: torch.Tensor):
+        if not value.is_floating_point():
+            self.gaussians[name] = nn.Parameter(value, requires_grad=False)
+        else:
+            self.gaussians[name] = value
+
+    def set_properties(self, properties: Dict[str, torch.Tensor]):
+        for name in self.property_names:
+            self.set_property(name, properties[name])

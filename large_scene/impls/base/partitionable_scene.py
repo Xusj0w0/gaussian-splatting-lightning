@@ -14,6 +14,7 @@ from jsonargparse.typing import final
 from matplotlib import pyplot as plt
 from tqdm.auto import tqdm
 
+import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers.dataparser import ImageSet
 from internal.models.vanilla_gaussian import VanillaGaussianModel
@@ -202,3 +203,32 @@ class PartitionableScene(_PartitionableScene):
         func(ax, *args, **kwargs)
         plt.savefig(path, dpi=600)
         plt.close(fig)
+
+    @staticmethod
+    def load_points_from_bin(points3D_file_path: str) -> List[torch.Tensor]:
+        with open(points3D_file_path, "rb") as fid:
+            num_points = colmap_utils.read_next_bytes(fid, 8, "Q")[0]
+
+            xyzs = []
+            rgbs = []
+            errors = []
+            track_lengths = []
+
+            for p_id in range(num_points):
+                binary_point_line_properties = colmap_utils.read_next_bytes(
+                    fid, num_bytes=43, format_char_sequence="QdddBBBd"
+                )
+                point3D_id = binary_point_line_properties[0]
+                xyz = torch.tensor(binary_point_line_properties[1:4])
+                rgb = torch.tensor(binary_point_line_properties[4:7])
+                error = torch.tensor(binary_point_line_properties[7])
+                track_length = colmap_utils.read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
+                _ = colmap_utils.read_next_bytes(
+                    fid, num_bytes=8 * track_length, format_char_sequence="ii" * track_length
+                )
+                xyzs.append(xyz)
+                rgbs.append(rgb)
+                errors.append(error)
+                track_lengths.append(torch.tensor(track_length))
+
+        return list(map(lambda x: torch.stack(x, dim=0), [xyzs, rgbs, errors, track_lengths]))

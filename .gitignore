@@ -1,7 +1,6 @@
 # self-defined
 .vscode
 datasets
-partition_outputs
 tmp
 .env
 *.pkl
@@ -9,6 +8,7 @@ tmp
 experiments
 **/cuda_src
 **/test_scripts
+**/checkpoints/*
 
 .idea
 outputs*

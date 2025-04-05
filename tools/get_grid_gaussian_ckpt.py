@@ -3,15 +3,12 @@ import os
 import os.path as osp
 
 import torch
-from jsonargparse import lazy_instance
-from lightning import LightningDataModule
-from lightning.pytorch.cli import LightningArgumentParser
 
 from internal.cli import CLI
 from internal.gaussian_splatting import GaussianSplatting
-from myimpl.models.grid_gaussians import GridGaussianUtils
 from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussian,
                                                   ImplicitLoDGridGaussian)
+from myimpl.utils.grid_gaussian_loader import GridGaussianUtils
 
 
 def make_parser():

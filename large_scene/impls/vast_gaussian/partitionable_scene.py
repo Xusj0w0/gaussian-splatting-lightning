@@ -20,7 +20,9 @@ import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from internal.utils.graphics_utils import BasicPointCloud
+from internal.utils.graphics_utils import (BasicPointCloud,
+                                           fetch_ply_without_rgb_normalization,
+                                           store_ply)
 from internal.utils.partitioning_utils import (MinMaxBoundingBox,
                                                MinMaxBoundingBoxes,
                                                PartitionCoordinates,
@@ -52,16 +54,14 @@ class VastScene(PartitionableScene):
     def partition(self, dataset_path: str, output_path: str):
         image_set, point_cloud = self.load_sparse_model(dataset_path)
 
-        reoriented_camera_centers: torch.Tensor = (
-            image_set.cameras.camera_center @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
-        )
-        reoriented_points3D: torch.Tensor = (
-            point_cloud.points @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
-        )
-        self.camera_centers = reoriented_camera_centers[..., :2]
+        camera_centers = image_set.cameras.camera_center
+        camera_centers_transformed = camera_centers @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
+        self.camera_centers = camera_centers_transformed[..., :2]
+
+        points_transformed = point_cloud.points @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
 
         # get bounding boxes
-        self.get_bounding_box_by_points(reoriented_points3D)
+        self.get_bounding_box_by_points(points_transformed)
         self.get_bounding_box_by_camera_centers()
         # get scene bbox by enlarged camera centers
         self.get_scene_bounding_box()
@@ -77,7 +77,7 @@ class VastScene(PartitionableScene):
         self.camera_center_based_partition_assignment()
         # cube based visibility calculation, use orig coordinates
         self.partition_coordinates = partition_coordinates
-        vertices = self.get_partition_cube_vertices(reoriented_points3D)
+        vertices = self.get_partition_cube_vertices(points_transformed)
         bbox_centers = vertices.reshape(-1, 8, 3).mean(dim=1)
         inversed_manhattan_trans = torch.linalg.inv(self.manhattan_trans)
         vertices_inverse_manhattan_transformed = (
@@ -97,7 +97,7 @@ class VastScene(PartitionableScene):
         self.partition_coordinates = bounded_coordinates
         self.save_plots(
             output_path,
-            BasicPointCloud(points=reoriented_points3D, colors=point_cloud.colors, normals=point_cloud.normals),
+            BasicPointCloud(points=points_transformed, colors=point_cloud.colors, normals=point_cloud.normals),
         )
         # save results, use orig coordinates
         self.partition_coordinates = partition_coordinates
@@ -110,51 +110,32 @@ class VastScene(PartitionableScene):
         )
         return extra_data
 
-    @staticmethod
-    def load_points_from_bin(points3D_file_path: str) -> List[torch.Tensor]:
-        with open(points3D_file_path, "rb") as fid:
-            num_points = colmap_utils.read_next_bytes(fid, 8, "Q")[0]
-
-            xyzs = []
-            rgbs = []
-            errors = []
-            track_lengths = []
-
-            for p_id in range(num_points):
-                binary_point_line_properties = colmap_utils.read_next_bytes(
-                    fid, num_bytes=43, format_char_sequence="QdddBBBd"
-                )
-                point3D_id = binary_point_line_properties[0]
-                xyz = torch.tensor(binary_point_line_properties[1:4])
-                rgb = torch.tensor(binary_point_line_properties[4:7])
-                error = torch.tensor(binary_point_line_properties[7])
-                track_length = colmap_utils.read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
-                _ = colmap_utils.read_next_bytes(
-                    fid, num_bytes=8 * track_length, format_char_sequence="ii" * track_length
-                )
-                xyzs.append(xyz)
-                rgbs.append(rgb)
-                errors.append(error)
-                track_lengths.append(torch.tensor(track_length))
-
-        return list(map(lambda x: torch.stack(x, dim=0), [xyzs, rgbs, errors, track_lengths]))
-
     def load_sparse_model(self, dataset_path: str):
         dataparser_config = Colmap(split_mode="reconstruction", points_from="random")
         dataparser: ColmapDataParser = dataparser_config.instantiate(
             path=dataset_path, output_path=os.getcwd(), global_rank=0
         )
-        points3D_path = osp.join(dataparser.detect_sparse_model_dir(), "points3D.bin")
-        dataparser_outputs = dataparser.get_outputs()
 
+        dataparser_outputs = dataparser.get_outputs()
         image_set: ImageSet = dataparser_outputs.train_set
 
-        xyzs, rgbs, errors, track_lengths = self.load_points_from_bin(points3D_path)
-        mask = torch.logical_and(
-            torch.ge(track_lengths, self.scene_config.min_track_length),
-            torch.le(errors, self.scene_config.max_error),
-        )
-        return image_set, BasicPointCloud(points=xyzs[mask], colors=rgbs[mask], normals=None)
+        ply_path = osp.join(dataset_path, "point_cloud.ply")
+        if osp.exists(ply_path):
+            point_cloud = fetch_ply_without_rgb_normalization(ply_path)
+            points, colors = torch.from_numpy(point_cloud.points), torch.from_numpy(point_cloud.colors)
+        else:
+            points3D_path = osp.join(dataparser.detect_sparse_model_dir(), "points3D.bin")
+            xyzs, rgbs, errors, track_lengths = self.load_points_from_bin(points3D_path)
+            mask = torch.logical_and(
+                torch.ge(track_lengths, self.scene_config.min_track_length),
+                torch.le(errors, self.scene_config.max_error),
+            )
+            points, colors = xyzs[mask], rgbs[mask]
+
+        if not osp.exists(ply_path):
+            store_ply(ply_path, points, colors)
+
+        return image_set, BasicPointCloud(points=points, colors=colors, normals=None)
 
     def get_scene_bounding_box(self):
         """
