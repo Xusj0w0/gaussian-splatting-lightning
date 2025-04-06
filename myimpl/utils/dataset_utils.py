@@ -1,5 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Dict
+from collections import defaultdict
+from typing import Any, Callable, Dict
+
+
+class ExtraDataContainer(dict):
+    pass
 
 
 class ExtraDataProcessor(ABC):
@@ -7,7 +12,7 @@ class ExtraDataProcessor(ABC):
         super().__init__(*args, **kwargs)
 
     @abstractmethod
-    def __call__(self, *args, **kwargs):
+    def __call__(self, extra_data: Dict[str, Any], *args, **kwargs):
         pass
 
     def update_properties(self, *args, **kwargs):
@@ -25,7 +30,7 @@ class ExtraDataProcessorContainer:
         for v in self._processors.values():
             v.update_properties(*args, **kwargs)
 
-    def __call__(self, extra_data: Dict):
+    def __call__(self, extra_data: ExtraDataContainer):
         res = {}
         for k, v in extra_data.items():
             if k in self._processors:

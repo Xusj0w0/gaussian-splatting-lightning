@@ -8,21 +8,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
 from gsplat import spherical_harmonics
+from pytorch3d.transforms import quaternion_multiply
 
-from internal.cameras.cameras import Camera
 from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
                                                    GSplatV1RendererModule)
 from internal.schedulers import ExponentialDecayScheduler
-from myimpl.models.grid_gaussians import (GridGaussianModel,
-                                          LoDGridGaussianModel,
-                                          ScaffoldGaussianModelMixin)
-from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
-                                                  ImplicitLoDGridGaussianModel)
-from myimpl.models.partitionable_implicit_grid_gaussian import (
-    PartitionableImplicitGridGaussianModel,
-    PartitionableImplicitLoDGridGaussianModel)
+# from internal.cameras.cameras import Camera
+from myimpl.dataparsers.feature_dataparser import FeatureShapeCamera
+from myimpl.models.grid_rot_gaussians import (GridGaussianModel,
+                                              LoDGridGaussianModel,
+                                              ScaffoldGaussianModelMixin)
+from myimpl.models.implicit_grid_rot_gaussian import (
+    ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel)
 
-__all__ = ["GridGaussianRenderer", "GridGaussianRendererModule"]
+__all__ = ["GridFeatureGaussianRenderer", "GridFeatureGaussianRendererModule"]
 
 
 @dataclass
@@ -42,7 +41,7 @@ class OptimizationConfig:
 
 
 @dataclass
-class GridGaussianRenderer(GSplatV1Renderer):
+class GridFeatureGaussianRenderer(GSplatV1Renderer):
     anti_aliased: bool = False
 
     model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
@@ -50,11 +49,11 @@ class GridGaussianRenderer(GSplatV1Renderer):
     optimization: OptimizationConfig = field(default_factory=lambda: OptimizationConfig())
 
     def instantiate(self, *args, **kwargs):
-        return GridGaussianRendererModule(self)
+        return GridFeatureGaussianRendererModule(self)
 
 
-class GridGaussianRendererModule(GSplatV1RendererModule):
-    config: GridGaussianRenderer
+class GridFeatureGaussianRendererModule(GSplatV1RendererModule):
+    config: GridFeatureGaussianRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
         self.n_appearance_embedding_dims = 0
@@ -97,7 +96,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             )
         return appearance_embedding_optimizer, appearance_embedding_scheduler
 
-    def filter_by_level(self, pc: LoDGridGaussianModel, viewpoint_camera: Camera):
+    def filter_by_level(self, pc: LoDGridGaussianModel, viewpoint_camera: FeatureShapeCamera):
         """
         Returns:
             A tuple:
@@ -122,7 +121,11 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
 
     @torch.no_grad()
     def filter_by_preprojection(
-        self, pc: GridGaussianModel, viewpoint_camera: Camera, anchor_mask: Optional[torch.Tensor] = None, **kwargs
+        self,
+        pc: GridGaussianModel,
+        viewpoint_camera: FeatureShapeCamera,
+        anchor_mask: Optional[torch.Tensor] = None,
+        **kwargs,
     ):
         if anchor_mask is None:
             anchor_mask = pc.get_anchors.new_ones((pc.get_anchors.shape[0],), dtype=torch.bool)
@@ -147,7 +150,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
     def calculate_implicit_properties(
         self,
         pc: ImplicitGridGaussianModel,
-        viewpoint_camera: Camera,
+        viewpoint_camera: FeatureShapeCamera,
         anchor_mask: Optional[torch.Tensor] = None,
         prog_ratio: Optional[torch.Tensor] = None,
         transition_mask: Optional[torch.Tensor] = None,
@@ -160,6 +163,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         features = pc.get_anchor_features[anchor_mask]
         offsets = pc.get_offsets[anchor_mask]
         scalings = pc.get_scalings[anchor_mask]
+        rotations = pc.get_rotations[anchor_mask]
 
         n_anchors, n_offsets = pc.n_anchors, pc.n_offsets
 
@@ -184,6 +188,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             transition = transition_mask[anchor_mask]
             prog[~transition] = 1.0
             opacities = opacities * prog
+        mean_opacities = torch.mean(opacities, dim=-1)
         opacities = opacities.reshape(-1, 1)
 
         primitive_mask = (opacities > 0.0).view(-1)
@@ -195,7 +200,13 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             color_input = cat_local_view
         colors = pc.get_color_mlp(color_input).reshape(-1, 3)
 
-        scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, 7)
+        _scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, n_offsets, 7)
+        scale_rots = _scale_rots.clone()
+        scale_rots[..., -4:] = quaternion_multiply(
+            rotations.unsqueeze(1),
+            pc.rotation_activation(_scale_rots[..., -4:]),
+        )
+        scale_rots = scale_rots.reshape(-1, 7)
 
         concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
         concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
@@ -226,13 +237,13 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             )
         opacities = _opacities.squeeze()
 
-        return xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask
+        return xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask, mean_opacities
 
-    def calculate_explicit_properties(self, pc, viewpoint_camera: Camera, *args, **kwargs):
+    def calculate_explicit_properties(self, pc, viewpoint_camera: FeatureShapeCamera, *args, **kwargs):
         # TODO
         pass
 
-    def prepare_primitives(self, pc: GridGaussianModel, viewpoint_camera: Camera):
+    def prepare_primitives(self, pc: GridGaussianModel, viewpoint_camera: FeatureShapeCamera):
         # filter by level
         anchor_mask, prog_ratio, transition_mask = [None] * 3
         # if isinstance(pc, LoDGridGaussianModel): in viewer, can't judge model type from pc
@@ -252,16 +263,17 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         else:
             raise ValueError("Unsupported gaussian model type")
 
-    def forward(
+    def rasterize(
         self,
-        viewpoint_camera: Camera,
+        viewpoint_camera: FeatureShapeCamera,
         pc: GridGaussianModel,
         bg_color: torch.Tensor,
         scaling_modifier=1.0,
-        render_types: list = None,
+        render_types: Optional[List[str]] = None,
+        *args,
         **kwargs,
     ):
-        xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask = self.prepare_primitives(
+        xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask, mean_opacities = self.prepare_primitives(
             pc, viewpoint_camera
         )
 
@@ -433,12 +445,95 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             # extra infos
             "anchor_mask": anchor_mask,
             "primitive_mask": primitive_mask,
+            "mean_opacities": mean_opacities,
         }
         # fmt: on
 
+    def rasterize_feature(
+        self,
+        opacities: torch.Tensor,
+        viewpoint_camera: FeatureShapeCamera,
+        pc: ImplicitGridGaussianModel,
+        anchor_mask: torch.Tensor,
+        scaling_modifier=1.0,
+        *args,
+        **kwargs,
+    ):
+        xyz = pc.get_anchors[anchor_mask]
+        feature = pc.get_anchor_features[anchor_mask]
+        scales = pc.get_scalings[anchor_mask][..., :3]
+        rotations = pc.get_rotations[anchor_mask]
+
+        preprocessed_camera = viewpoint_camera.preprocess_feature_camera()
+        if scaling_modifier != 1.0:
+            scales = scales * scaling_modifier
+
+        projections = GSplatV1.project(
+            preprocessed_camera,
+            xyz,
+            scales,
+            rotations,
+            eps2d=self.config.filter_2d_kernel_size,
+            anti_aliased=self.config.anti_aliased,
+            radius_clip=self.runtime_options.radius_clip,
+            # radius_clip_from=self.runtime_options.radius_clip_from,
+            camera_model=self.runtime_options.camera_model,
+        )
+        radii, means2d, depths, conics, compensations = projections
+
+        # 2. get opacities and then isect encoding
+        opacities = opacities.unsqueeze(0)  # [1, N]
+        if self.config.anti_aliased:
+            opacities = opacities * compensations
+
+        isects = self.isect_encode(
+            preprocessed_camera,
+            projections,
+            opacities,
+            tile_size=self.config.block_size,
+        )
+
+        # 3. rasterization
+        means2d = means2d.squeeze(0)
+        projection_for_rasterization = radii, means2d, depths, conics, compensations
+
+        render_feature, alpha = GSplatV1.rasterize(
+            preprocessed_camera,
+            projection_for_rasterization,
+            isects,
+            opacities,
+            colors=feature,
+            background=feature.new_zeros((feature.shape[-1],)),
+            tile_size=self.config.block_size,
+        )
+        render_feature = render_feature / (alpha + 1e-8)
+
+        return {"render_feature": render_feature}
+
+    def forward(
+        self,
+        viewpoint_camera: FeatureShapeCamera,
+        pc: ImplicitGridGaussianModel,
+        bg_color: torch.Tensor,
+        scaling_modifier=1.0,
+        render_types: list = None,
+        **kwargs,
+    ):
+        output_pkg = self.rasterize(viewpoint_camera, pc, bg_color, scaling_modifier, render_types, **kwargs)
+
+        # render features
+        anchor_mask = output_pkg["anchor_mask"]
+        mean_opacities = output_pkg["mean_opacities"]
+        feature_output_pkg = self.rasterize_feature(
+            mean_opacities, viewpoint_camera, pc, anchor_mask, scaling_modifier, **kwargs
+        )
+        output_pkg.update(feature_output_pkg)
+
+        return output_pkg
+
     def get_rgbs_from_SHs(
         self,
-        camera: Camera,
+        camera: FeatureShapeCamera,
         xyz: torch.Tensor,
         colors: torch.Tensor,
         visibility_filter: torch.Tensor,

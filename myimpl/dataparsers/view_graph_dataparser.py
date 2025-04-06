@@ -42,7 +42,7 @@ class NeighborCameraOutputs:
         return ref2neighbor, K_ref, K_neighbor
 
 
-class NeighborCameraProcesser(ExtraDataProcessor):
+class NeighborCameraProcessor(ExtraDataProcessor):
     def __init__(self):
         super().__init__()
         self.dataset: Dataset = None
@@ -126,7 +126,7 @@ class ViewGraphDataparser(DataParser):
             dataparser_outputs.train_set.extra_data_processor = ExtraDataProcessorContainer() # fmt: skip
         dataparser_outputs.train_set.extra_data_processor.add_processor(
             {
-                "neighbor_cameras": NeighborCameraProcesser(cameras=dataparser_outputs.train_set.cameras) # fmt: skip
+                "neighbor_cameras": NeighborCameraProcessor(cameras=dataparser_outputs.train_set.cameras) # fmt: skip
             }
         )
 

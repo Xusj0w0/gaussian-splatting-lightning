@@ -1,0 +1,43 @@
+max_steps: 100_000
+trainer:
+  max_steps: 100_000
+data:
+  path: datasets/MegaNeRF/residence
+  parser:
+    class_path: myimpl.dataparsers.feature_dataparser.DepthFeature
+    init_args:
+      split_mode: experiment
+      eval_image_select_mode: list
+      eval_list: datasets/MegaNeRF/residence/splits/val_images.txt
+      down_sample_factor: 4
+  train_max_num_images_to_cache: 64
+  async_caching: true
+  num_workers: 8
+model:
+  gaussian:
+    class_path: myimpl.models.implicit_grid_rot_gaussian.ImplicitGridGaussian
+    init_args:
+      feature_dim: 64
+      update_depth: 3
+      update_init_factor: 16
+      update_hierachy_factor: 4
+      optimization:
+        means_lr_init: 0.0
+        scales_lr: 0.007
+        offsets_lr_init: 0.00016
+        offsets_lr_scheduler:
+          init_args:
+            max_steps: 100_000
+            lr_final: 0.0000016
+        anchor_features_lr: 0.0075
+        mlp_scheduler:
+          init_args:
+            max_steps: 100_000
+  renderer:
+    class_path: myimpl.renderers.grid_feature_renderer.GridFeatureGaussianRenderer
+  metric:
+    class_path: myimpl.metrics.feature_metrics.FeatureMetrics
+  density:
+    class_path: myimpl.density_controllers.grid_rot_density_controller.GridGaussianDensityController
+    init_args:
+      densify_until_iter: 60_000

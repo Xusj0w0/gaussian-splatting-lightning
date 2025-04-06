@@ -152,8 +152,10 @@ def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool, 
             model=ckpt["hyper_parameters"]["renderer"].model,
         )
     elif scaffold_infos is not None:
-        # do not change renderer type
-        pass
+        from myimpl.renderers.partition_implicit_renderer import PartitionGridGaussianRenderer
+        ckpt["hyper_parameters"]["renderer"] = PartitionGridGaussianRenderer(
+            **asdict(ckpt["hyper_parameters"]["renderer"])
+        )
     else:
         ckpt["hyper_parameters"]["renderer"] = GSplatV1Renderer(
             anti_aliased=anti_aliased,
