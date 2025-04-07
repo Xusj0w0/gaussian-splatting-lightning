@@ -12,7 +12,7 @@ data:
       down_sample_factor: 4
   train_max_num_images_to_cache: 64
   async_caching: true
-  num_workers: 8
+  num_workers: 4
 model:
   gaussian:
     class_path: myimpl.models.implicit_grid_rot_gaussian.ImplicitGridGaussian

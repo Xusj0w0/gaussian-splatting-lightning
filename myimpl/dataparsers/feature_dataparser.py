@@ -38,7 +38,7 @@ class FeatureShapeCameras(Cameras):
 
     def __getitem__(self, index):
         camera = super().__getitem__(index)
-        return FeatureShapeCamera(feature_shape=self.feature_shape[index], **asdict(camera))
+        return FeatureShapeCamera(feature_shape=self.feature_shape[index], **{k: getattr(camera, k) for k in camera.__dataclass_fields__})
 
 
 @dataclass
@@ -89,7 +89,7 @@ class DepthFeatureProcessor(ExtraDataProcessor):
 
 @dataclass
 class DepthFeature(Colmap):
-    feature_dir: str = "semantics/features_from_depth"
+    feature_dir: str = "semantic/features_from_depth"
 
     filename_suffix: str = ".npy"
 

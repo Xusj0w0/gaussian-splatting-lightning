@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from external.depth_anything_v2.depth_anything_v2.dpt import DepthAnythingV2
+from external.DepthAnythingV2.depth_anything_v2.dpt import DepthAnythingV2
 from utils.common import (AsyncImageReader, AsyncImageSaver, AsyncNDArraySaver,
                           find_files)
 from utils.distibuted_tasks import (configure_arg_parser,
@@ -19,30 +19,9 @@ def make_parser():
     parser.add_argument("--output", "-o", default=None)
     parser.add_argument("--encoder", default="vitl")
     parser.add_argument("--extensions", "-e", default=["jpg", "JPG", "jpeg", "JPEG", "png", "PNG"])
-
-    parser.add_argument(
-        "--da2_path",
-        type=str,
-        default=os.path.join(os.path.dirname(os.path.dirname(__file__)), "external", "depth_anything_v2"),
-    )
+    parser.add_argument("--da2_ckpt", "-c", type=str, default="checkpoints/da2/depth_anything_v2_vitl.pth")
     configure_arg_parser(parser)
     return parser
-
-
-class DepthAnythingV2Backbone(DepthAnythingV2):
-    def forward(self, x):
-        features = self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)
-
-        return features
-
-    @torch.no_grad()
-    def infer_image(self, raw_image, input_size=518):
-        image, (h, w) = self.image2tensor(raw_image, input_size)
-
-        features = self.forward(image)[-1][0]
-        features = features.reshape(1, image.shape[-2] // 14, image.shape[-1] // 14, -1)
-
-        return features
 
 
 def build_da2_backbone(args):
@@ -56,7 +35,7 @@ def build_da2_backbone(args):
     }
 
     depth_anything = DepthAnythingV2(**model_configs[args.encoder])
-    depth_anything.load_state_dict(torch.load(f"{args.da2_path}/checkpoints/depth_anything_v2_{args.encoder}.pth", map_location="cpu"))
+    depth_anything.load_state_dict(torch.load(args.da2_ckpt, map_location="cpu"))
     depth_anything = depth_anything.to(DEVICE).eval()
 
     return depth_anything
@@ -69,7 +48,9 @@ if __name__ == "__main__":
         args.output = os.path.join(os.path.dirname(args.image_dir), "features_from_depth")
 
     images = get_task_list_with_args(args, find_files(args.image_dir, args.extensions, as_relative_path=False))
-    assert len(images) > 0, "not an image with extension name '{}' can be found in '{}'".format(args.extensions, args.image_dir)
+    assert len(images) > 0, "not an image with extension name '{}' can be found in '{}'".format(
+        args.extensions, args.image_dir
+    )
 
     depth_anything = build_da2_backbone(args)
 

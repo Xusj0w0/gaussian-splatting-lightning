@@ -48,9 +48,9 @@ class ScaffoldGaussianMixin:
 
     tcnn: bool = False
 
-    extra_optimization: ScaffoldOptimizationConfigMixin = field(
-        default_factory=lambda: ScaffoldOptimizationConfigMixin()
-    )
+    # extra_optimization: ScaffoldOptimizationConfigMixin = field(
+    #     default_factory=lambda: ScaffoldOptimizationConfigMixin()
+    # )
 
 
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
@@ -100,14 +100,14 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         return property_dict
 
     def training_setup_extra_properties(self, module, *args, **kwargs):
-        extra_optimization_config = self.config.extra_optimization
+        optimization_config = self.config.optimization
         optimizer_factory = self.config.optimization.optimizer
-        mlp_optimizer_factory = self.config.extra_optimization.mlp_optimizer
-        mlp_scheduler_factory = self.config.extra_optimization.mlp_scheduler
+        mlp_optimizer_factory = self.config.optimization.mlp_optimizer
+        mlp_scheduler_factory = self.config.optimization.mlp_scheduler
 
         # constant properties
         l = [
-            {"params": self.gaussians["anchor_features"], "lr": extra_optimization_config.anchor_features_lr, "name": "anchor_features",},  # fmt: skip
+            {"params": self.gaussians["anchor_features"], "lr": optimization_config.anchor_features_lr, "name": "anchor_features",},  # fmt: skip
         ]
         constant_lr_optimizer = optimizer_factory.instantiate(l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(constant_lr_optimizer, module)
@@ -115,17 +115,17 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         mlp_l = [
             {
                 "params": self.gaussian_mlps["opacity"].parameters(),
-                "lr": extra_optimization_config.opacity_mlp_lr_init,
+                "lr": optimization_config.opacity_mlp_lr_init,
                 "name": "opacity_mlp",
             },
             {
                 "params": self.gaussian_mlps["cov"].parameters(),
-                "lr": extra_optimization_config.cov_mlp_lr_init,
+                "lr": optimization_config.cov_mlp_lr_init,
                 "name": "cov_mlp",
             },
             {
                 "params": self.gaussian_mlps["color"].parameters(),
-                "lr": extra_optimization_config.color_mlp_lr_init,
+                "lr": optimization_config.color_mlp_lr_init,
                 "name": "color_mlp",
             },
         ]
@@ -133,19 +133,19 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             mlp_l.append(
                 {
                     "params": self.gaussian_mlps["feature_bank"].parameters(),
-                    "lr": extra_optimization_config.feature_bank_mlp_lr_init,
+                    "lr": optimization_config.feature_bank_mlp_lr_init,
                     "name": "feature_bank_mlp",
                 }
             )
         mlp_optimizer = mlp_optimizer_factory.instantiate(mlp_l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(mlp_optimizer, module)
         scheduler_lr_finals = [
-            extra_optimization_config.opacity_mlp_lr_final,
-            extra_optimization_config.cov_mlp_lr_final,
-            extra_optimization_config.color_mlp_lr_final,
+            optimization_config.opacity_mlp_lr_final,
+            optimization_config.cov_mlp_lr_final,
+            optimization_config.color_mlp_lr_final,
         ]
         if self.config.use_feature_bank:
-            scheduler_lr_finals.append(extra_optimization_config.feature_bank_mlp_lr_final)
+            scheduler_lr_finals.append(optimization_config.feature_bank_mlp_lr_final)
         mlp_scheduler = mlp_scheduler_factory.instantiate().get_schedulers(mlp_optimizer, scheduler_lr_finals)
 
         return [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler]
