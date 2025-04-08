@@ -8,13 +8,17 @@ from lightning import LightningModule
 from torch_scatter import scatter_max
 
 from internal.cameras.cameras import Cameras
-from internal.density_controllers.density_controller import \
-    Utils as OptimizerManipulator
+from internal.density_controllers.density_controller import Utils as OptimizerManipulator
 from internal.density_controllers.vanilla_density_controller import (
-    VanillaDensityController, VanillaDensityControllerImpl)
-from myimpl.models.grid_rot_gaussians import (GridFactory, GridGaussianModel,
-                                              LoDGridGaussianModel,
-                                              ScaffoldGaussianModelMixin)
+    VanillaDensityController,
+    VanillaDensityControllerImpl,
+)
+from myimpl.models.extended_grid_gaussians import (
+    GridFactory,
+    GridGaussianModel,
+    LoDGridGaussianModel,
+    ScaffoldGaussianModelMixin,
+)
 
 __all__ = [
     "GridGaussianDensityController",
@@ -641,9 +645,8 @@ class CandidateAnchors:
             gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size
         )
         offsets = gaussian_model.get_offsets.new_zeros((self.n_anchors, gaussian_model.n_offsets, 3))
-        rotations = gaussian_model.get_rotations.new_zeros((self.n_anchors, 4))
-        rotations[..., 0] = 1.0
-        return {"means": self.anchors, "scales": scales, "offsets": offsets, "rotations": rotations}
+
+        return {"means": self.anchors, "scales": scales, "offsets": offsets}
 
     def get_lod_grid_properties(self, gaussian_model: LoDGridGaussianModel, voxel_size: float):
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
@@ -656,7 +659,15 @@ class CandidateAnchors:
         # select max value of anchor features among primitives that convert to same grid
         anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
         anchor_features = anchor_features[self.keep_mask]
-        return {"anchor_features": anchor_features}
+
+        rotations = gaussian_model.get_rotations.new_zeros((self.n_anchors, 4))
+        rotations[..., 0] = 1.0
+
+        opacities = gaussian_model.opacity_inverse_activation(
+            0.1 * gaussian_model.get_opacities.new_ones((self.n_anchors, 1))
+        )
+
+        return {"anchor_features": anchor_features, "rotations": rotations, "opacities": opacities}
 
     def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)

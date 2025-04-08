@@ -12,7 +12,7 @@ __all__ = ["FeatureMetrics", "FeatureMetricsImpl"]
 class FeatureMetrics(VanillaMetrics):
     lambda_dreg: float = 0.01
 
-    lambda_feature: float = 0.05
+    lambda_feature: float = 0.5
 
     lambda_normal: float = 0.0
 
@@ -49,12 +49,14 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             metrics["loss_dreg"] = scaling_reg
             prog_bar["loss_dreg"] = False
 
-        render_feature = outputs["render_feature"]
-        gt_feature = batch[-1]["depth_feature"]
-        loss_feature = F.mse_loss(render_feature, gt_feature)
-        metrics["loss"] += self.config.lambda_feature * loss_feature
-        metrics["loss_feature"] = loss_feature
-        prog_bar["loss_feature"] = True
+        if self.config.lambda_feature > 0:
+            render_feature = outputs["render_feature_aligned"]
+            gt_feature = batch[-1]["semantic_feature"]
+            # loss_feature = F.mse_loss(render_feature, gt_feature)
+            loss_feature = 1.0 - F.cosine_similarity(render_feature, gt_feature, dim=-1).mean()
+            metrics["loss"] += self.config.lambda_feature * loss_feature
+            metrics["loss_feature"] = loss_feature
+            prog_bar["loss_feature"] = True
 
         if self.config.lambda_normal > 0 and global_step >= self.config.normal_start_iter:
             # key names from `vanilla_2dgs_renderer`

@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
+from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
 
 __all__ = ["ScaffoldGaussianMixin", "ScaffoldGaussianModelMixin", "ScaffoldOptimizationConfigMixin"]
@@ -15,6 +16,10 @@ __all__ = ["ScaffoldGaussianMixin", "ScaffoldGaussianModelMixin", "ScaffoldOptim
 @dataclass
 class ScaffoldOptimizationConfigMixin:
     anchor_features_lr: float = 0.0075
+
+    rotations_lr_init: float = 0.001
+
+    opacities_lr_init: float = 0.05
 
     opacity_mlp_lr_init: float = 0.002
     opacity_mlp_lr_final: float = 0.00002
@@ -33,7 +38,7 @@ class ScaffoldOptimizationConfigMixin:
     mlp_scheduler: Scheduler = field(
         default_factory=lambda: {
             "class_path": "ExponentialDecayScheduler",
-            "init_args": {"max_steps": 40_000},
+            "init_args": {"max_steps": None},
         }
     )
 
@@ -48,14 +53,10 @@ class ScaffoldGaussianMixin:
 
     tcnn: bool = False
 
-    # extra_optimization: ScaffoldOptimizationConfigMixin = field(
-    #     default_factory=lambda: ScaffoldOptimizationConfigMixin()
-    # )
-
 
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     config: ScaffoldGaussianMixin
-    _extra_property_names: List[str] = ["anchor_features"]
+    _extra_property_names: List[str] = ["anchor_features", "rotations", "opacities"]
 
     def train(self, mode=True):
         for mlp in self.gaussian_mlps.values():
@@ -81,12 +82,20 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             assert fused_point_cloud is not None
             n_anchors = fused_point_cloud.shape[0]
             anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
+            rotations = anchor_features.new_zeros((n_anchors, 4))
+            rotations[:, 0] = 1.0
+            opacities = self.opacity_inverse_activation(0.1 * anchor_features.new_ones((n_anchors, 1)))
         elif mode == "number":
             assert n is not None
             anchor_features = torch.zeros((n, self.config.feature_dim), dtype=torch.float)
+            rotations = anchor_features.new_zeros((n, 4))
+            rotations[:, 0] = 1.0
+            opacities = self.opacity_inverse_activation(0.1 * anchor_features.new_ones((n, 1)))
         elif mode == "tensors":
             assert tensors is not None and "anchor_features" in tensors
             anchor_features = tensors["anchor_features"]
+            rotations = tensors["rotations"]
+            opacities = tensors["opacities"]
             self.gaussian_mlps["opacity"].load_state_dict(tensors["opacity_mlp"])
             self.gaussian_mlps["cov"].load_state_dict(tensors["cov_mlp"])
             self.gaussian_mlps["color"].load_state_dict(tensors["color_mlp"])
@@ -94,21 +103,32 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             raise ValueError(f"Unsupported mode {mode}")
 
         anchor_features = nn.Parameter(anchor_features, requires_grad=True)
+        rotations = nn.Parameter(rotations, requires_grad=True)
+        opacities = nn.Parameter(opacities, requires_grad=True)
         property_dict = {
             "anchor_features": anchor_features,
+            "rotations": rotations,
+            "opacities": opacities,
         }
         return property_dict
 
     def training_setup_extra_properties(self, module, *args, **kwargs):
+        if self.config.optimization.mlp_scheduler.max_steps is None:
+            self.config.optimization.mlp_scheduler.max_steps = module.trainer.max_steps
+
         optimization_config = self.config.optimization
         optimizer_factory = self.config.optimization.optimizer
         mlp_optimizer_factory = self.config.optimization.mlp_optimizer
         mlp_scheduler_factory = self.config.optimization.mlp_scheduler
 
         # constant properties
+        # fmt: off
         l = [
-            {"params": self.gaussians["anchor_features"], "lr": optimization_config.anchor_features_lr, "name": "anchor_features",},  # fmt: skip
+            {"params": self.gaussians["anchor_features"], "lr": optimization_config.anchor_features_lr, "name": "anchor_features"},
+            {"params": self.gaussians["rotations"], "lr": optimization_config.rotations_lr_init, "name": "rotations"},
+            {"params": self.gaussians["opacities"], "lr": optimization_config.opacities_lr_init, "name": "opacities"},
         ]
+        # fmt: on
         constant_lr_optimizer = optimizer_factory.instantiate(l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(constant_lr_optimizer, module)
 
@@ -198,6 +218,14 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         return self.gaussians["anchor_features"]
 
     @property
+    def get_rotations(self) -> torch.Tensor:
+        return self.rotation_activation(self.gaussians["rotations"])
+
+    @property
+    def get_opacities(self) -> torch.Tensor:
+        return self.opacity_activation(self.gaussians["opacities"])
+
+    @property
     def get_features(self):
         """save_gaussians() will call `get_features`"""
         return self.get_anchor_features.new_zeros((self.n_anchors, 1, 3))
@@ -220,3 +248,15 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             return self.gaussian_mlps["feature_bank"]
         else:
             raise ValueError("Feature bank not available")
+
+    def rotation_activation(self, rotations: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.normalize(rotations, dim=-1)
+
+    def rotation_inverse_activation(self, rotations: torch.Tensor) -> torch.Tensor:
+        return rotations
+
+    def opacity_activation(self, opacities: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(opacities)
+
+    def opacity_inverse_activation(self, opacities: torch.Tensor) -> torch.Tensor:
+        return inverse_sigmoid(opacities)

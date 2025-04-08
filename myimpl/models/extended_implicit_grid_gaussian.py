@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from myimpl.models.grid_rot_gaussians import (GridGaussian, GridGaussianModel,
+from myimpl.models.extended_grid_gaussians import (GridGaussian, GridGaussianModel,
                                               GridOptimizationConfig,
                                               LoDGridGaussian,
                                               LoDGridGaussianModel,

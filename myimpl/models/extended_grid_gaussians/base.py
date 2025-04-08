@@ -26,12 +26,10 @@ class GridOptimizationConfigBase:
             "class_path": "ExponentialDecayScheduler",
             "init_args": {
                 "lr_final": 0.0001,
-                "max_steps": 40_000,
+                "max_steps": None,
             },
         }
     )
-
-    rotations_lr_init: float = 0.001
 
     spatial_lr_scale: float = -1
 
@@ -72,7 +70,7 @@ class GridGaussianModelBase(GaussianModel):
         super().__init__()
         self.config = config
 
-        names = ["means", "offsets", "scales", "rotations"]
+        names = ["means", "offsets", "scales"]
         self._names = tuple(names + self._extra_property_names)
 
         buffer_names = ["_voxel_size", "_grid_origin", "_activate_sh_degree"]
@@ -168,34 +166,27 @@ class GridGaussianModelBase(GaussianModel):
             offsets = anchors.new_zeros((n_anchors, n_offsets, 3))
             dist2 = torch.clamp_min(distCUDA2(fused_point_cloud.cuda()), 0.0000001).to(fused_point_cloud.device)
             scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 6)
-            rotations = anchors.new_zeros((n_anchors, 4))
-            rotations[:, 0] = 1.0
         elif mode == "number":
             assert n is not None
             anchors = torch.zeros((n, 3)).float()
             offsets = torch.zeros((n, self.config.n_offsets, 3)).float()
             scales = torch.zeros((n, 6)).float()
-            rotations = anchors.new_zeros((n, 4))
-            rotations[:, 0] = 1.0
         elif mode == "tensors":
             assert tensors is not None and "anchors" in tensors
             anchors = tensors["anchors"]
             offsets = tensors["offsets"]
             scales = tensors["scales"]
-            rotations = tensors["rotations"]
         else:
             raise ValueError(f"Unsupported mode {mode}")
 
         anchors = nn.Parameter(anchors, requires_grad=True)
         offsets = nn.Parameter(offsets, requires_grad=True)
         scales = nn.Parameter(scales, requires_grad=True)
-        rotations = nn.Parameter(rotations, requires_grad=True)
 
         property_dict = {
             "means": anchors,
             "scales": scales,
             "offsets": offsets,
-            "rotations": rotations,
         }
         return property_dict
 
@@ -234,6 +225,9 @@ class GridGaussianModelBase(GaussianModel):
         *args,
         **kwargs,
     ):
+        if self.config.optimization.offsets_lr_scheduler.max_steps is None:
+            self.config.optimization.offsets_lr_scheduler.max_steps = module.trainer.max_steps
+
         spatial_lr_scale = self.config.optimization.spatial_lr_scale
         if spatial_lr_scale <= 0:
             spatial_lr_scale = module.trainer.datamodule.dataparser_outputs.camera_extent
@@ -257,7 +251,6 @@ class GridGaussianModelBase(GaussianModel):
         l = [
             {"params": self.gaussians["means"], "lr": optimization_config.means_lr_init, "name": "means"},
             {"params": self.gaussians["scales"], "lr": optimization_config.scales_lr, "name": "scales"},
-            {"params": self.gaussians["rotations"], "lr": optimization_config.rotations_lr_init, "name": "rotations"},
         ]
         constant_lr_optimizer = optimizer_factory.instantiate(l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(constant_lr_optimizer, module)
@@ -324,10 +317,6 @@ class GridGaussianModelBase(GaussianModel):
         return self.scale_activation(self.gaussians["scales"])
 
     @property
-    def get_rotations(self) -> torch.Tensor:
-        return self.rotation_activation(self.gaussians["rotations"])
-
-    @property
     def get_offsets(self) -> torch.Tensor:
         """[N_anchors, N_offsets, 3]"""
         return self.gaussians["offsets"]
@@ -390,9 +379,3 @@ class GridGaussianModelBase(GaussianModel):
 
     def scale_inverse_activation(self, scales: torch.Tensor) -> torch.Tensor:
         return torch.log(scales)
-
-    def rotation_activation(self, rotations: torch.Tensor) -> torch.Tensor:
-        return torch.nn.functional.normalize(rotations, dim=-1)
-
-    def rotation_inverse_activation(self, rotations: torch.Tensor) -> torch.Tensor:
-        return rotations

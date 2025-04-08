@@ -8,17 +8,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
 from gsplat import spherical_harmonics
+from pytorch3d.transforms import quaternion_multiply
 
 from internal.cameras.cameras import Camera
 from internal.optimizers import Adam
 from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
                                                    GSplatV1RendererModule)
 from internal.schedulers import ExponentialDecayScheduler
+from myimpl.models.extended_implicit_grid_gaussian import (
+    ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel)
 from myimpl.models.grid_gaussians import (GridGaussianModel,
                                           LoDGridGaussianModel,
                                           ScaffoldGaussianModelMixin)
-from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
-                                                  ImplicitLoDGridGaussianModel)
 
 __all__ = ["GridGaussianRenderer", "GridGaussianRendererModule"]
 
@@ -34,7 +35,7 @@ class OptimizationConfig:
 
     appearance_embedding_lr_final: float = 0.0005
 
-    max_steps: int = 40_000
+    max_steps: int = None
 
     eps: float = 1e-15
 
@@ -55,6 +56,9 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
     config: GridGaussianRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
+        if self.config.optimization.max_steps is None:
+            self.config.optimization.max_steps = lightning_module.trainer.max_steps
+
         self.n_appearance_embedding_dims = 0
         if lightning_module is not None:
             if self.config.model.n_appearances <= 0:
@@ -164,6 +168,8 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         features = pc.get_anchor_features[anchor_mask]
         offsets = pc.get_offsets[anchor_mask]
         scalings = pc.get_scalings[anchor_mask]
+        rotations = pc.get_rotations[anchor_mask]
+        opacities = pc.get_opacities[anchor_mask]
 
         n_anchors, n_offsets = pc.n_anchors, pc.n_offsets
 
@@ -182,7 +188,8 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             features = features.squeeze(dim=-1)
         cat_local_view = torch.cat([features, viewdirs], dim=1)
 
-        opacities = pc.get_opacity_mlp(features)  # try: remove viewdirs
+        opacities_offsets = pc.get_opacity_mlp(features).reshape(-1, n_offsets, 1)  # try: remove viewdirs
+        opacities = torch.clamp(opacities.unsqueeze(1) + opacities_offsets, max=1.0)
         if prog_ratio is not None and transition_mask is not None:
             prog = prog_ratio[anchor_mask]
             transition = transition_mask[anchor_mask]
@@ -199,7 +206,12 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             color_input = cat_local_view
         colors = pc.get_color_mlp(color_input).reshape(-1, 3)
 
-        scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, 7)
+        scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, n_offsets, 7)
+        scale_rots[..., -4:] = quaternion_multiply(
+            rotations.unsqueeze(1),
+            pc.rotation_activation(scale_rots[..., -4:].clone()),
+        )
+        scale_rots = scale_rots.reshape(-1, 7)
 
         concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
         concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)

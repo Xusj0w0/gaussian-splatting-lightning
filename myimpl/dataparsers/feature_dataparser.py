@@ -1,7 +1,7 @@
 import os
 import os.path as osp
-from dataclasses import asdict, dataclass, field, replace
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, field, replace, MISSING
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -38,18 +38,24 @@ class FeatureShapeCameras(Cameras):
 
     def __getitem__(self, index):
         camera = super().__getitem__(index)
-        return FeatureShapeCamera(feature_shape=self.feature_shape[index], **{k: getattr(camera, k) for k in camera.__dataclass_fields__})
+        return FeatureShapeCamera(
+            feature_shape=self.feature_shape[index], **{k: getattr(camera, k) for k in camera.__dataclass_fields__}
+        )
 
 
 @dataclass
-class ExtraDepthFeatureData:
+class ExtraSemanticFeatureData:
+    """
+    Only support npy file, and shape should be HWC.
+    """
+
     filepath: str
     shape: List[int] = field(init=False)
 
     def __post_init__(self):
-        self.shape = self.parse_shape_from_header()
+        self.shape = self.parse_numpy_shape_from_header()
 
-    def parse_shape_from_header(self) -> List[int]:
+    def parse_numpy_shape_from_header(self) -> List[int]:
         with open(self.filepath, "rb") as f:
             magic = f.read(6)
             if magic != b"\x93NUMPY":
@@ -69,11 +75,15 @@ class ExtraDepthFeatureData:
         return header_dict["shape"]
 
     def load_data(self) -> np.ndarray:
-        return np.load(self.filepath)
+        if self.filepath.endswith(".npy"):
+            data = np.load(self.filepath)
+        else:
+            raise ValueError(f"Unsupported file format: {self.filepath}")
+        return data
 
 
-class DepthFeatureProcessor(ExtraDataProcessor):
-    KEY: str = "depth_feature"
+class SemanticFeatureProcessor(ExtraDataProcessor):
+    KEY: str = "semantic_feature"
 
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -82,14 +92,15 @@ class DepthFeatureProcessor(ExtraDataProcessor):
     def update_properties(self, dataset):
         self.device = dataset.image_device
 
-    def __call__(self, data: ExtraDepthFeatureData):
-        torch_data = torch.from_numpy(data.load_data()).float().squeeze(0)
-        return torch_data.permute(1, 2, 0).to(self.device)
+    def __call__(self, data: ExtraSemanticFeatureData):
+        torch_data = torch.from_numpy(data.load_data()).float()
+        return torch_data.to(self.device)
 
 
 @dataclass
-class DepthFeature(Colmap):
-    feature_dir: str = "semantic/features_from_depth"
+class SemanticFeature(Colmap):
+    feature_dir: str = "semantic"
+    """feature path relative to dataparser.path, for example semantic/sam2_features"""
 
     filename_suffix: str = ".npy"
 
@@ -100,14 +111,14 @@ class DepthFeature(Colmap):
 
 
 class FeatureDataParser(ColmapDataParser):
-    def __init__(self, path: str, output_path: str, global_rank: int, params: DepthFeature) -> None:
-        self.params: DepthFeature
+    def __init__(self, path: str, output_path: str, global_rank: int, params: SemanticFeature) -> None:
+        self.params: SemanticFeature
         super().__init__(path, output_path, global_rank, params)
 
     def get_outputs(self) -> DataParserOutputs:
         dataparser_outputs = super().get_outputs()
 
-        key = "depth_feature"
+        key = "semantic_feature"
 
         for image_set in [dataparser_outputs.train_set, dataparser_outputs.val_set]:
             n_cam = len(image_set.cameras)
@@ -123,10 +134,12 @@ class FeatureDataParser(ColmapDataParser):
                     else image_names[cam_idx].rsplit(".", 1)[0]
                 )
                 filepath = osp.join(self.path, self.params.feature_dir, f"{image_name}{self.params.filename_suffix}")
-                depth_feature = ExtraDepthFeatureData(filepath)
+                if not osp.exists(filepath):
+                    raise FileNotFoundError(f"{filepath} not found")
+                semantic_feature = ExtraSemanticFeatureData(filepath)
 
-                image_set.extra_data[cam_idx].update({key: depth_feature})
-                feature_shapes.append(torch.tensor(depth_feature.shape[-2:]))
+                image_set.extra_data[cam_idx].update({key: semantic_feature})
+                feature_shapes.append(torch.tensor(semantic_feature.shape[:2]))
 
             # update cameras
             feature_shapes = torch.stack(feature_shapes, 0)
@@ -141,6 +154,6 @@ class FeatureDataParser(ColmapDataParser):
 
             if not isinstance(image_set.extra_data_processor, ExtraDataProcessorContainer):
                 image_set.extra_data_processor = ExtraDataProcessorContainer()
-            image_set.extra_data_processor.add_processor(key, DepthFeatureProcessor())
+            image_set.extra_data_processor.add_processor(key, SemanticFeatureProcessor())
 
         return dataparser_outputs
