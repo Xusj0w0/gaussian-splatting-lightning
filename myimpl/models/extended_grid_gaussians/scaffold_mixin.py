@@ -56,7 +56,7 @@ class ScaffoldGaussianMixin:
 
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     config: ScaffoldGaussianMixin
-    _extra_property_names: List[str] = ["anchor_features", "rotations", "opacities"]
+    _extra_property_names: List[str] = ["anchor_features", "rotations"]
 
     def train(self, mode=True):
         for mlp in self.gaussian_mlps.values():
@@ -81,21 +81,22 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         if mode == "pcd":
             assert fused_point_cloud is not None
             n_anchors = fused_point_cloud.shape[0]
-            anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
+            # anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
+            anchor_features = torch.normal(0.0, 0.02, (n_anchors, self.config.feature_dim), dtype=torch.float)
             rotations = anchor_features.new_zeros((n_anchors, 4))
             rotations[:, 0] = 1.0
-            opacities = self.opacity_inverse_activation(0.1 * anchor_features.new_ones((n_anchors, 1)))
+
         elif mode == "number":
             assert n is not None
             anchor_features = torch.zeros((n, self.config.feature_dim), dtype=torch.float)
             rotations = anchor_features.new_zeros((n, 4))
             rotations[:, 0] = 1.0
-            opacities = self.opacity_inverse_activation(0.1 * anchor_features.new_ones((n, 1)))
+
         elif mode == "tensors":
             assert tensors is not None and "anchor_features" in tensors
             anchor_features = tensors["anchor_features"]
             rotations = tensors["rotations"]
-            opacities = tensors["opacities"]
+
             self.gaussian_mlps["opacity"].load_state_dict(tensors["opacity_mlp"])
             self.gaussian_mlps["cov"].load_state_dict(tensors["cov_mlp"])
             self.gaussian_mlps["color"].load_state_dict(tensors["color_mlp"])
@@ -104,11 +105,9 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
 
         anchor_features = nn.Parameter(anchor_features, requires_grad=True)
         rotations = nn.Parameter(rotations, requires_grad=True)
-        opacities = nn.Parameter(opacities, requires_grad=True)
         property_dict = {
             "anchor_features": anchor_features,
             "rotations": rotations,
-            "opacities": opacities,
         }
         return property_dict
 
@@ -126,7 +125,6 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         l = [
             {"params": self.gaussians["anchor_features"], "lr": optimization_config.anchor_features_lr, "name": "anchor_features"},
             {"params": self.gaussians["rotations"], "lr": optimization_config.rotations_lr_init, "name": "rotations"},
-            {"params": self.gaussians["opacities"], "lr": optimization_config.opacities_lr_init, "name": "opacities"},
         ]
         # fmt: on
         constant_lr_optimizer = optimizer_factory.instantiate(l, lr=0.0, eps=1e-15)

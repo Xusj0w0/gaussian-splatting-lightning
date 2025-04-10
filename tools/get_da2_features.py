@@ -45,20 +45,18 @@ def build_da2_backbone(args):
     return depth_anything
 
 
-class FeatureGetter:
+class FeatureGetter(object):
     def __init__(self, da_model: DepthAnythingV2):
-        self._handle = da_model.depth_head.scratch.output_conv1.register_forward_hook(self)
+        # self._handle = da_model.depth_head.scratch.output_conv1.register_forward_hook(self)
+        self._handle = da_model.depth_head.scratch.refinenet4.register_forward_hook(self)
         self._embedding = None
 
     def __call__(self, module, input, output):
-        self._embedding = input[0].squeeze()
+        # self._embedding = input[0].squeeze()
+        self._embedding = output.squeeze()
 
     def get_image_embedding(self):
         return self._embedding
-
-    def __del__(self):
-        self._handle.remove()
-        super().__del__()
 
 
 def apply_color_map(normalized_depth, colormap):
@@ -77,8 +75,8 @@ if __name__ == "__main__":
     print(f"output_path={os.path.join(output_path, 'semantic')}")
     depth_dir = os.path.join(output_path, "semantic", "depth")
     depth_preview_dir = os.path.join(output_path, "semantic", "depth_preview")
-    feature_dir = os.path.join(output_path, "semantic", "depth_feature")
-    feature_preview_dir = os.path.join(output_path, "semantic", "depth_feature_preview")
+    feature_dir = os.path.join(output_path, "semantic", "da2_feature")
+    feature_preview_dir = os.path.join(output_path, "semantic", "da2_feature_preview")
 
     for d in [depth_dir, feature_dir]:
         os.makedirs(d, exist_ok=True)
@@ -103,7 +101,7 @@ if __name__ == "__main__":
             for _ in t:
                 image_path, raw_image = image_reader.get()
                 image_name = image_path[len(args.image_dir) :].lstrip(os.path.sep)
-                output_filename = os.path.join(args.output, "{}.npy".format(image_name))
+                output_filename = os.path.join(output_path, "{}.npy".format(image_name))
 
                 depth = depth_anything.infer_image(raw_image, args.input_size)  # [H, W]
                 normalized_depth = (depth - depth.min()) / (depth.max() - depth.min())
@@ -136,3 +134,4 @@ if __name__ == "__main__":
     finally:
         ndarray_saver.stop()
         image_reader.stop()
+        image_saver.stop()

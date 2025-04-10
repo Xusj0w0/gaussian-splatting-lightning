@@ -2,6 +2,7 @@ import argparse
 import os
 import os.path as osp
 from typing import Dict
+
 import numpy as np
 from plyfile import PlyData, PlyElement
 

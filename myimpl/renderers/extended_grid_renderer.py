@@ -44,7 +44,7 @@ class OptimizationConfig:
 class GridGaussianRenderer(GSplatV1Renderer):
     anti_aliased: bool = False
 
-    model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
+    appearance_model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
 
     optimization: OptimizationConfig = field(default_factory=lambda: OptimizationConfig())
 
@@ -61,7 +61,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
 
         self.n_appearance_embedding_dims = 0
         if lightning_module is not None:
-            if self.config.model.n_appearances <= 0:
+            if self.config.appearance_model.n_appearances <= 0:
                 max_input_id = 0
                 appearance_group_ids = lightning_module.trainer.datamodule.dataparser_outputs.appearance_group_ids
                 if appearance_group_ids is not None:
@@ -69,12 +69,12 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                         if i[0] > max_input_id:
                             max_input_id = i[0]
                 n_appearances = max_input_id + 1
-                self.config.model.n_appearances = n_appearances
+                self.config.appearance_model.n_appearances = n_appearances
             self.n_appearance_embedding_dims = lightning_module.gaussian_model.config.n_appearance_embedding_dims
 
         if self.n_appearance_embedding_dims > 0:
             self.appearance_embedding = nn.Embedding(
-                num_embeddings=self.config.model.n_appearances,
+                num_embeddings=self.config.appearance_model.n_appearances,
                 embedding_dim=self.n_appearance_embedding_dims,
             )
 
@@ -169,7 +169,6 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         offsets = pc.get_offsets[anchor_mask]
         scalings = pc.get_scalings[anchor_mask]
         rotations = pc.get_rotations[anchor_mask]
-        opacities = pc.get_opacities[anchor_mask]
 
         n_anchors, n_offsets = pc.n_anchors, pc.n_offsets
 
@@ -189,7 +188,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         cat_local_view = torch.cat([features, viewdirs], dim=1)
 
         opacities_offsets = pc.get_opacity_mlp(features).reshape(-1, n_offsets, 1)  # try: remove viewdirs
-        opacities = torch.clamp(opacities.unsqueeze(1) + opacities_offsets, max=1.0)
+        opacities = torch.clamp(opacities_offsets, max=1.0)
         if prog_ratio is not None and transition_mask is not None:
             prog = prog_ratio[anchor_mask]
             transition = transition_mask[anchor_mask]
@@ -446,6 +445,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             "opacities": opacities[0],
             "projections": projections,
             "isects": isects,
+            "conics": conics,
             # extra infos
             "anchor_mask": anchor_mask,
             "primitive_mask": primitive_mask,

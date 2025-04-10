@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
 from gsplat import spherical_harmonics
-from pytorch3d.transforms import quaternion_multiply
 from torch_scatter import scatter_mean
 
 from internal.optimizers import Adam
@@ -19,13 +18,14 @@ from internal.schedulers import ExponentialDecayScheduler
 from internal.utils.network_factory import NetworkFactory
 # from internal.cameras.cameras import Camera
 from myimpl.dataparsers.feature_dataparser import FeatureShapeCamera
-from myimpl.models.extended_grid_gaussians import (GridGaussianModel,
-                                                   LoDGridGaussianModel,
-                                                   ScaffoldGaussianModelMixin)
-from myimpl.models.extended_implicit_grid_gaussian import (
-    ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel)
-from myimpl.renderers.extended_grid_renderer import (
-    GridGaussianRenderer, GridGaussianRendererModule, OptimizationConfig)
+from myimpl.models.grid_gaussians import (GridGaussianModel,
+                                          LoDGridGaussianModel,
+                                          ScaffoldGaussianModelMixin)
+from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
+                                                  ImplicitLoDGridGaussianModel)
+from myimpl.renderers.grid_renderer import (GridGaussianRenderer,
+                                            GridGaussianRendererModule,
+                                            OptimizationConfig)
 
 __all__ = ["GridFeatureGaussianRenderer", "GridFeatureGaussianRendererModule"]
 
@@ -64,12 +64,6 @@ class Adapter(nn.Module):
             activation="ReLU",
             output_activation="None",
         )
-        # self.network = nn.Sequential(
-        #     nn.Linear(anchor_feature_fim + config.embedding_dim, config.network_hidden_dim),
-        #     nn.LayerNorm(config.network_hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(config.network_hidden_dim, gt_feat_shape[-1]),
-        # )
         if config.embedding_dim > 0:
             self.embedding = nn.Embedding(
                 num_embeddings=num_cameras,
@@ -194,17 +188,25 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
             output_pkg["anchor_mask"],
             output_pkg["primitive_mask"],
         )
+
         scatter_indices = repeat(
             torch.arange(len(primitive_mask) // pc.n_offsets).to(pc.get_anchors.device), "n -> n o", o=pc.n_offsets
         )
         scatter_indices = scatter_indices.reshape(-1)[primitive_mask]
         opacities = scatter_mean(opacities, scatter_indices, dim=0, dim_size=len(primitive_mask) // pc.n_offsets)
 
+        # unique_scatter_indices = torch.unique(scatter_indices)
+        # _anchor_mask = anchor_mask.new_zeros(anchor_mask.shape)
+        # _anchor_mask[anchor_mask] = torch.scatter(
+        #     anchor_mask.new_zeros((len(primitive_mask) // pc.n_offsets,)), 0, unique_scatter_indices, True
+        # )
+        # anchor_mask = _anchor_mask
+
         xyz = pc.get_anchors[anchor_mask].clone().detach()
         feature = pc.get_anchor_features[anchor_mask]
         scales = pc.get_scalings[anchor_mask][..., :3].clone().detach()
-        rotations = pc.get_rotations[anchor_mask].clone().detach()
-        # opacities = pc.get_opacities[anchor_mask].clone().detach()
+        rotations = xyz.new_zeros((xyz.shape[0], 4))
+        rotations[:, 0] = 1.0
 
         # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
         preprocessed_camera = viewpoint_camera.preprocess_feature_camera()
@@ -226,8 +228,6 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
 
         # 2. get opacities and then isect encoding
         opacities = opacities.unsqueeze(0).squeeze(-1)  # [1, N]
-        if self.config.anti_aliased:
-            opacities = opacities * compensations
 
         isects = self.isect_encode(
             preprocessed_camera,

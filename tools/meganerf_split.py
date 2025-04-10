@@ -13,7 +13,8 @@ from tqdm.auto import tqdm
 
 import internal.utils.colmap as colmap_utils
 from internal.dataparsers.colmap_dataparser import ColmapDataParser
-from internal.utils.partitioning_utils_2dsize import PartitionableScene, SceneConfig
+from internal.utils.partitioning_utils_2dsize import (PartitionableScene,
+                                                      SceneConfig)
 
 torch.set_grad_enabled(False)
 torch.set_printoptions(precision=16)

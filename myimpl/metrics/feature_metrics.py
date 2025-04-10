@@ -53,7 +53,8 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             render_feature = outputs["render_feature_aligned"]
             gt_feature = batch[-1]["semantic_feature"]
             # loss_feature = F.mse_loss(render_feature, gt_feature)
-            loss_feature = 1.0 - F.cosine_similarity(render_feature, gt_feature, dim=-1).mean()
+            # loss_feature = 1.0 - F.cosine_similarity(render_feature, gt_feature, dim=-1).mean()
+            loss_feature = F.l1_loss(render_feature, gt_feature, reduction="mean")
             metrics["loss"] += self.config.lambda_feature * loss_feature
             metrics["loss_feature"] = loss_feature
             prog_bar["loss_feature"] = True

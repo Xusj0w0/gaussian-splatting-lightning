@@ -8,17 +8,14 @@ from lightning import LightningModule
 from torch_scatter import scatter_max
 
 from internal.cameras.cameras import Cameras
-from internal.density_controllers.density_controller import Utils as OptimizerManipulator
+from internal.density_controllers.density_controller import \
+    Utils as OptimizerManipulator
 from internal.density_controllers.vanilla_density_controller import (
-    VanillaDensityController,
-    VanillaDensityControllerImpl,
-)
-from myimpl.models.extended_grid_gaussians import (
-    GridFactory,
-    GridGaussianModel,
-    LoDGridGaussianModel,
-    ScaffoldGaussianModelMixin,
-)
+    VanillaDensityController, VanillaDensityControllerImpl)
+from myimpl.models.extended_grid_gaussians import (GridFactory,
+                                                   GridGaussianModel,
+                                                   LoDGridGaussianModel,
+                                                   ScaffoldGaussianModelMixin)
 
 __all__ = [
     "GridGaussianDensityController",
@@ -663,11 +660,11 @@ class CandidateAnchors:
         rotations = gaussian_model.get_rotations.new_zeros((self.n_anchors, 4))
         rotations[..., 0] = 1.0
 
-        opacities = gaussian_model.opacity_inverse_activation(
-            0.1 * gaussian_model.get_opacities.new_ones((self.n_anchors, 1))
-        )
+        # opacities = gaussian_model.opacity_inverse_activation(
+        #     0.1 * gaussian_model.get_opacities.new_ones((self.n_anchors, 1))
+        # )
 
-        return {"anchor_features": anchor_features, "rotations": rotations, "opacities": opacities}
+        return {"anchor_features": anchor_features, "rotations": rotations}  # , "opacities": opacities}
 
     def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)

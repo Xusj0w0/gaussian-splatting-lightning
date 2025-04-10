@@ -1,13 +1,9 @@
 from dataclasses import dataclass, field
 
-from myimpl.models.extended_grid_gaussians import (GridGaussian, GridGaussianModel,
-                                              GridOptimizationConfig,
-                                              LoDGridGaussian,
-                                              LoDGridGaussianModel,
-                                              LoDGridOptimizationConfig,
-                                              ScaffoldGaussianMixin,
-                                              ScaffoldGaussianModelMixin,
-                                              ScaffoldOptimizationConfigMixin)
+from myimpl.models.extended_grid_gaussians import (
+    GridGaussian, GridGaussianModel, GridOptimizationConfig, LoDGridGaussian,
+    LoDGridGaussianModel, LoDGridOptimizationConfig, ScaffoldGaussianMixin,
+    ScaffoldGaussianModelMixin, ScaffoldOptimizationConfigMixin)
 
 __all__ = [
     "ImplicitGridGaussian",

@@ -14,7 +14,6 @@ from glob import glob
 import cv2
 import numpy as np
 import torch
-
 # from segment_anything import SamPredictor, sam_model_registry
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -22,7 +21,8 @@ from tqdm import tqdm
 
 from internal.utils.seganygs import SegAnyGSUtils
 from utils.common import AsyncImageReader, AsyncImageSaver, AsyncNDArraySaver
-from utils.distibuted_tasks import configure_arg_parser, get_task_list_with_args
+from utils.distibuted_tasks import (configure_arg_parser,
+                                    get_task_list_with_args)
 
 
 def make_parser():

@@ -4,6 +4,7 @@ datasets
 tmp
 .env
 *.pkl
+*.zip
 
 experiments
 **/cuda_src

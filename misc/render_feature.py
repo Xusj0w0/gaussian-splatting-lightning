@@ -5,6 +5,7 @@ import csv
 import os
 import os.path as osp
 import time
+from dataclasses import asdict
 from typing import Tuple
 
 import torch
@@ -18,6 +19,7 @@ from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.renderers import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
+from internal.utils.visualizers import Visualizers
 from utils.common import AsyncImageSaver
 
 
@@ -126,20 +128,18 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
             dataparser_config.eval_list = osp.join(args.dataset_path, "splits/val_images.txt")
 
     elif args.ckpt.endswith(".ply"):
-        assert args.dataset_path is not None, "ply model detected, dataset path should be specified"
+        raise NotImplementedError("Loading from .ply is not supported yet.")
 
-        gaussian_model, _ = GaussianModelLoader.initialize_model_and_renderer_from_ply_file(
-            args.ckpt, device, pre_activate=False
-        )
-        dataset_path = args.dataset_path
-        dataparser_config = Colmap(
-            split_mode="experiment",
-            eval_image_select_mode="list",
-            eval_list=osp.join(args.dataset_path, "splits/val_images.txt"),
-            down_sample_factor=args.down_sample_factor,
-        )
+    from myimpl.renderers.grid_feature_renderer import \
+        GridFeatureGaussianRenderer
 
-    renderer = ckpt["hyper_parameters"]["renderer"].instantiate()
+    ckpt_renderer = ckpt["hyper_parameters"]["renderer"]
+    params = {
+        k: getattr(ckpt_renderer, k)
+        for k in GridFeatureGaussianRenderer.__dataclass_fields__
+        if k in ckpt_renderer.__dict__
+    }
+    renderer = GridFeatureGaussianRenderer(**params).instantiate()
     renderer.setup(stage="validation")
     renderer = RendererWithMetricsWrapper(renderer)
     # avoid loading point cloud
@@ -181,14 +181,16 @@ def main():
         gt = (batch[1][1] * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
         montage = torch.cat([render, gt], dim=1)
         diff = torch.abs(render.float() - gt.float())
+        feature = Visualizers.pca_colormap(predicts["render_feature"]).cpu()
 
-        for d in ["render", "gt", "montage", "diff"]:
+        for d in ["render", "gt", "montage", "diff", "feature"]:
             os.makedirs(os.path.join(output_dir, d), exist_ok=True)
 
         async_image_saver.save(render.numpy(), os.path.join(output_dir, "render", "{}.png".format(batch[1][0])))
         async_image_saver.save(gt.numpy(), os.path.join(output_dir, "gt", "{}.png".format(batch[1][0])))
         async_image_saver.save(montage.numpy(), os.path.join(output_dir, "montage", "{}.png".format(batch[1][0])))
         async_image_saver.save(diff.numpy(), os.path.join(output_dir, "diff", "{}.png".format(batch[1][0])))
+        async_image_saver.save(feature.numpy(), os.path.join(output_dir, "feature", "{}.png".format(batch[1][0])))
 
     try:
         metrics = validate(dataloader, gaussian_model, renderer, get_metric_calculator(device), image_saver)

@@ -6,7 +6,7 @@ data:
   parser:
     class_path: myimpl.dataparsers.feature_dataparser.SemanticFeature
     init_args:
-      feature_dir: "semantic/sam2_feature_dim32"
+      feature_dir: semantic/sam2_feature_dim256
       split_mode: experiment
       eval_image_select_mode: list
       eval_list: datasets/MegaNeRF/residence/splits/val_images.txt

@@ -33,7 +33,7 @@ class ScaffoldOptimizationConfigMixin:
     mlp_scheduler: Scheduler = field(
         default_factory=lambda: {
             "class_path": "ExponentialDecayScheduler",
-            "init_args": {"max_steps": 40_000},
+            "init_args": {"max_steps": None},
         }
     )
 
@@ -47,7 +47,6 @@ class ScaffoldGaussianMixin:
     use_feature_bank: bool = False
 
     tcnn: bool = False
-
 
 
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
@@ -97,6 +96,9 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         return property_dict
 
     def training_setup_extra_properties(self, module, *args, **kwargs):
+        if self.config.optimization.mlp_scheduler.max_steps is None:
+            self.config.optimization.mlp_scheduler.max_steps = module.trainer.max_steps
+
         optimization_config = self.config.optimization
         optimizer_factory = self.config.optimization.optimizer
         mlp_optimizer_factory = self.config.optimization.mlp_optimizer
@@ -157,7 +159,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             n_layers=self.config.mlp_n_layers,
             n_neurons=self.config.feature_dim,
             activation="ReLU",
-            output_activation="Tanh",
+            output_activation="None",
         )
         # cov: return 7*n_offsets
         # 3 for scales, multiply with anchor-level scales to get gaussian scales

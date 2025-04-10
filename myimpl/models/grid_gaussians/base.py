@@ -26,7 +26,7 @@ class GridOptimizationConfigBase:
             "class_path": "ExponentialDecayScheduler",
             "init_args": {
                 "lr_final": 0.0001,
-                "max_steps": 40_000,
+                "max_steps": None,
             },
         }
     )
@@ -225,6 +225,9 @@ class GridGaussianModelBase(GaussianModel):
         *args,
         **kwargs,
     ):
+        if self.config.optimization.offsets_lr_scheduler.max_steps is None:
+            self.config.optimization.offsets_lr_scheduler.max_steps = module.trainer.max_steps
+
         spatial_lr_scale = self.config.optimization.spatial_lr_scale
         if spatial_lr_scale <= 0:
             spatial_lr_scale = module.trainer.datamodule.dataparser_outputs.camera_extent

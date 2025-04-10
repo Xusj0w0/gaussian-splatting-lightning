@@ -1,6 +1,6 @@
 import os
 import os.path as osp
-from dataclasses import asdict, dataclass, field, replace, MISSING
+from dataclasses import MISSING, asdict, dataclass, field, replace
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np

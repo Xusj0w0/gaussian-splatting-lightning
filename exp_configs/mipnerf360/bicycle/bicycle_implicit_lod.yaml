@@ -1,0 +1,34 @@
+max_steps: 40_000
+
+data:
+  path: datasets/Mip-NeRF360/bicycle
+  parser:
+    class_path: myimpl.dataparsers.feature_dataparser.SemanticFeature
+    init_args:
+      feature_dir: semantic/sam2_feature_dim32
+      split_mode: experiment
+      eval_image_select_mode: step
+      eval_step: 8
+      down_sample_factor: 4
+      down_sample_rounding_mode: ceil
+model:
+  gaussian:
+    class_path: myimpl.models.extended_implicit_grid_gaussian.ImplicitLoDGridGaussian
+    init_args:
+      feature_dim: 32
+      optimization:
+        means_lr_init: 0.0
+        scales_lr: 0.007
+        offsets_lr_init: 0.01
+        offsets_lr_scheduler:
+          init_args:
+            lr_final: 0.0001
+        anchor_features_lr: 0.0075
+  renderer:
+    class_path: myimpl.renderers.extended_grid_renderer.GridGaussianRenderer
+  metric:
+    class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
+  density:
+    class_path: myimpl.density_controllers.extended_grid_density_controller.GridGaussianDensityController
+    init_args:
+      densify_until_iter: 30_000

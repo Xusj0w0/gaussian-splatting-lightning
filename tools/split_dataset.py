@@ -26,9 +26,13 @@ def make_parser():
 
 def split_sparse_model(args):
     sparse_model_path = osp.join(args.input_dir, "sparse")
-    if not (osp.exists(osp.join(sparse_model_path, "images.bin")) or osp.exists(osp.join(sparse_model_path, "images.txt"))):
+    if not (
+        osp.exists(osp.join(sparse_model_path, "images.bin")) or osp.exists(osp.join(sparse_model_path, "images.txt"))
+    ):
         sparse_model_path = osp.join(sparse_model_path, "0")
-    if not (osp.exists(osp.join(sparse_model_path, "images.bin")) or osp.exists(osp.join(sparse_model_path, "images.txt"))):
+    if not (
+        osp.exists(osp.join(sparse_model_path, "images.bin")) or osp.exists(osp.join(sparse_model_path, "images.txt"))
+    ):
         raise ValueError("Sparse model not found in {}".format(sparse_model_path))
 
     cameras: Dict[int, colmap_utils.Camera]; images: Dict[int, colmap_utils.Image]; points3D: Dict[int, colmap_utils.Point3D] # fmt: skip

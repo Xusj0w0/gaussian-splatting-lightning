@@ -9,7 +9,6 @@ import torch.nn.functional as F
 from einops import repeat
 from gsplat import spherical_harmonics
 from pytorch3d.transforms import quaternion_multiply
-from torch_scatter import scatter_mean
 
 from internal.optimizers import Adam
 from internal.renderers import RendererOutputInfo, RendererOutputTypes
@@ -64,12 +63,6 @@ class Adapter(nn.Module):
             activation="ReLU",
             output_activation="None",
         )
-        # self.network = nn.Sequential(
-        #     nn.Linear(anchor_feature_fim + config.embedding_dim, config.network_hidden_dim),
-        #     nn.LayerNorm(config.network_hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(config.network_hidden_dim, gt_feat_shape[-1]),
-        # )
         if config.embedding_dim > 0:
             self.embedding = nn.Embedding(
                 num_embeddings=num_cameras,
@@ -189,22 +182,13 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         *args,
         **kwargs,
     ):
-        opacities, anchor_mask, primitive_mask = (
-            output_pkg["opacities"],
-            output_pkg["anchor_mask"],
-            output_pkg["primitive_mask"],
-        )
-        scatter_indices = repeat(
-            torch.arange(len(primitive_mask) // pc.n_offsets).to(pc.get_anchors.device), "n -> n o", o=pc.n_offsets
-        )
-        scatter_indices = scatter_indices.reshape(-1)[primitive_mask]
-        opacities = scatter_mean(opacities, scatter_indices, dim=0, dim_size=len(primitive_mask) // pc.n_offsets)
+        anchor_mask = output_pkg["anchor_mask"]
 
         xyz = pc.get_anchors[anchor_mask].clone().detach()
         feature = pc.get_anchor_features[anchor_mask]
         scales = pc.get_scalings[anchor_mask][..., :3].clone().detach()
         rotations = pc.get_rotations[anchor_mask].clone().detach()
-        # opacities = pc.get_opacities[anchor_mask].clone().detach()
+        opacities = pc.get_opacities[anchor_mask].clone().detach()
 
         # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
         preprocessed_camera = viewpoint_camera.preprocess_feature_camera()
