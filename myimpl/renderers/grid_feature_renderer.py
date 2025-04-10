@@ -271,22 +271,27 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         *args,
         **kwargs,
     ):
-        preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
+        # TODO: feature loss won't decrease
+
+        # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
+        preprocessed_camera = viewpoint_camera.preprocess_feature_camera()
 
         # reuse properties
         means2d, conics, isects, opacities = (
             output_pkg[k] for k in ["viewspace_points", "conics", "isects", "opacities"]
         )
-        opacities = opacities.unsqueeze(0)
-        projections = None, means2d, None, conics, None
+        opacities = opacities.clone().detach().unsqueeze(0)
+        projections = None, means2d.clone().detach(), None, conics.clone().detach(), None
 
         # get features
         anchor_mask, primitive_mask = output_pkg["anchor_mask"], output_pkg["primitive_mask"]
         features = pc.get_anchor_features[anchor_mask]
-        features = repeat(features, "n m -> (n o) m", o=pc.n_offsets)
+        # features = repeat(features, "n m -> (n o) m", o=pc.n_offsets)
+        # features = features.expand(features.shape[0]*pc.n_offsets, -1)
+        features = features.unsqueeze(0).expand(pc.n_offsets, -1, -1).permute(1, 0, 2).reshape(-1, features.shape[-1])
         features = features[primitive_mask]
 
-        render_feature, render_alpha = GSplatV1.rasterize(
+        render_feature, _ = GSplatV1.rasterize(
             preprocessed_camera,
             projections,
             isects,
@@ -296,19 +301,13 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
             tile_size=self.config.block_size,
             absgrad=False,
         )
-        render_feature = render_feature / render_alpha
 
         output_pkg.update({"render_feature": render_feature})
 
         if getattr(self, "feature_adapter", None) is None:
             return output_pkg
 
-        feature_aligned = self.feature_adapter(render_feature).permute(2, 0, 1).unsqueeze(0)  # H W C' --> 1 C' H W
-        # fmt: off
-        feature_aligned = F.interpolate(
-            feature_aligned, size=self.feature_map_size, mode="bilinear", align_corners=True
-        ).squeeze(0).permute(1, 2, 0) # C' H W --> H W C'
-        # fmt: on
+        feature_aligned = self.feature_adapter(render_feature, viewpoint_camera.idx)  # H W C' --> 1 C' H W
         output_pkg.update({"render_feature_aligned": feature_aligned})
 
         return output_pkg
@@ -330,8 +329,8 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         output_pkg = super().forward(viewpoint_camera, pc, bg_color, scaling_modifier, known_types, **kwargs)
 
         # render features
-        output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
-        # output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
+        # output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
+        output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
 
         return output_pkg
 
