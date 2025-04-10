@@ -329,8 +329,8 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         output_pkg = super().forward(viewpoint_camera, pc, bg_color, scaling_modifier, known_types, **kwargs)
 
         # render features
-        # output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
-        output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
+        output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
+        # output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
 
         return output_pkg
 
