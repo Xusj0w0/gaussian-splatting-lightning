@@ -130,15 +130,10 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
     elif args.ckpt.endswith(".ply"):
         raise NotImplementedError("Loading from .ply is not supported yet.")
 
-    from myimpl.renderers.grid_feature_renderer import \
-        GridFeatureGaussianRenderer
+    from myimpl.renderers.grid_feature_renderer import GridFeatureGaussianRenderer
 
     ckpt_renderer = ckpt["hyper_parameters"]["renderer"]
-    params = {
-        k: getattr(ckpt_renderer, k)
-        for k in GridFeatureGaussianRenderer.__dataclass_fields__
-        if k in ckpt_renderer.__dict__
-    }
+    params = {k: getattr(ckpt_renderer, k) for k in GridFeatureGaussianRenderer.__dataclass_fields__ if k in ckpt_renderer.__dict__}
     renderer = GridFeatureGaussianRenderer(**params).instantiate()
     renderer.setup(stage="validation")
     renderer = RendererWithMetricsWrapper(renderer)
@@ -181,7 +176,8 @@ def main():
         gt = (batch[1][1] * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
         montage = torch.cat([render, gt], dim=1)
         diff = torch.abs(render.float() - gt.float())
-        feature = Visualizers.pca_colormap(predicts["render_feature"]).cpu()
+        feature = Visualizers.pca_colormap(predicts["render_feature"].permute(2, 0, 1)).permute(1, 2, 0)  # clamped
+        feature = (feature * 255.0).to(torch.uint8).cpu()
 
         for d in ["render", "gt", "montage", "diff", "feature"]:
             os.makedirs(os.path.join(output_dir, d), exist_ok=True)

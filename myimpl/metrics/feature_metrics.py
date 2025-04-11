@@ -1,9 +1,12 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
+from myimpl.model_components.feature_adapter import AdapterConfig
 
 __all__ = ["FeatureMetrics", "FeatureMetricsImpl"]
 
@@ -24,6 +27,8 @@ class FeatureMetrics(VanillaMetrics):
 
     fused_ssim: bool = True
 
+    feature_adapter: AdapterConfig = field(default_factory=lambda: AdapterConfig())
+
     def instantiate(self, *args, **kwargs):
         return FeatureMetricsImpl(self)
 
@@ -33,6 +38,28 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
 
     def setup(self, stage, pl_module):
         super().setup(stage, pl_module)
+
+        if stage == "fit":
+            render_feature_size = pl_module.renderer.config.render_feature_size
+            render_feature_dim = pl_module.gaussian_model.config.feature_dim
+            # hwc shape
+            gt_feature_shape = pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0]["semantic_feature"].shape  # fmt: skip
+
+            self.feature_adapter = self.config.feature_adapter.instantiate(
+                render_feature_dim=render_feature_dim,
+                render_feature_size=render_feature_size,
+                gt_feature_shape=gt_feature_shape,
+            )
+
+    def training_setup(self, pl_module):
+        optimizers, schedulers = super().training_setup(pl_module)
+        if self.config.feature_adapter.optimization.max_steps is None:
+            self.config.feature_adapter.optimization.max_steps = pl_module.trainer.max_steps
+
+        _optimizers, _schedulers = self.feature_adapter.training_setup()
+        optimizers.extend(_optimizers)
+        schedulers.extend(_schedulers)
+        return optimizers, schedulers
 
     def _get_basic_metrics(self, pl_module, gaussian_model, batch, outputs):
         metrics, prog_bar = super()._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
@@ -50,11 +77,10 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             prog_bar["loss_dreg"] = False
 
         if self.config.lambda_feature > 0:
-            render_feature = outputs["render_feature_aligned"]
             gt_feature = batch[-1]["semantic_feature"]
-            # loss_feature = F.mse_loss(render_feature, gt_feature)
-            # loss_feature = 1.0 - F.cosine_similarity(render_feature, gt_feature, dim=-1).mean()
-            loss_feature = F.l1_loss(render_feature, gt_feature, reduction="mean")
+            render_feature = outputs["render_feature"]
+            adapted_render_feature = self.feature_adapter(render_feature)
+            loss_feature = F.l1_loss(adapted_render_feature, gt_feature)
             metrics["loss"] += self.config.lambda_feature * loss_feature
             metrics["loss_feature"] = loss_feature
             prog_bar["loss_feature"] = True

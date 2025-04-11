@@ -23,7 +23,7 @@ model:
         offsets_lr_scheduler:
           init_args:
             lr_final: 0.0001
-        anchor_features_lr: 0.0075
+        anchor_features_lr: 0.003
   renderer:
     class_path: myimpl.renderers.grid_feature_renderer.GridFeatureGaussianRenderer
   metric:

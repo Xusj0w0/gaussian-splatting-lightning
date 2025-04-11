@@ -1,3 +1,4 @@
+import math
 import os
 import os.path as osp
 from dataclasses import MISSING, asdict, dataclass, field, replace
@@ -17,9 +18,16 @@ from myimpl.utils.dataset_utils import (ExtraDataContainer, ExtraDataProcessor,
 class FeatureShapeCamera(Camera):
     feature_shape: torch.Tensor = None
 
-    def preprocess_feature_camera(self):
+    def preprocess_feature_camera(self, render_feature_size: int):
+        if self.width > self.height:
+            h = int(render_feature_size)
+            w = int(round(render_feature_size * float(self.width / self.height)))
+        else:
+            w = int(render_feature_size)
+            h = int(round(render_feature_size * self.height / self.width))
+        scale_x, scale_y = float(w) / self.width.item(), float(h) / self.height.item()
+
         viewmats = self.world_to_camera.T.unsqueeze(0)
-        scale_x, scale_y = float(self.feature_shape[1] / self.width), float(self.feature_shape[0] / self.height)
         # fmt: off
         Ks = torch.tensor([[
             [self.fx * scale_x, 0, self.cx * scale_x],
@@ -27,9 +35,8 @@ class FeatureShapeCamera(Camera):
             [0.0, 0.0, 1.0]
         ]], dtype=torch.float, device=self.R.device)
         # fmt: on
-        img_width = int(self.feature_shape[1].item())
-        img_height = int(self.feature_shape[0].item())
-        return viewmats, Ks, (img_width, img_height)
+
+        return viewmats, Ks, (w, h)
 
 
 @dataclass

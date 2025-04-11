@@ -30,127 +30,129 @@ from myimpl.renderers.extended_grid_renderer import (
 __all__ = ["GridFeatureGaussianRenderer", "GridFeatureGaussianRendererModule"]
 
 
-@dataclass
-class AdapterOptimizationConfig:
-    network_lr_init: float = 2e-3
-    network_lr_final: float = 2e-5
+# @dataclass
+# class AdapterOptimizationConfig:
+#     network_lr_init: float = 2e-3
+#     network_lr_final: float = 2e-5
 
-    embedding_lr_init: float = 2e-3
-    embedding_lr_final: float = 2e-4
+#     embedding_lr_init: float = 2e-3
+#     embedding_lr_final: float = 2e-4
 
-    max_steps: int = None
-
-
-@dataclass
-class AdapterConfig:
-    network_n_layers: int = 2
-
-    network_hidden_dim: int = 32
-
-    embedding_dim: int = 0
-
-    optimization: AdapterOptimizationConfig = field(default_factory=lambda: AdapterOptimizationConfig())
+#     max_steps: int = None
 
 
-class Adapter(nn.Module):
-    def __init__(self, anchor_feature_fim: int, gt_feat_shape: List[int], num_cameras: int, config: AdapterConfig):
-        super().__init__()
-        self.config = config
-        self.network = NetworkFactory(tcnn=False).get_network(
-            n_input_dims=anchor_feature_fim + config.embedding_dim,
-            n_output_dims=gt_feat_shape[-1],
-            n_layers=config.network_n_layers,
-            n_neurons=config.network_hidden_dim,
-            activation="ReLU",
-            output_activation="None",
-        )
-        # self.network = nn.Sequential(
-        #     nn.Linear(anchor_feature_fim + config.embedding_dim, config.network_hidden_dim),
-        #     nn.LayerNorm(config.network_hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(config.network_hidden_dim, gt_feat_shape[-1]),
-        # )
-        if config.embedding_dim > 0:
-            self.embedding = nn.Embedding(
-                num_embeddings=num_cameras,
-                embedding_dim=config.embedding_dim,
-            )
+# @dataclass
+# class AdapterConfig:
+#     network_n_layers: int = 2
 
-        self.register_buffer("_feature_map_size", torch.tensor(gt_feat_shape[:2]))
+#     network_hidden_dim: int = 32
 
-    @property
-    def feature_map_size(self) -> List[int]:
-        self._feature_map_size: torch.Tensor
-        if getattr(self, "_feature_map_size", None) is None:
-            return None
-        return self._feature_map_size.int().tolist()
+#     embedding_dim: int = 0
 
-    def forward(self, x: torch.Tensor, camera_idx: torch.Tensor):
-        """
-        x: [H, W, C]
-        """
-        if self.config.embedding_dim > 0:
-            embedding: torch.Tensor = self.embedding(camera_idx)
-            x = torch.cat([x, embedding.unsqueeze(0).unsqueeze(0).expand(*x.shape[:2], -1)], dim=-1)
-        out = self.network(x).permute(2, 0, 1).unsqueeze(0)
-        # fmt: off
-        out_aligned = F.interpolate(
-            out, size=self.feature_map_size, mode="bilinear", align_corners=True
-        ).squeeze(0).permute(1, 2, 0) # C' H W --> H W C'
-        # fmt: on
-        return out_aligned
+#     optimization: AdapterOptimizationConfig = field(default_factory=lambda: AdapterOptimizationConfig())
 
-    def training_setup(self):
-        # fmt: off
-        net_optimizer = Adam().instantiate(
-            [{
-                "params": self.network.parameters(),
-                "lr": self.config.optimization.network_lr_init,
-                "name": "adapter_network",
-            }],
-            lr=0.0,
-        )
-        # fmt: on
-        net_scheduler = (
-            ExponentialDecayScheduler(
-                lr_final=self.config.optimization.network_lr_final,
-                max_steps=self.config.optimization.max_steps,
-            )
-            .instantiate()
-            .get_scheduler(optimizer=net_optimizer, lr_init=self.config.optimization.network_lr_init)
-        )
 
-        optimizers, schedulers = [net_optimizer], [net_scheduler]
+# class Adapter(nn.Module):
+#     def __init__(self, anchor_feature_dim: int, gt_feat_shape: List[int], num_cameras: int, config: AdapterConfig):
+#         super().__init__()
+#         self.config = config
+#         self.network = NetworkFactory(tcnn=False).get_network(
+#             n_input_dims=anchor_feature_dim + config.embedding_dim,
+#             n_output_dims=gt_feat_shape[-1],
+#             n_layers=config.network_n_layers,
+#             n_neurons=config.network_hidden_dim,
+#             activation="ReLU",
+#             output_activation="None",
+#         )
+#         # self.network = nn.Sequential(
+#         #     nn.Linear(anchor_feature_fim + config.embedding_dim, config.network_hidden_dim),
+#         #     nn.LayerNorm(config.network_hidden_dim),
+#         #     nn.ReLU(),
+#         #     nn.Linear(config.network_hidden_dim, gt_feat_shape[-1]),
+#         # )
+#         if config.embedding_dim > 0:
+#             self.embedding = nn.Embedding(
+#                 num_embeddings=num_cameras,
+#                 embedding_dim=config.embedding_dim,
+#             )
 
-        if self.config.embedding_dim > 0:
-            # fmt: off
-            embedding_optimizer = Adam().instantiate(
-                [{
-                    "params": self.embedding.parameters(),
-                    "lr": self.config.optimization.embedding_lr_init,
-                    "name": "adapter_embedding",
-                }],
-                lr=0.0,
-            )
-            # fmt: on
-            embedding_scheduler = (
-                ExponentialDecayScheduler(
-                    lr_final=self.config.optimization.embedding_lr_final,
-                    max_steps=self.config.optimization.max_steps,
-                )
-                .instantiate()
-                .get_scheduler(optimizer=embedding_optimizer, lr_init=self.config.optimization.embedding_lr_init)
-            )
-            optimizers.append(embedding_optimizer)
-            schedulers.append(embedding_scheduler)
+#         self.register_buffer("_feature_map_size", torch.tensor(gt_feat_shape[:2]))
 
-        return optimizers, schedulers
+#     @property
+#     def feature_map_size(self) -> List[int]:
+#         self._feature_map_size: torch.Tensor
+#         if getattr(self, "_feature_map_size", None) is None:
+#             return None
+#         return self._feature_map_size.int().tolist()
+
+#     def forward(self, x: torch.Tensor, camera_idx: torch.Tensor):
+#         """
+#         x: [H, W, C]
+#         """
+#         if self.config.embedding_dim > 0:
+#             embedding: torch.Tensor = self.embedding(camera_idx)
+#             x = torch.cat([x, embedding.unsqueeze(0).unsqueeze(0).expand(*x.shape[:2], -1)], dim=-1)
+#         out = self.network(x).permute(2, 0, 1).unsqueeze(0)
+#         # fmt: off
+#         out_aligned = F.interpolate(
+#             out, size=self.feature_map_size, mode="bilinear", align_corners=True
+#         ).squeeze(0).permute(1, 2, 0) # C' H W --> H W C'
+#         # fmt: on
+#         return out_aligned
+
+#     def training_setup(self):
+#         # fmt: off
+#         net_optimizer = Adam().instantiate(
+#             [{
+#                 "params": self.network.parameters(),
+#                 "lr": self.config.optimization.network_lr_init,
+#                 "name": "adapter_network",
+#             }],
+#             lr=0.0,
+#         )
+#         # fmt: on
+#         net_scheduler = (
+#             ExponentialDecayScheduler(
+#                 lr_final=self.config.optimization.network_lr_final,
+#                 max_steps=self.config.optimization.max_steps,
+#             )
+#             .instantiate()
+#             .get_scheduler(optimizer=net_optimizer, lr_init=self.config.optimization.network_lr_init)
+#         )
+
+#         optimizers, schedulers = [net_optimizer], [net_scheduler]
+
+#         if self.config.embedding_dim > 0:
+#             # fmt: off
+#             embedding_optimizer = Adam().instantiate(
+#                 [{
+#                     "params": self.embedding.parameters(),
+#                     "lr": self.config.optimization.embedding_lr_init,
+#                     "name": "adapter_embedding",
+#                 }],
+#                 lr=0.0,
+#             )
+#             # fmt: on
+#             embedding_scheduler = (
+#                 ExponentialDecayScheduler(
+#                     lr_final=self.config.optimization.embedding_lr_final,
+#                     max_steps=self.config.optimization.max_steps,
+#                 )
+#                 .instantiate()
+#                 .get_scheduler(optimizer=embedding_optimizer, lr_init=self.config.optimization.embedding_lr_init)
+#             )
+#             optimizers.append(embedding_optimizer)
+#             schedulers.append(embedding_scheduler)
+
+#         return optimizers, schedulers
 
 
 @dataclass
 class GridFeatureGaussianRenderer(GridGaussianRenderer):
+    render_feature_size: int = 256
+    """short side of the feature map"""
 
-    feature_adapter: AdapterConfig = field(default_factory=lambda: AdapterConfig())
+    # feature_adapter: AdapterConfig = field(default_factory=lambda: AdapterConfig())
 
     def instantiate(self, *args, **kwargs):
         return GridFeatureGaussianRendererModule(self)
@@ -162,22 +164,22 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
         super().setup(stage, lightning_module, *args, **kwargs)
 
-        if stage == "fit":
-            anchor_feat_dim = lightning_module.gaussian_model.config.feature_dim
-            # hwc shape
-            gt_feat_shape = lightning_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0]["semantic_feature"].shape  # fmt: skip
-            num_cameras = len(lightning_module.trainer.datamodule.dataparser_outputs.train_set.cameras)
-            self.feature_adapter = Adapter(anchor_feat_dim, gt_feat_shape, num_cameras, self.config.feature_adapter)
+        # if stage == "fit":
+        #     anchor_feat_dim = lightning_module.gaussian_model.config.feature_dim
+        #     # hwc shape
+        #     gt_feat_shape = lightning_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0]["semantic_feature"].shape  # fmt: skip
+        #     num_cameras = len(lightning_module.trainer.datamodule.dataparser_outputs.train_set.cameras)
+        #     self.feature_adapter = Adapter(anchor_feat_dim, gt_feat_shape, num_cameras, self.config.feature_adapter)
 
     def training_setup(self, module: lightning.LightningModule):
         optimizers, schedulers = super().training_setup(module)
 
-        if self.config.feature_adapter.optimization.max_steps is None:
-            self.config.feature_adapter.optimization.max_steps = module.trainer.max_steps
-        _optimizers, _schedulers = self.feature_adapter.training_setup()
+        # if self.config.feature_adapter.optimization.max_steps is None:
+        #     self.config.feature_adapter.optimization.max_steps = module.trainer.max_steps
+        # _optimizers, _schedulers = self.feature_adapter.training_setup()
 
-        optimizers.extend(_optimizers)
-        schedulers.extend(_schedulers)
+        # optimizers.extend(_optimizers)
+        # schedulers.extend(_schedulers)
         return optimizers, schedulers
 
     def rasterize_feature_anchor(
@@ -207,7 +209,7 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         # opacities = pc.get_opacities[anchor_mask].clone().detach()
 
         # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
-        preprocessed_camera = viewpoint_camera.preprocess_feature_camera()
+        preprocessed_camera = viewpoint_camera.preprocess_feature_camera(self.config.render_feature_size)
         if scaling_modifier != 1.0:
             scales = scales * scaling_modifier
 
@@ -249,16 +251,9 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
             background=feature.new_zeros((feature.shape[-1],)),
             tile_size=self.config.block_size,
         )
-        render_feature = render_feature / (alpha + 1e-8)  # [H, W, C]
+        # render_feature = render_feature / (alpha + 1e-8)  # [H, W, C]
 
         output_pkg.update({"render_feature": render_feature})
-
-        # 4. match gt feature map
-        if getattr(self, "feature_adapter", None) is None:
-            return output_pkg
-
-        feature_aligned = self.feature_adapter(render_feature, viewpoint_camera.idx)
-        output_pkg.update({"render_feature_aligned": feature_aligned})
 
         return output_pkg
 
@@ -274,7 +269,7 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         # TODO: feature loss won't decrease
 
         # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
-        preprocessed_camera = viewpoint_camera.preprocess_feature_camera()
+        preprocessed_camera = viewpoint_camera.preprocess_feature_camera(self.config.render_feature_size)
 
         # reuse properties
         means2d, conics, isects, opacities = (
@@ -303,12 +298,6 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         )
 
         output_pkg.update({"render_feature": render_feature})
-
-        if getattr(self, "feature_adapter", None) is None:
-            return output_pkg
-
-        feature_aligned = self.feature_adapter(render_feature, viewpoint_camera.idx)  # H W C' --> 1 C' H W
-        output_pkg.update({"render_feature_aligned": feature_aligned})
 
         return output_pkg
 
