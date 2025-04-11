@@ -82,8 +82,8 @@ if __name__ == "__main__":
     print(f"output_path={os.path.join(output_path, 'semantic')}")
 
     # build output dirs
-    feature_dir = os.path.join(output_path, "semantic", "dino2")
-    feature_preview_dir = os.path.join(output_path, "semantic", "dino2_preview")
+    feature_dir = os.path.join(output_path, "semantic", "dinov2")
+    feature_preview_dir = os.path.join(output_path, "semantic", "dinov2_preview")
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(feature_preview_dir, exist_ok=True)
 
