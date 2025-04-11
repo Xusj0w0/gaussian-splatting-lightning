@@ -37,7 +37,7 @@ def make_parser():
         default="256",
         help="should in [32, 64, 256], corresponding shape are [32x256x256, 64x128x128, 256x64x64]",
     )
-    parser.add_argument("--preview", action="store_true", default=True)
+    parser.add_argument("--preview", action="store_true", default=False)
     parser.add_argument("--ext", "-e", nargs="+", default=["jpg", "jpeg", "JPG", "JPEG"])
     configure_arg_parser(parser)
     return parser

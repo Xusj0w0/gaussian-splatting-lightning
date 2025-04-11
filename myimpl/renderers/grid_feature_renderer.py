@@ -182,6 +182,26 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         # schedulers.extend(_schedulers)
         return optimizers, schedulers
 
+    def preprocess_feature_camera(self, viewpoint_camera: FeatureShapeCamera):
+        if viewpoint_camera.width > viewpoint_camera.height:
+            h = int(self.config.render_feature_size)
+            w = int(round(self.config.render_feature_size * float(viewpoint_camera.width / viewpoint_camera.height)))
+        else:
+            w = int(self.config.render_feature_size)
+            h = int(round(self.config.render_feature_size * viewpoint_camera.height / viewpoint_camera.width))
+        scale_x, scale_y = float(w) / viewpoint_camera.width.item(), float(h) / viewpoint_camera.height.item()
+
+        viewmats = viewpoint_camera.world_to_camera.T.unsqueeze(0)
+        # fmt: off
+        Ks = torch.tensor([[
+            [viewpoint_camera.fx * scale_x, 0, viewpoint_camera.cx * scale_x],
+            [0.0, viewpoint_camera.fy * scale_y, viewpoint_camera.cy * scale_y],
+            [0.0, 0.0, 1.0]
+        ]], dtype=torch.float, device=viewpoint_camera.R.device)
+        # fmt: on
+
+        return viewmats, Ks, (w, h)
+
     def rasterize_feature_anchor(
         self,
         viewpoint_camera: FeatureShapeCamera,
@@ -209,7 +229,8 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         # opacities = pc.get_opacities[anchor_mask].clone().detach()
 
         # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
-        preprocessed_camera = viewpoint_camera.preprocess_feature_camera(self.config.render_feature_size)
+        # preprocessed_camera = viewpoint_camera.preprocess_feature_camera(self.config.render_feature_size)
+        preprocessed_camera = self.preprocess_feature_camera(viewpoint_camera)
         if scaling_modifier != 1.0:
             scales = scales * scaling_modifier
 

@@ -67,7 +67,7 @@ class Adapter(nn.Module):
             config.network_hidden_dim,
             config.network_n_layers,
             render_feature_size,
-            gt_feature_shape[0],
+            min(*gt_feature_shape[:2]),
         )
         self.render_feature_size = render_feature_size
 

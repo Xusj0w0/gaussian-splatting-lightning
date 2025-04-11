@@ -18,26 +18,6 @@ from myimpl.utils.dataset_utils import (ExtraDataContainer, ExtraDataProcessor,
 class FeatureShapeCamera(Camera):
     feature_shape: torch.Tensor = None
 
-    def preprocess_feature_camera(self, render_feature_size: int):
-        if self.width > self.height:
-            h = int(render_feature_size)
-            w = int(round(render_feature_size * float(self.width / self.height)))
-        else:
-            w = int(render_feature_size)
-            h = int(round(render_feature_size * self.height / self.width))
-        scale_x, scale_y = float(w) / self.width.item(), float(h) / self.height.item()
-
-        viewmats = self.world_to_camera.T.unsqueeze(0)
-        # fmt: off
-        Ks = torch.tensor([[
-            [self.fx * scale_x, 0, self.cx * scale_x],
-            [0.0, self.fy * scale_y, self.cy * scale_y],
-            [0.0, 0.0, 1.0]
-        ]], dtype=torch.float, device=self.R.device)
-        # fmt: on
-
-        return viewmats, Ks, (w, h)
-
 
 @dataclass
 class FeatureShapeCameras(Cameras):

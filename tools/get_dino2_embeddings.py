@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import torch
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as TF
 from PIL import Image
 from tqdm import tqdm
 
@@ -26,20 +27,19 @@ def make_parser():
     parser.add_argument("image_path", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--dino2_arch", type=str, default="dinov2_vitl14_reg")
-    parser.add_argument("--preview", action="store_true", default=True)
+    parser.add_argument("--preview", action="store_true", default=False)
     parser.add_argument("--ext", "-e", nargs="+", default=["jpg", "jpeg", "JPG", "JPEG"])
     configure_arg_parser(parser)
     return parser
 
 
-def build_dinov2(args) -> DinoVisionTransformer:
+def build_dinov2(args, device="cpu") -> DinoVisionTransformer:
     # dino = torch.hub.load("facebookresearch/dinov2", args.dino2_arch)
     try:
-
         import external.dinov2.hubconf as dino_hubconf
 
         entry = dino_hubconf.__dict__[args.dino2_arch]
-        dino: DinoVisionTransformer = entry()
+        dino: DinoVisionTransformer = entry().to(device).eval()
     except:
         print("Failed to load DINOv2 from external.dinov2.hubconf, using default")
         pass
@@ -48,15 +48,11 @@ def build_dinov2(args) -> DinoVisionTransformer:
 
 def transform_image(img: np.ndarray, img_size: int = 224) -> torch.Tensor:
     img = Image.fromarray(img)
-    transform = transforms.Compose(
-        [
-            transforms.Resize((img_size, img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-    tensor = transform(img).unsqueeze(0)
-    return tensor
+    img = TF.resize(img, (img_size, img_size), interpolation=TF.InterpolationMode.BILINEAR)
+    img = TF.to_tensor(img)
+    img = TF.normalize(img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    img = img.unsqueeze(0)
+    return img
 
 
 def get_image_list(args):
@@ -87,13 +83,13 @@ if __name__ == "__main__":
 
     # build output dirs
     feature_dir = os.path.join(output_path, "semantic", "dino2")
-    feature_preview_dir = os.path.join(output_path, "semantic", "dino2")
+    feature_preview_dir = os.path.join(output_path, "semantic", "dino2_preview")
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(feature_preview_dir, exist_ok=True)
 
     # initialize SAM
     print("Initializing DINOv2...")
-    predictor = build_dinov2(args)
+    predictor = build_dinov2(args, device=MODEL_DEVICE)
 
     print("Finding image files...")
     image_list = get_image_list(args)
@@ -113,16 +109,16 @@ if __name__ == "__main__":
                 semantic_file_name = f"{image_name}.npy"
 
                 # predict image embedding
-                img_tensor = transform_image(img)
-                # min_size = min(*img.shape[:2])
-                # img = cv2.resize(img, dsize=(min_size, min_size), fx=1, fy=1, interpolation=cv2.INTER_LINEAR)
-                # image_embedding = predictor(img_tensor)
+                img_tensor = transform_image(img, 448).to(MODEL_DEVICE)
                 feature_size = (torch.tensor(img_tensor.shape[-2:]) / predictor.patch_size).int().tolist()
-                image_embedding = predictor.forward_features(img_tensor)["x_norm_patchtokens"]
-                image_embedding = image_embedding.reshape(*feature_size, -1)
+                with torch.no_grad():
+                    image_embedding = (
+                        predictor.forward_features(img_tensor)["x_norm_patchtokens"].squeeze(0).permute(1, 0)
+                    )
+                image_embedding = image_embedding.reshape(-1, *feature_size)
 
                 # save
-                image_embedding_np = image_embedding.clone().detach().cpu().numpy()
+                image_embedding_np = image_embedding.permute(1, 2, 0).clone().detach().cpu().numpy()
                 ndarray_saver.save(image_embedding_np, os.path.join(feature_dir, semantic_file_name))
 
                 # preview

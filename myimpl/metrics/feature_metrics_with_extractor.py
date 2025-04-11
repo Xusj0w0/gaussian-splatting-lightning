@@ -7,8 +7,36 @@ import torch.nn.functional as F
 
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
 from myimpl.model_components.feature_adapter import AdapterConfig
+from myimpl.model_components.feature_extractor import (DINOv2Extractor,
+                                                       FeatureExtractorType,
+                                                       SAM2Extractor)
 
 __all__ = ["FeatureMetrics", "FeatureMetricsImpl"]
+
+
+@dataclass
+class ExtractorConfig:
+    type: int = FeatureExtractorType.SAM2
+
+    arch: str = "sam2.1_hiera_l"
+
+    feat_dim: int = 32
+
+    img_size: int = 448
+
+    device: str = "cuda"
+
+    def instantiate(self):
+        if self.type == FeatureExtractorType.SAM:
+            raise NotImplementedError("FeatureExtractorType.SAM is not implemented")
+        elif self.type == FeatureExtractorType.SAM2:
+            return SAM2Extractor(arch=self.arch, feat_dim=self.feat_dim, device=self.device)
+        elif self.type == FeatureExtractorType.DINOv2:
+            return DINOv2Extractor(arch=self.arch, img_size=self.img_size, device=self.device)
+        elif self.type == FeatureExtractorType.DA2:
+            raise NotImplementedError("FeatureExtractorType.DA2 is not implemented")
+        else:
+            raise ValueError(f"Unknown feature extractor type: {self.type}")
 
 
 @dataclass
@@ -27,6 +55,8 @@ class FeatureMetrics(VanillaMetrics):
 
     fused_ssim: bool = True
 
+    feature_extractor: ExtractorConfig = field(default_factory=lambda: ExtractorConfig())
+
     feature_adapter: AdapterConfig = field(default_factory=lambda: AdapterConfig())
 
     def instantiate(self, *args, **kwargs):
@@ -40,10 +70,13 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
         super().setup(stage, pl_module)
 
         if stage == "fit":
+            extractor = self.config.feature_extractor.instantiate()
+            self.no_state_dict_models["feature_extractor"] = extractor
+
             render_feature_size = pl_module.renderer.config.render_feature_size
             render_feature_dim = pl_module.gaussian_model.config.feature_dim
             # hwc shape
-            gt_feature_shape = pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0]["semantic_feature"].shape  # fmt: skip
+            gt_feature_shape = extractor.get_embedding_shape()
 
             self.feature_adapter = self.config.feature_adapter.instantiate(
                 render_feature_dim=render_feature_dim,
@@ -79,7 +112,8 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
         if self.config.lambda_feature > 0:
             render_feature = outputs["render_feature"]
             adapted_render_feature = self.feature_adapter(render_feature)
-            gt_feature = batch[-1]["semantic_feature"]
+            # gt_feature = batch[-1]["semantic_feature"]
+            gt_feature = self.no_state_dict_models["feature_extractor"](batch[1][1])
             if gt_feature.shape[:2] != adapted_render_feature.shape[:2]:
                 # fmt: off
                 adapted_render_feature = F.interpolate(
@@ -111,3 +145,9 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             prog_bar["loss_dist"] = True
 
         return metrics, prog_bar
+
+    def on_parameter_move(self, *args, **kwargs):
+        super().on_parameter_move(*args, **kwargs)
+
+        if "feature_extractor" in self.no_state_dict_models:
+            self.no_state_dict_models["feature_extractor"] = self.no_state_dict_models["feature_extractor"].to(*args, **kwargs) # fmt: skip
