@@ -8,6 +8,7 @@ import torch.nn as nn
 from internal.models.gaussian import Gaussian, GaussianModel
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
+from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
 
 from .utils import GridFactory
@@ -18,6 +19,8 @@ class GridOptimizationConfigBase:
     means_lr_init: float = 0.0
 
     scales_lr: float = 0.007
+
+    rotations_lr_init: float = 0.001
 
     offsets_lr_init: float = 0.01
 
@@ -70,7 +73,7 @@ class GridGaussianModelBase(GaussianModel):
         super().__init__()
         self.config = config
 
-        names = ["means", "offsets", "scales"]
+        names = ["means", "offsets", "scales", "rotations"]
         self._names = tuple(names + self._extra_property_names)
 
         buffer_names = ["_voxel_size", "_grid_origin", "_activate_sh_degree"]
@@ -166,27 +169,37 @@ class GridGaussianModelBase(GaussianModel):
             offsets = anchors.new_zeros((n_anchors, n_offsets, 3))
             dist2 = torch.clamp_min(distCUDA2(fused_point_cloud.cuda()), 0.0000001).to(fused_point_cloud.device)
             scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 6)
+            rotations = anchors.new_zeros((n_anchors, 4))
+            rotations[:, 0] = 1.0
+
         elif mode == "number":
             assert n is not None
             anchors = torch.zeros((n, 3)).float()
             offsets = torch.zeros((n, self.config.n_offsets, 3)).float()
             scales = torch.zeros((n, 6)).float()
+            rotations = anchors.new_zeros((n, 4))
+            rotations[:, 0] = 1.0
+
         elif mode == "tensors":
             assert tensors is not None and "anchors" in tensors
             anchors = tensors["anchors"]
             offsets = tensors["offsets"]
             scales = tensors["scales"]
+            rotations = tensors["rotations"]
+
         else:
             raise ValueError(f"Unsupported mode {mode}")
 
         anchors = nn.Parameter(anchors, requires_grad=True)
         offsets = nn.Parameter(offsets, requires_grad=True)
         scales = nn.Parameter(scales, requires_grad=True)
+        rotations = nn.Parameter(rotations, requires_grad=True)
 
         property_dict = {
             "means": anchors,
             "scales": scales,
             "offsets": offsets,
+            "rotations": rotations,
         }
         return property_dict
 
@@ -251,6 +264,7 @@ class GridGaussianModelBase(GaussianModel):
         l = [
             {"params": self.gaussians["means"], "lr": optimization_config.means_lr_init, "name": "means"},
             {"params": self.gaussians["scales"], "lr": optimization_config.scales_lr, "name": "scales"},
+            {"params": self.gaussians["rotations"], "lr": optimization_config.rotations_lr_init, "name": "rotations"},
         ]
         constant_lr_optimizer = optimizer_factory.instantiate(l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(constant_lr_optimizer, module)
@@ -299,6 +313,9 @@ class GridGaussianModelBase(GaussianModel):
     def n_primitives(self) -> int:
         return self.n_anchors * self.n_offsets
 
+    def get_n_gaussians(self):
+        return self.n_anchors
+
     @property
     def get_xyz(self) -> torch.Tensor:
         return self.get_anchors
@@ -320,6 +337,10 @@ class GridGaussianModelBase(GaussianModel):
     def get_offsets(self) -> torch.Tensor:
         """[N_anchors, N_offsets, 3]"""
         return self.gaussians["offsets"]
+
+    @property
+    def get_rotations(self) -> torch.Tensor:
+        return self.rotation_activation(self.gaussians["rotations"])
 
     @property
     def color_dim(self):
@@ -385,3 +406,9 @@ class GridGaussianModelBase(GaussianModel):
 
     def rotation_inverse_activation(self, rotations: torch.Tensor) -> torch.Tensor:
         return rotations
+
+    def opacity_activation(self, opacities: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(opacities)
+
+    def opacity_inverse_activation(self, opacities: torch.Tensor) -> torch.Tensor:
+        return inverse_sigmoid(opacities)

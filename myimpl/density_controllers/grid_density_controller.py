@@ -146,7 +146,6 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
 
         n_offsets = int(primitive_mask.shape[0] / anchor_mask.sum().item())
 
-        # debug
         _opacities = opacities.new_zeros((primitive_mask.shape[0]))
         _opacities[primitive_mask] = opacities.clone().view(-1).detach()
         _opacities = _opacities.view(-1, n_offsets)
@@ -640,8 +639,10 @@ class CandidateAnchors:
         scales = gaussian_model.scale_inverse_activation(
             gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size
         )
-        offsets = gaussian_model.get_offsets.new_zeros((self.n_anchors, gaussian_model.n_offsets, 3))
-        return {"means": self.anchors, "scales": scales, "offsets": offsets}
+        offsets = gaussian_model.get_anchors.new_zeros((self.n_anchors, gaussian_model.n_offsets, 3))
+        rotations = gaussian_model.get_anchors.new_zeros((self.n_anchors, 4))
+        rotations[..., 0] = 1.0
+        return {"means": self.anchors, "scales": scales, "offsets": offsets, "rotations": rotations}
 
     def get_lod_grid_properties(self, gaussian_model: LoDGridGaussianModel, voxel_size: float):
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
@@ -654,7 +655,8 @@ class CandidateAnchors:
         # select max value of anchor features among primitives that convert to same grid
         anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
         anchor_features = anchor_features[self.keep_mask]
-        return {"anchor_features": anchor_features}
+
+        return {"anchor_features": anchor_features}  # , "opacities": opacities}
 
     def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)

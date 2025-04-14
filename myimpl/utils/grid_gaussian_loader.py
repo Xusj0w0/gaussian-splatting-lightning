@@ -10,10 +10,9 @@ import torch.nn as nn
 from plyfile import PlyData, PlyElement
 from sklearn.neighbors import NearestNeighbors
 
-from myimpl.models.grid_gaussians.grid_gaussian import GridGaussianModel
-from myimpl.models.grid_gaussians.lod_grid_gaussian import LoDGridGaussianModel
-from myimpl.models.grid_gaussians.scaffold_mixin import \
-    ScaffoldGaussianModelMixin
+from myimpl.models.grid_gaussians import (GridGaussianModel,
+                                          LoDGridGaussianModel,
+                                          ScaffoldGaussianModelMixin)
 
 
 class GridGaussianType:
@@ -28,26 +27,33 @@ class GridGaussianUtils:
     GRID_GAUSSIAN_PROPERTIES = {
         1: {
             "buffers": ["voxel_size", "grid_origin"],
-            "properties": ["anchors", "offsets", "scales",
+            "properties": ["anchors", "offsets", "scales", "rotations",
                         "anchor_features",],
-            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp"],
+            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp"],
         },
         2: {
             "buffers": ["voxel_size", "grid_origin", "max_level", "start_level", "standard_dist", "visibility_threshold"],
-            "properties": ["anchors", "offsets", "scales", "levels", "extra_levels",
+            "properties": ["anchors", "offsets", "scales", "rotations", "levels", "extra_levels",
                         "anchor_features",],
-            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp"],
+            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp"],
         }
     }
     # fmt: on
 
     PROPERTY_NAME_ATTR_MAPPING = {
-        "scales": "scalings",
+        "anchors": "means",
+    }
+
+    MLP_NAME_ATTR_MAPPING = {
+        "opacity_mlp": "opacity",
+        "cov_mlp": "cov",
+        "color_mlp": "color",
+        "feature_bank_mlp": "feature_bank",
     }
 
     @classmethod
     def get_type(cls, model: GridGaussianModel) -> int:
-        if not isinstance(model, GridGaussianModel):
+        if not isinstance(model, (GridGaussianModel, LoDGridGaussianModel)):
             raise ValueError('`model` should be ["Implicit", "ImplicitLoD", "Explicit", "ExplicitLoD"]')
         if isinstance(model, LoDGridGaussianModel):
             if isinstance(model, ScaffoldGaussianModelMixin):
@@ -66,15 +72,21 @@ class GridGaussianUtils:
     def tensors_from_model(cls, model: GridGaussianModel):
         pt = {}
         type = cls.get_type(model)
+
+        # use `get_xxx` to get buffers
         for buffer in cls.GRID_GAUSSIAN_PROPERTIES[type]["buffers"]:
             attr = getattr(model, buffer)
             pt.update({f"_{buffer}": torch.tensor(attr) if not isinstance(attr, torch.Tensor) else attr})
+
+        # get properties from gaussians container
         for property in cls.GRID_GAUSSIAN_PROPERTIES[type]["properties"]:
-            pt.update({property: getattr(model, f"get_{cls.PROPERTY_NAME_ATTR_MAPPING.get(property, property)}")})
+            pt.update({property: model.gaussians.get(cls.PROPERTY_NAME_ATTR_MAPPING.get(property, property), None)})
+
+        # get properties from gaussian_mlps container
         for mlp in cls.GRID_GAUSSIAN_PROPERTIES[type]["mlps"]:
-            pt.update(
-                {mlp: getattr(model, f"get_{cls.PROPERTY_NAME_ATTR_MAPPING.get(property, property)}").state_dict()}
-            )
+            key = cls.MLP_NAME_ATTR_MAPPING.get(mlp, mlp)
+            if key in model.gaussian_mlps:
+                pt.update({mlp: model.gaussian_mlps[key].state_dict()})
 
         return pt
 

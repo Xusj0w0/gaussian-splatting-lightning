@@ -27,6 +27,7 @@ from internal.utils.gaussian_model_loader import GaussianModelLoader
 from myimpl.models.grid_gaussians import ScaffoldGaussianModelMixin
 from large_scene.utils.partition import Partition
 from large_scene.utils.partition_training import PartitionTraining, PartitionTrainingConfig
+from large_scene.tools.merge import fuse_appearance_features, fuse_mip_filters, update_ckpt, convert_to_embedding_optimized_ckpt_file_path
 
 
 def parse_args():
@@ -34,7 +35,7 @@ def parse_args():
     # parser.add_argument("partition_dir")
     parser.add_argument("--project", "-p", type=str, required=False,
                         help="Project Name")
-    parser.add_argument("--output_path", "-o", type=str, required=False)
+    parser.add_argument("--partition_id", type=str, default="all")
     parser.add_argument("--min-images", type=int, default=32)
     # ===== for evaluation ======
     parser.add_argument("--retain-appearance", action="store_true", default=False)
@@ -44,12 +45,7 @@ def parse_args():
     parser.add_argument("--preprocess", action="store_true")
     args = parser.parse_args()
 
-    if args.output_path is None:
-        # args.output_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", args.project, "merged.ckpt")
-        args.output_path = os.path.join(os.getcwd(), "outputs", args.project, "merged/merged.ckpt")
-        os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-    elif not args.output_path.endswith(".ckpt"):
-        args.output_path += ".ckpt"
+    args.preprocess = True
 
     if not args.preprocess:
         assert os.path.exists(args.output_path) is False, "output file '{}' already exists".format(args.output_path)
@@ -57,146 +53,40 @@ def parse_args():
     return args
 
 
-def fuse_appearance_features(ckpt: dict, gaussian_model, cameras_json: list[dict], image_name_to_camera: dict[str, Camera]):
-    cuda_device = torch.device("cuda")
-    gaussian_device = gaussian_model.get_means().device
-    gaussian_model.to(device=cuda_device)
-    renderer = GaussianModelLoader.initialize_renderer_from_checkpoint(ckpt, "validation", cuda_device)
-
-    cameras = [image_name_to_camera[i["img_name"]] for i in cameras_json]
-
-    from utils.fuse_appearance_embeddings_into_shs_dc import prune_and_get_weights, average_color_fusing
-    n_average_cameras = 32
-    _, visibility_score_pruned_sorted_indices, visibility_score_pruned_top_k_pdf = prune_and_get_weights(
-        gaussian_model=gaussian_model,
-        cameras=cameras,
-        n_average_cameras=n_average_cameras,
-        weight_device=cuda_device,
+def get_trained_partitions(self: PartitionTraining):
+    trainable_partition_idx_list = self.get_trainable_partition_idx_list(
+        min_images=self.config.min_images,
+        n_processes=self.config.n_processes,
+        process_id=self.config.process_id,
     )
-    rgb_offset = average_color_fusing(
-        gaussian_model,
-        renderer,
-        n_average_cameras=n_average_cameras,
-        camera_chunk_size=8,
-        cameras=cameras,
-        device=cuda_device,
-        visibility_score_pruned_sorted_indices=visibility_score_pruned_sorted_indices,
-        visibility_score_pruned_top_k_pdf=visibility_score_pruned_top_k_pdf,
+    partition_bounding_boxes = self.partition_coordinates.get_bounding_boxes()
+
+    trained_partitions = []
+    for partition_idx in tqdm(trainable_partition_idx_list, desc="Searching checkpoints"):
+        partition_id_str = self.get_partition_id_str(partition_idx)
+        trained_file = os.path.join(
+            self.project_output_dir,
+            self.get_partition_trained_step_filename(partition_idx),
+        )
+        if not os.path.exists(trained_file):
+            continue
+        model_dir = os.path.join(self.project_output_dir, partition_id_str)
+        ckpt_file = GaussianModelLoader.search_load_file(model_dir)
+        if not ckpt_file.endswith(".ckpt"):
+            continue
+        trained_partitions.append((
+            partition_idx,
+            partition_id_str,
+            ckpt_file,
+            partition_bounding_boxes[partition_idx],
+        ))
+
+    orientation_transformation = (
+        self.scene["extra_data"]["rotation_transform"]
+        if self.scene["extra_data"] is not None
+        else None
     )
-
-    from internal.utils.sh_utils import RGB2SH, C0
-    sh_offsets = RGB2SH(rgb_offset * 2. - 1.)
-    gaussian_model.shs_dc = gaussian_model.shs_dc + sh_offsets.unsqueeze(1).to(device=gaussian_model.shs_dc.device) + 0.5 / C0
-    gaussian_model.to(device=gaussian_device)
-
-
-def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool, scaffold_infos: Optional[Dict[str, Any]] = None):
-    if retain_appearance:
-        from internal.models.appearance_feature_gaussian import AppearanceFeatureGaussian
-        ckpt["hyper_parameters"]["gaussian"] = AppearanceFeatureGaussian(
-            sh_degree=max_sh_degree,
-            appearance_feature_dims=ckpt["hyper_parameters"]["gaussian"].appearance_feature_dims,
-        )
-    # support partition rendering of scaffold based model
-    elif scaffold_infos is not None:
-        from myimpl.models.partitionable_implicit_grid_gaussian import PartitionableImplicitGridGaussian, PartitionableImplicitLoDGridGaussian
-        anchor_partition_ids = torch.concatenate(scaffold_infos["anchor_partition_ids"], 0)
-        ckpt["state_dict"]["gaussian_model._anchor_partition_ids"] = anchor_partition_ids
-
-        # remove original gaussian_mlps states
-        keys_removed = []
-        for k in ckpt["state_dict"]:
-            if k.startswith("gaussian_model.gaussian_mlps"):
-                keys_removed.append(k)
-        for k in keys_removed:
-            del ckpt["state_dict"][k]
-        # add new states
-        ckpt["state_dict"].update({
-            f"gaussian_model.gaussian_mlps.{k}": v
-            for k, v in nn.ModuleDict(scaffold_infos["mlps"]).state_dict().items()
-        })
-
-        # modify hyperparameter
-        orig_gaussian = ckpt["hyper_parameters"]["gaussian"]
-        if ckpt["state_dict"].get("gaussian_model.gaussians.levels", None) is not None:
-            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitLoDGridGaussian(partition_ids=torch.unique(anchor_partition_ids).tolist(), **asdict(orig_gaussian))
-        else:
-            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitGridGaussian(partition_ids=torch.unique(anchor_partition_ids).tolist(), **asdict(orig_gaussian))
-    else:
-        # replace `AppearanceFeatureGaussian` with `VanillaGaussian`
-        ckpt["hyper_parameters"]["gaussian"] = VanillaGaussian(sh_degree=max_sh_degree)
-
-        # remove `GSplatAppearanceEmbeddingRenderer`'s states from ckpt
-        state_dict_key_to_delete = []
-        for i in ckpt["state_dict"]:
-            if i.startswith("renderer."):
-                state_dict_key_to_delete.append(i)
-        for i in state_dict_key_to_delete:
-            del ckpt["state_dict"][i]
-
-    # replace `GSplatAppearanceEmbeddingRenderer` with `GSPlatRenderer`
-    anti_aliased = True
-    kernel_size = 0.3
-    if isinstance(ckpt["hyper_parameters"]["renderer"], VanillaRenderer):
-        anti_aliased = False
-    elif isinstance(ckpt["hyper_parameters"]["renderer"], GSplatMipSplattingRendererV2) or ckpt["hyper_parameters"]["renderer"].__class__.__name__ == "GSplatAppearanceEmbeddingMipRenderer":
-        kernel_size = ckpt["hyper_parameters"]["renderer"].filter_2d_kernel_size
-
-    if retain_appearance:
-        from internal.renderers.gsplat_appearance_embedding_renderer import GSplatAppearanceEmbeddingRenderer
-        ckpt["hyper_parameters"]["renderer"] = GSplatAppearanceEmbeddingRenderer(
-            anti_aliased=anti_aliased,
-            filter_2d_kernel_size=kernel_size,
-            separate_sh=True,
-            tile_based_culling=getattr(ckpt["hyper_parameters"]["renderer"], "tile_based_culling", False),
-            model=ckpt["hyper_parameters"]["renderer"].model,
-        )
-    elif scaffold_infos is not None:
-        from myimpl.renderers.partition_implicit_renderer import PartitionGridGaussianRenderer
-        ckpt_renderer = ckpt["hyper_parameters"]["renderer"]
-        ckpt["hyper_parameters"]["renderer"] = PartitionGridGaussianRenderer(
-            **{k: getattr(ckpt_renderer, k) for k in PartitionGridGaussianRenderer.__dataclass_fields__ if k in ckpt_renderer.__dict__}
-        )
-    else:
-        ckpt["hyper_parameters"]["renderer"] = GSplatV1Renderer(
-            anti_aliased=anti_aliased,
-            filter_2d_kernel_size=kernel_size,
-            separate_sh=getattr(ckpt["hyper_parameters"]["renderer"], "separate_sh", True),
-            tile_based_culling=getattr(ckpt["hyper_parameters"]["renderer"], "tile_based_culling", False),
-        )
-
-    # remove existing Gaussians from ckpt
-    for i in list(ckpt["state_dict"].keys()):
-        if i.startswith("gaussian_model.gaussians.") or i.startswith("frozen_gaussians."):
-            del ckpt["state_dict"][i]
-
-    # remove optimizer states
-    ckpt["optimizer_states"] = []
-
-    # reinitialize density controller states
-    if isinstance(ckpt["hyper_parameters"]["density"], VanillaDensityController):
-        for k in list(ckpt["state_dict"].keys()):
-            if k.startswith("density_controller."):
-                ckpt["state_dict"][k] = torch.zeros((merged_gaussians["means"].shape[0], *ckpt["state_dict"][k].shape[1:]), dtype=ckpt["state_dict"][k].dtype)
-
-    # add merged gaussians to ckpt
-    for k, v in merged_gaussians.items():
-        ckpt["state_dict"]["gaussian_model.gaussians.{}".format(k)] = v
-
-
-def fuse_mip_filters(gaussian_model):
-    new_opacities, new_scales = gaussian_model.get_3d_filtered_scales_and_opacities()
-    gaussian_model.opacities = gaussian_model.opacity_inverse_activation(new_opacities)
-    gaussian_model.scales = gaussian_model.scale_inverse_activation(new_scales)
-
-
-def convert_to_embedding_optimized_ckpt_file_path(ckpt_file, side):
-    ckpt_filename = os.path.basename(ckpt_file)
-    return os.path.join(
-        os.path.dirname(os.path.dirname(ckpt_file)),
-        "embedding_optimization",
-        "{}-{}.ckpt".format(ckpt_filename[:ckpt_filename.rfind(".")], side),
-    )
+    return trained_partitions, orientation_transformation
 
 
 def main():
@@ -242,7 +132,7 @@ def main():
             extra_epoches=0,
         )
     )
-    mergable_partitions, orientation_transformation = partition_training.get_trained_partitions()
+    mergable_partitions, orientation_transformation = get_trained_partitions(partition_training)
 
     image_name_to_camera = None
 
@@ -260,6 +150,9 @@ def main():
     scaffold_infos = None
     with tqdm(mergable_partitions, desc="Pre-processing") as t:
         for partition_idx, partition_id_str, ckpt_file, bounding_box in t:
+            if args.partition_id != "all" and partition_id_str != args.partition_id:
+                continue
+
             t.set_description("{}".format(partition_id_str))
 
             # ===== for evaluation =====

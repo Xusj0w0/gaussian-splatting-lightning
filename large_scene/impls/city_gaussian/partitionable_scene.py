@@ -38,7 +38,8 @@ from internal.utils.partitioning_utils import (MinMaxBoundingBox,
                                                PartitionCoordinates,
                                                Partitioning, SceneBoundingBox)
 from internal.utils.sh_utils import eval_sh
-from myimpl.models.grid_gaussians import GridGaussianModel
+from myimpl.models.grid_gaussians import (GridGaussianModel,
+                                          LoDGridGaussianModel)
 from myimpl.utils.grid_gaussian_loader import GridGaussianUtils
 
 from ..base.partitionable_scene import (PartitionableScene,
@@ -153,11 +154,12 @@ class CityScene(PartitionableScene):
             if osp.isdir(fulldir):
                 shutil.copy(osp.join(output_path, "coarse", "cfg_args"), osp.join(fulldir, "cfg_args"))
 
+        # TODO: assign all visible gaussians to partition
         complete_properties = model.properties
         for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
             partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
             incomplete_properties = {
-                k: v[self.gaussians_in_partitions[partition_idx]] for k, v in complete_properties.items()
+                k: v[self.gaussians_assigned_to_partition[partition_idx]] for k, v in complete_properties.items()
             }
             model.properties = incomplete_properties
             self.save_gaussian_in_partition(osp.join(partition_dir, "partitions", partition_id_str), model)
@@ -167,7 +169,7 @@ class CityScene(PartitionableScene):
         if isinstance(model, VanillaGaussianModel):
             dst_path = osp.join(dst_dir, "gaussian_model.ply")
             GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
-        elif isinstance(model, GridGaussianModel):
+        elif isinstance(model, (GridGaussianModel, LoDGridGaussianModel)):
             dst_path = osp.join(dst_dir, "gaussian_model.pt")
             pt = GridGaussianUtils.tensors_from_model(model)
             torch.save(pt, dst_path)
@@ -194,6 +196,7 @@ class CityScene(PartitionableScene):
             {
                 "up": torch.linalg.inv(self.manhattan_trans)[:3, 1],
                 "rotation_transform": self.manhattan_trans,
+                "camera_visibilities": getattr(self, "camera_visibilities", None),
                 "radius_bounding_box": (
                     asdict(self.radius_bounding_box) if self.radius_bounding_box is not None else None
                 ),
@@ -221,21 +224,22 @@ class CityScene(PartitionableScene):
         else:
             if self.scene_config.config is not None:
                 args += ["--config={}".format(self.scene_config.config)]
-            args += [
-                "--data.parser.down_sample_factor={}".format(self.scene_config.down_sample_factor),
-                "--data.parser.split_mode=experiment",
-                "--data.parser.eval_image_select_mode=list",
-                "--data.parser.eval_list={}".format(osp.join(dataset_path, "splits/val_images.txt")),
-                "--data.async_caching=true",
-                "--data.train_max_num_images_to_cache=256",
-                "--logger=tensorboard",
-            ]
+            else:
+                args += [
+                    "--data.path={}".format(dataset_path),
+                    "--data.parser=Colmap",
+                    "--data.parser.down_sample_factor={}".format(self.scene_config.down_sample_factor),
+                    "--data.parser.split_mode=experiment",
+                    "--data.parser.eval_image_select_mode=list",
+                    "--data.parser.eval_list={}".format(osp.join(dataset_path, "splits/val_images.txt")),
+                    "--data.async_caching=true",
+                    "--data.train_max_num_images_to_cache=256",
+                    "--logger=tensorboard",
+                ]
         args += [
             "--project=coarse",
             "--output={}".format(output_path),
             "-n=coarse",
-            "--data.path={}".format(dataset_path),
-            "--data.parser=Colmap",
         ]
         print(" ".join(args))
         subprocess.run(args)
@@ -394,6 +398,7 @@ class CityScene(PartitionableScene):
                 ) > 0
                 num_gaussians = gaussians_in_block.sum()
             self.gaussians_in_partitions[partition_id].copy_(gaussians_in_block)
+        self.gaussians_assigned_to_partition = self.gaussians_in_partitions
 
     def camera_center_based_partition_assignment(self):
         bounding_boxes = self.partition_coordinates.get_bounding_boxes(
@@ -450,3 +455,32 @@ class CityScene(PartitionableScene):
     def visibility_based_partition_assignment(self):
         self.is_partitions_visible_to_cameras = self.camera_visibilities > self.scene_config.visibility_threshold
         return self.is_partitions_visible_to_cameras
+
+    def visibility_based_gaussian_assignment(
+        self,
+        coarse_model: VanillaGaussianModel,
+        cameras: Cameras,
+        device: Any = "cpu",
+    ):
+        self.gaussians_assigned_to_partition = torch.zeros(
+            (len(self.partition_coordinates), coarse_model.n_gaussians), dtype=torch.bool, device=device
+        )
+        is_images_assigned_to_partitions = torch.logical_or(
+            self.is_camera_in_partition, self.is_partitions_visible_to_cameras
+        )
+        positions = coarse_model.get_xyz
+        for partition_idx in range(len(self.partition_coordinates)):
+            assign = torch.zeros((coarse_model.n_gaussians,), dtype=torch.bool, device=device)
+            for camera_idx in torch.nonzero(
+                is_images_assigned_to_partitions[partition_idx, :], as_tuple=False
+            ).squeeze():
+                full_projection = cameras[camera_idx].full_projection.to(device)
+                means2d = positions @ full_projection[:3, :3] + full_projection[-1, :3]
+                means2d = means2d[:, :2] / (means2d[:, -1:] + 1e-8)
+                visibility = torch.logical_and(
+                    torch.prod(means2d[:, :2] > -1.1, dim=-1),
+                    torch.prod(means2d[:, :2] < 1.1, dim=-1),
+                )
+                assign = torch.logical_or(assign, visibility)
+            self.gaussians_assigned_to_partition[partition_idx, :] = assign
+        return self.gaussians_assigned_to_partition

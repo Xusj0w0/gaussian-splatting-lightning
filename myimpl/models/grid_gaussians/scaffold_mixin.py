@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
+from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
 
 __all__ = ["ScaffoldGaussianMixin", "ScaffoldGaussianModelMixin", "ScaffoldOptimizationConfigMixin"]
@@ -53,15 +54,47 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     config: ScaffoldGaussianMixin
     _extra_property_names: List[str] = ["anchor_features"]
 
-    def train(self, mode=True):
-        for mlp in self.gaussian_mlps.values():
-            mlp.train()
-        return super().train(mode)
-
-    def eval(self):
-        for mlp in self.gaussian_mlps.values():
-            mlp.eval()
-        return super().eval()
+    def create_mlps(self):
+        self.gaussian_mlps = nn.ModuleDict()
+        # create mlps
+        # opacity: return 1*n_offsets
+        self.gaussian_mlps["opacity"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
+            n_input_dims=self.config.feature_dim,  # try: remove viewdirs + self.config.view_dim,
+            n_output_dims=self.n_offsets,
+            n_layers=self.config.mlp_n_layers,
+            n_neurons=self.config.feature_dim,
+            activation="ReLU",
+            output_activation="Tanh",
+        )
+        # cov: return 7*n_offsets
+        # 3 for scales, multiply with anchor-level scales to get gaussian scales
+        # 4 for rotations
+        self.gaussian_mlps["cov"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
+            n_input_dims=self.config.feature_dim + self.config.view_dim,
+            n_output_dims=7 * self.n_offsets,
+            n_layers=self.config.mlp_n_layers,
+            n_neurons=self.config.feature_dim,
+            activation="ReLU",
+            output_activation="None",
+        )
+        # color: return 3*n_offsets
+        self.gaussian_mlps["color"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
+            n_input_dims=self.config.feature_dim + self.config.view_dim + self.config.n_appearance_embedding_dims,
+            n_output_dims=self.color_dim * self.n_offsets,
+            n_layers=self.config.mlp_n_layers,
+            n_neurons=self.config.feature_dim,
+            activation="ReLU",
+            output_activation="Sigmoid",
+        )
+        if self.config.use_feature_bank:
+            self.gaussian_mlps["feature_bank"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
+                n_input_dims=self.config.view_dim,
+                n_output_dims=3,
+                n_layers=2,
+                n_neurons=self.config.feature_dim,
+                activation="ReLU",
+                output_activation="None",
+            )
 
     def get_extra_properties(
         self,
@@ -76,20 +109,29 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         if mode == "pcd":
             assert fused_point_cloud is not None
             n_anchors = fused_point_cloud.shape[0]
-            anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
+            # anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
+            anchor_features = torch.normal(0.0, 0.02, (n_anchors, self.config.feature_dim), dtype=torch.float)
+
         elif mode == "number":
             assert n is not None
             anchor_features = torch.zeros((n, self.config.feature_dim), dtype=torch.float)
+
         elif mode == "tensors":
             assert tensors is not None and "anchor_features" in tensors
             anchor_features = tensors["anchor_features"]
+
             self.gaussian_mlps["opacity"].load_state_dict(tensors["opacity_mlp"])
             self.gaussian_mlps["cov"].load_state_dict(tensors["cov_mlp"])
             self.gaussian_mlps["color"].load_state_dict(tensors["color_mlp"])
+            if "feature_bank_mlp" in tensors:
+                self.gaussian_mlps["feature_bank"].load_state_dict(tensors["feature_bank_mlp"])
+                self.config.use_feature_bank = True
+
         else:
             raise ValueError(f"Unsupported mode {mode}")
 
         anchor_features = nn.Parameter(anchor_features, requires_grad=True)
+
         property_dict = {
             "anchor_features": anchor_features,
         }
@@ -105,9 +147,11 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         mlp_scheduler_factory = self.config.optimization.mlp_scheduler
 
         # constant properties
+        # fmt: off
         l = [
-            {"params": self.gaussians["anchor_features"], "lr": optimization_config.anchor_features_lr, "name": "anchor_features",},  # fmt: skip
+            {"params": self.gaussians["anchor_features"], "lr": optimization_config.anchor_features_lr, "name": "anchor_features"},
         ]
+        # fmt: on
         constant_lr_optimizer = optimizer_factory.instantiate(l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(constant_lr_optimizer, module)
 
@@ -149,47 +193,15 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
 
         return [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler]
 
-    def create_mlps(self):
-        self.gaussian_mlps = nn.ModuleDict()
-        # create mlps
-        # opacity: return 1*n_offsets
-        self.gaussian_mlps["opacity"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-            n_input_dims=self.config.feature_dim,  # try: remove viewdirs + self.config.view_dim,
-            n_output_dims=self.n_offsets,
-            n_layers=self.config.mlp_n_layers,
-            n_neurons=self.config.feature_dim,
-            activation="ReLU",
-            output_activation="None",
-        )
-        # cov: return 7*n_offsets
-        # 3 for scales, multiply with anchor-level scales to get gaussian scales
-        # 4 for rotations
-        self.gaussian_mlps["cov"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-            n_input_dims=self.config.feature_dim + self.config.view_dim,
-            n_output_dims=7 * self.n_offsets,
-            n_layers=self.config.mlp_n_layers,
-            n_neurons=self.config.feature_dim,
-            activation="ReLU",
-            output_activation="None",
-        )
-        # color: return 3*n_offsets
-        self.gaussian_mlps["color"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-            n_input_dims=self.config.feature_dim + self.config.view_dim + self.config.n_appearance_embedding_dims,
-            n_output_dims=self.color_dim * self.n_offsets,
-            n_layers=self.config.mlp_n_layers,
-            n_neurons=self.config.feature_dim,
-            activation="ReLU",
-            output_activation="Sigmoid",
-        )
-        if self.config.use_feature_bank:
-            self.gaussian_mlps["feature_bank"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-                n_input_dims=self.config.view_dim,
-                n_output_dims=3,
-                n_layers=2,
-                n_neurons=self.config.feature_dim,
-                activation="ReLU",
-                output_activation="None",
-            )
+    def train(self, mode=True):
+        for mlp in self.gaussian_mlps.values():
+            mlp.train()
+        return super().train(mode)
+
+    def eval(self):
+        for mlp in self.gaussian_mlps.values():
+            mlp.eval()
+        return super().eval()
 
     @property
     def get_anchor_features(self):

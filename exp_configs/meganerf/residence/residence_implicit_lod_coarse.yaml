@@ -1,6 +1,4 @@
-max_steps: 40_000
-trainer:
-  max_steps: 40_000
+max_steps: 60_000
 data:
   path: datasets/MegaNeRF/residence
   parser:
@@ -10,7 +8,7 @@ data:
       eval_image_select_mode: list
       eval_list: datasets/MegaNeRF/residence/splits/val_images.txt
       down_sample_factor: 4
-  train_max_num_images_to_cache: 256
+  train_max_num_images_to_cache: 64
   async_caching: true
 model:
   gaussian:
@@ -20,15 +18,20 @@ model:
       optimization:
         means_lr_init: 0.0
         scales_lr: 0.007
+        rotations_lr_init: 0.001
         offsets_lr_init: 0.00016
         offsets_lr_scheduler:
           init_args:
-            max_steps: 40_000
             lr_final: 0.0000016
         anchor_features_lr: 0.0075
-        mlp_scheduler:
-          init_args:
-            max_steps: 40_000
+        opacity_mlp_lr_init: 0.002
+        opacity_mlp_lr_final: 2.0e-05
+        cov_mlp_lr_init: 0.004
+        cov_mlp_lr_final: 0.004
+        color_mlp_lr_init: 0.008
+        color_mlp_lr_final: 5.0e-05
+        feature_bank_mlp_lr_init: 0.01
+        feature_bank_mlp_lr_final: 1.0e-05
   renderer:
     class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
   metric:
@@ -36,4 +39,4 @@ model:
   density:
     class_path: myimpl.density_controllers.grid_density_controller.GridGaussianDensityController
     init_args:
-      densify_until_iter: 30_000
+      densify_until_iter: 40_000

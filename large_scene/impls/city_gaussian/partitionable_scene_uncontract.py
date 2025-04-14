@@ -109,6 +109,7 @@ class UncontractCityScene(CityScene):
         self.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
         # assign cameras based on visibilities
         self.visibility_based_partition_assignment()
+        self.visibility_based_gaussian_assignment(coarse_model, image_set.cameras, device=device)
 
         self.partition_coordinates = bounded_coordinates
         # load point cloud for visualization

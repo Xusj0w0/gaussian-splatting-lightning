@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
 from gsplat import spherical_harmonics
+from pytorch3d.transforms import quaternion_multiply
 
 from internal.cameras.cameras import Camera
 from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
@@ -21,15 +22,16 @@ from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
 from myimpl.models.partitionable_implicit_grid_gaussian import (
     PartitionableImplicitGridGaussianModel,
     PartitionableImplicitLoDGridGaussianModel)
-from myimpl.renderers.grid_renderer import (GridGaussianRenderer,
-                                            GridGaussianRendererModule)
+from myimpl.renderers.grid_feature_renderer import (
+    GridFeatureGaussianRenderer, GridFeatureGaussianRendererModule)
 
 
-class PartitionGridGaussianRenderer(GridGaussianRenderer):
-    pass
+class PartitionGridGaussianRenderer(GridFeatureGaussianRenderer):
+    def instantiate(self, *args, **kwargs):
+        return PartitionGridGaussianRendererModule(self)
 
 
-class PartitionGridGaussianRendererModule(GridGaussianRendererModule):
+class PartitionGridGaussianRendererModule(GridFeatureGaussianRendererModule):
     def calculate_implicit_properties(
         self,
         pc: PartitionableImplicitGridGaussianModel,
@@ -46,7 +48,9 @@ class PartitionGridGaussianRendererModule(GridGaussianRendererModule):
         features = pc.get_anchor_features[anchor_mask]
         offsets = pc.get_offsets[anchor_mask]
         scalings = pc.get_scalings[anchor_mask]
+        rotations = pc.get_rotations[anchor_mask]
         anchor_partition_ids = pc.get_anchor_partition_ids[anchor_mask]
+        pc.set_anchor_partition_ids(anchor_partition_ids)
 
         n_anchors, n_offsets = pc.n_anchors, pc.n_offsets
 
@@ -55,9 +59,7 @@ class PartitionGridGaussianRendererModule(GridGaussianRendererModule):
         viewdirs = viewdirs / viewdirs_norm
 
         if pc.config.use_feature_bank:
-            bank_weight = F.softmax(
-                pc.forward_by_partition_id(pc.get_feature_bank_mlp, anchor_partition_ids, viewdirs), dim=-1
-            ).unsqueeze(dim=1)
+            bank_weight = F.softmax(pc.get_feature_bank_mlp(viewdirs), dim=-1).unsqueeze(dim=1)
             features = features.unsqueeze(dim=-1)
             features = (
                 features[:, ::4, :1].repeat(1, 4, 1) * bank_weight[:, :, 0:1]
@@ -67,9 +69,8 @@ class PartitionGridGaussianRendererModule(GridGaussianRendererModule):
             features = features.squeeze(dim=-1)
         cat_local_view = torch.cat([features, viewdirs], dim=1)
 
-        opacities = pc.forward_by_partition_id(
-            pc.get_opacity_mlp, anchor_partition_ids, features
-        )  # try: remove viewdirs
+        opacities_offsets = pc.get_opacity_mlp(features).reshape(-1, n_offsets, 1)  # try: remove viewdirs
+        opacities = torch.clamp(opacities_offsets, max=1.0)
         if prog_ratio is not None and transition_mask is not None:
             prog = prog_ratio[anchor_mask]
             transition = transition_mask[anchor_mask]
@@ -84,9 +85,14 @@ class PartitionGridGaussianRendererModule(GridGaussianRendererModule):
             color_input = torch.cat([cat_local_view, appearance_code], dim=-1)
         else:
             color_input = cat_local_view
-        colors = pc.forward_by_partition_id(pc.get_color_mlp, anchor_partition_ids, color_input).reshape(-1, 3)
+        colors = pc.get_color_mlp(color_input).reshape(-1, 3)
 
-        scale_rots = pc.forward_by_partition_id(pc.get_cov_mlp, anchor_partition_ids, cat_local_view).reshape(-1, 7)
+        scale_rots = pc.get_cov_mlp(cat_local_view).reshape(-1, n_offsets, 7)
+        scale_rots[..., -4:] = quaternion_multiply(
+            rotations.unsqueeze(1),
+            pc.rotation_activation(scale_rots[..., -4:].clone()),
+        )
+        scale_rots = scale_rots.reshape(-1, 7)
 
         concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
         concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
