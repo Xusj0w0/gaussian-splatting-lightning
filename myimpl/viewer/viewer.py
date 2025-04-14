@@ -30,6 +30,7 @@ class Viewer(_Viewer):
             reorient: Literal["auto", "enable", "disable"] = "auto",
             sh_degree: int = 3,
             enable_transform: bool = False,
+            enable_measurement: bool = False,
             show_cameras: bool = False,
             cameras_json: str = None,
             vanilla_deformable: bool = False,
@@ -58,6 +59,7 @@ class Viewer(_Viewer):
         self.image_format = image_format
         self.sh_degree = sh_degree
         self.enable_transform = enable_transform
+        self.enable_measurement = enable_measurement
         self.show_cameras = show_cameras
         self.extra_video_render_args = []
 
