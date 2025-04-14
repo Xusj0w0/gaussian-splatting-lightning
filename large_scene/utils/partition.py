@@ -12,6 +12,8 @@ from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.partitioning_utils import MinMaxBoundingBox
 from large_scene.impls.base import PartitionableScene, PartitionableSceneConfig
 from large_scene.impls.city_gaussian import (CityScene, CitySceneConfig,
+                                             UncontractAllVisCityScene,
+                                             UncontractAllVisCitySceneConfig,
                                              UncontractCityScene,
                                              UncontractCitySceneConfig)
 from large_scene.impls.vast_gaussian import VastScene, VastSceneConfig

@@ -71,7 +71,7 @@ def split_sparse_model(args):
 
 
 def split_images(args):
-    image_dirname = "images" + f"_{int(args.down_sample_factor)}" if args.down_sample_factor != 1 else ""
+    image_dirname = "images" + (f"_{int(args.down_sample_factor)}" if args.down_sample_factor != 1 else "")
     downsampled_image_dir = osp.join(args.input_dir, image_dirname)
     assert osp.exists(downsampled_image_dir), "Downsampled images not found"
 
