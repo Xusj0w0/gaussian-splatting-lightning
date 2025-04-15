@@ -262,6 +262,7 @@ class CityScene(PartitionableScene):
         dataset_path = data_params["path"]
         dataparser_config = data_params["parser"]
         dataparser_config.points_from = "random"
+        dataparser_config.split_mode = "reconstruction"
         dataparser: ColmapDataParser = dataparser_config.instantiate(
             path=dataset_path, output_path=os.getcwd(), global_rank=0
         )

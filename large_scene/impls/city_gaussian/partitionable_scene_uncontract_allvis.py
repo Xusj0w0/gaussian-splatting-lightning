@@ -23,22 +23,21 @@ import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from internal.models.vanilla_gaussian import VanillaGaussian, VanillaGaussianModel
+from internal.models.vanilla_gaussian import (VanillaGaussian,
+                                              VanillaGaussianModel)
 from internal.renderers.renderer import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import GaussianPlyUtils
 from internal.utils.graphics_utils import BasicPointCloud
-from internal.utils.partitioning_utils import (
-    MinMaxBoundingBox,
-    MinMaxBoundingBoxes,
-    PartitionCoordinates,
-    Partitioning,
-    SceneBoundingBox,
-)
+from internal.utils.partitioning_utils import (MinMaxBoundingBox,
+                                               MinMaxBoundingBoxes,
+                                               PartitionCoordinates,
+                                               Partitioning, SceneBoundingBox)
 from internal.utils.sh_utils import eval_sh
 
-from ..base.partitionable_scene import PartitionableScene, PartitionableSceneConfig
+from ..base.partitionable_scene import (PartitionableScene,
+                                        PartitionableSceneConfig)
 from .partitionable_scene import CityScene
 
 __all__ = ["UncontractAllVisCitySceneConfig", "UncontractAllVisCityScene"]
@@ -136,8 +135,8 @@ class UncontractAllVisCityScene(CityScene):
                 positions_ndc = positions @ full_projection[:3, :3] + full_projection[-1, :3]
                 means2d = positions_ndc[:, :2] / (positions_ndc[:, -1:] + 1e-8)
                 visibility = torch.logical_and(
-                    torch.prod(means2d[:, :2] > -0.8, dim=-1),
-                    torch.prod(means2d[:, :2] < 0.8, dim=-1),
+                    torch.prod(means2d[:, :2] > -1.0, dim=-1),
+                    torch.prod(means2d[:, :2] < 1.0, dim=-1),
                 )
                 self.camera_visibilities[partition_idx, camera_idx] = visibility.any().float()
         return self.camera_visibilities
@@ -330,3 +329,25 @@ class UncontractAllVisCityScene(CityScene):
         self.partition_coordinates = PartitionCoordinates(id=id_tensor, xy=xy_tensor, size=sz_tensor)
 
         return self.partition_coordinates
+
+    # def visibility_based_gaussian_assignment(
+    #     self,
+    #     coarse_model: VanillaGaussianModel,
+    #     cameras: Cameras,
+    #     device: Any = "cpu",
+    # ):
+    #     self.gaussians_assigned_to_partition = torch.zeros(
+    #         (len(self.partition_coordinates), coarse_model.n_gaussians), dtype=torch.bool, device=device
+    #     )
+
+    #     bounding_boxes = self.partition_coordinates.get_bounding_boxes(0.2).to(device)
+    #     transform = self.manhattan_trans.to(device)
+    #     positions = coarse_model.get_xyz @ transform[:3, :3].T + transform[:3, -1]
+    #     self.gaussians_assigned_to_partition.copy_(Partitioning.is_in_bounding_boxes(bounding_boxes, positions[:, :2]))
+
+    #     return self.gaussians_assigned_to_partition
+    def visibility_based_gaussian_assignment(self, coarse_model, cameras, device="cpu"):
+        self.gaussians_assigned_to_partition = torch.ones(
+            (len(self.partition_coordinates), coarse_model.n_gaussians), dtype=torch.bool, device=device
+        )
+        return self.gaussians_assigned_to_partition

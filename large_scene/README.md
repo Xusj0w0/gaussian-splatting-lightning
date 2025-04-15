@@ -9,3 +9,5 @@ CUDA_VISIBLE_DEVICES=7 python large_scene/tools/partition.py --project_name resi
 ```shell
 CUDA_VISIBLE_DEVICES=0 python large_scene/tools/train.py -p residence-octree-3_5 --initialize_from gaussian_model.pt --max-steps 40000 --n-processes 3 --process-id 1 --config exp_configs/meganerf/residence/residence_implicit_lod_finetune.yaml --ignore-slurm
 ```
+
+CUDA_VISIBLE_DEVICES=3 python large_scene/tools/train.py -p residence-octree-2 --initialize_from gaussian_model.pt --max-steps 60000 --n-processes 2 --process-id 2 --config exp_configs/meganerf/residence/residence_partition_density_controller2.yaml --ignore-slurm
