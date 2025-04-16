@@ -5,8 +5,10 @@ import lightning
 import torch
 import torch.nn as nn
 
+from internal.cameras.cameras import Camera
 from internal.models.gaussian import Gaussian, GaussianModel
 from internal.optimizers import Adam, OptimizerConfig
+from internal.renderers.gsplat_v1_renderer import GSplatV1
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
@@ -81,6 +83,30 @@ class GridGaussianModelBase(GaussianModel):
 
         if self.config.color_mode == "SHs":
             self.register_buffer("_activate_sh_degree", torch.tensor(0, dtype=torch.int))
+
+    @torch.no_grad()
+    def filter_anchor_by_preprojection(
+        self, viewpoint_camera: Camera, anchor_mask: Optional[torch.Tensor] = None, **kwargs
+    ):
+        if anchor_mask is None:
+            anchor_mask = self.get_anchors.new_ones((self.get_anchors.shape[0],), dtype=torch.bool)
+        means = self.get_anchors[anchor_mask]
+        scales = self.get_scalings[anchor_mask][:, :3]
+        quats = means.new_zeros((means.shape[0], 4))
+        quats[:, 0] = 1.0
+
+        processed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
+        radii = GSplatV1.project(
+            processed_camera,
+            means3d=means,
+            scales=scales,
+            quats=quats,
+            anti_aliased=False,
+        )[0]
+
+        _anchor_mask = anchor_mask.clone()
+        _anchor_mask[anchor_mask] = radii.squeeze(0) > 0
+        return _anchor_mask
 
     def before_setup_properties_from_pcd(
         self, xyz: torch.Tensor, rgb: torch.Tensor, property_dict: Dict[str, torch.Tensor], *args, **kwargs

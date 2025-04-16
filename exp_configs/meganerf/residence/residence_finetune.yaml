@@ -1,4 +1,4 @@
-max_steps: 40_000
+max_steps: 60_000
 data:
   path: datasets/MegaNeRF/residence
   parser:
@@ -23,19 +23,19 @@ model:
           init_args:
             lr_final: 1.6e-6
         anchor_features_lr: 0.0075
-        opacity_mlp_lr_init: 2e-4
-        opacity_mlp_lr_final: 2e-5
-        cov_mlp_lr_init: 4e-3
-        cov_mlp_lr_final: 4e-3
-        color_mlp_lr_init: 8e-4
-        color_mlp_lr_final: 5e-5
-        feature_bank_mlp_lr_init: 1e-4
-        feature_bank_mlp_lr_final: 1e-5
+        opacity_mlp_lr_init: 0
+        opacity_mlp_lr_final: 0
+        cov_mlp_lr_init: 0
+        cov_mlp_lr_final: 0
+        color_mlp_lr_init: 0
+        color_mlp_lr_final: 0
+        feature_bank_mlp_lr_init: 0
+        feature_bank_mlp_lr_final: 0
   renderer:
     class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
   metric:
     class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
   density:
-    class_path: myimpl.density_controllers.grid_density_controller.GridGaussianDensityController
+    class_path: myimpl.density_controllers.partition_grid_density_controller.PartitionGridGaussianDensityController
     init_args:
-      densify_until_iter: 30_000
+      densify_until_iter: 40_000

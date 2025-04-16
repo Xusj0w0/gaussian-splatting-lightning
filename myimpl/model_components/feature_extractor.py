@@ -119,7 +119,6 @@ class DINOv2Extractor(ExtractorBase, nn.Module):
         try:
             sys.path.insert(0, "external/dinov2")
             import external.dinov2.hubconf as dino_hubconf
-
             from external.dinov2.dinov2.models.vision_transformer import \
                 DinoVisionTransformer
 

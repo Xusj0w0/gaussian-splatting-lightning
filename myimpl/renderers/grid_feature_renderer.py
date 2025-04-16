@@ -92,7 +92,7 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         opacities = scatter_mean(opacities, scatter_indices, dim=0, dim_size=len(primitive_mask) // pc.n_offsets)
 
         xyz = pc.get_anchors[anchor_mask].clone().detach()
-        feature = pc.get_anchor_features[anchor_mask]
+        features = pc.get_anchor_features[anchor_mask]
         scales = pc.get_scalings[anchor_mask][..., :3].clone().detach()
         rotations = pc.get_rotations[anchor_mask].clone().detach()
         # opacities = pc.get_opacities[anchor_mask].clone().detach()
@@ -136,8 +136,8 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
             projection_for_rasterization,
             isects,
             opacities,
-            colors=feature,
-            background=feature.new_zeros((feature.shape[-1],)),
+            colors=features,
+            background=features.new_zeros((features.shape[-1],)),
             tile_size=self.config.block_size,
         )
         # render_feature = render_feature / (alpha + 1e-8)  # [H, W, C]
@@ -157,33 +157,57 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
     ):
         # TODO: feature loss won't decrease
 
-        # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
-        preprocessed_camera = viewpoint_camera.preprocess_feature_camera(self.config.render_feature_size)
-
-        # reuse properties
-        means2d, conics, isects, opacities = (
-            output_pkg[k] for k in ["viewspace_points", "conics", "isects", "opacities"]
+        # reuse implicit properties
+        xyz, scales, rotations, opacities = (
+            output_pkg[i].clone().detach() for i in ["xyz", "scales", "rotations", "opacities"]
         )
-        opacities = opacities.clone().detach().unsqueeze(0)
-        projections = None, means2d.clone().detach(), None, conics.clone().detach(), None
 
-        # get features
         anchor_mask, primitive_mask = output_pkg["anchor_mask"], output_pkg["primitive_mask"]
         features = pc.get_anchor_features[anchor_mask]
-        # features = repeat(features, "n m -> (n o) m", o=pc.n_offsets)
-        # features = features.expand(features.shape[0]*pc.n_offsets, -1)
         features = features.unsqueeze(0).expand(pc.n_offsets, -1, -1).permute(1, 0, 2).reshape(-1, features.shape[-1])
         features = features[primitive_mask]
 
-        render_feature, _ = GSplatV1.rasterize(
+        # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
+        preprocessed_camera = self.preprocess_feature_camera(viewpoint_camera)
+        if scaling_modifier != 1.0:
+            scales = scales * scaling_modifier
+
+        # former projection results are calculated with original camera params
+        # need to re-calculate projection
+        projections = GSplatV1.project(
+            preprocessed_camera,
+            xyz,
+            scales,
+            rotations,
+            eps2d=self.config.filter_2d_kernel_size,
+            anti_aliased=self.config.anti_aliased,
+            radius_clip=self.runtime_options.radius_clip,
+            camera_model=self.runtime_options.camera_model,
+        )
+        radii, means2d, depths, conics, compensations = projections
+
+        opacities = opacities.unsqueeze(0).squeeze(-1)  # [1, N]
+        if self.config.anti_aliased:
+            opacities = opacities * compensations
+        isects = self.isect_encode(
             preprocessed_camera,
             projections,
+            opacities,
+            tile_size=self.config.block_size,
+        )
+
+        # 3. rasterization
+        means2d = means2d.squeeze(0)
+        projection_for_rasterization = radii, means2d, depths, conics, compensations
+
+        render_feature, alpha = GSplatV1.rasterize(
+            preprocessed_camera,
+            projection_for_rasterization,
             isects,
             opacities,
-            features,
-            features.new_zeros((features.shape[-1],)),
+            colors=features,
+            background=features.new_zeros((features.shape[-1],)),
             tile_size=self.config.block_size,
-            absgrad=False,
         )
 
         output_pkg.update({"render_feature": render_feature})
@@ -207,8 +231,8 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         output_pkg = super().forward(viewpoint_camera, pc, bg_color, scaling_modifier, known_types, **kwargs)
 
         # render features
-        output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
-        # output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
+        # output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
+        output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
 
         return output_pkg
 

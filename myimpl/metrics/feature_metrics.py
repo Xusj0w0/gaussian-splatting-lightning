@@ -21,6 +21,8 @@ class FeatureMetrics(VanillaMetrics):
 
     lambda_dist: float = 0.0
 
+    feature_end_iter: int = 30_000
+
     normal_start_iter: int = 7_000
 
     dist_start_iter: int = 3_000
@@ -76,7 +78,7 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             metrics["loss_dreg"] = scaling_reg
             prog_bar["loss_dreg"] = False
 
-        if self.config.lambda_feature > 0:
+        if self.config.lambda_feature > 0 and global_step <= self.config.feature_end_iter:
             render_feature = outputs["render_feature"]
             adapted_render_feature = self.feature_adapter(render_feature)
             gt_feature = batch[-1]["semantic_feature"]

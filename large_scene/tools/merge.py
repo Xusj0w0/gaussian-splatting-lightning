@@ -119,9 +119,13 @@ def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool, 
         # modify hyperparameter
         orig_gaussian = ckpt["hyper_parameters"]["gaussian"]
         if ckpt["state_dict"].get("gaussian_model.gaussians.levels", None) is not None:
-            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitLoDGridGaussian(partition_ids=torch.unique(anchor_partition_ids).tolist(), **asdict(orig_gaussian))
+            gaussian_params = {k: getattr(orig_gaussian, k) for k in PartitionableImplicitLoDGridGaussian.__dataclass_fields__ if k in orig_gaussian.__dict__}
+            gaussian_params.update({"partition_ids": torch.unique(anchor_partition_ids).tolist()})
+            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitLoDGridGaussian(**gaussian_params)
         else:
-            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitGridGaussian(partition_ids=torch.unique(anchor_partition_ids).tolist(), **asdict(orig_gaussian))
+            gaussian_params = {k: getattr(orig_gaussian, k) for k in PartitionableImplicitGridGaussian.__dataclass_fields__ if k in orig_gaussian.__dict__}
+            gaussian_params.update({"partition_ids": torch.unique(anchor_partition_ids).tolist()})
+            ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitGridGaussian(**gaussian_params)
     else:
         # replace `AppearanceFeatureGaussian` with `VanillaGaussian`
         ckpt["hyper_parameters"]["gaussian"] = VanillaGaussian(sh_degree=max_sh_degree)
@@ -152,11 +156,7 @@ def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool, 
             model=ckpt["hyper_parameters"]["renderer"].model,
         )
     elif scaffold_infos is not None:
-        from myimpl.renderers.partition_implicit_renderer import PartitionGridGaussianRenderer
-        ckpt_renderer = ckpt["hyper_parameters"]["renderer"]
-        ckpt["hyper_parameters"]["renderer"] = PartitionGridGaussianRenderer(
-            **{k: getattr(ckpt_renderer, k) for k in PartitionGridGaussianRenderer.__dataclass_fields__ if k in ckpt_renderer.__dict__}
-        )
+        pass # do not change to GSplatV1Renderer
     else:
         ckpt["hyper_parameters"]["renderer"] = GSplatV1Renderer(
             anti_aliased=anti_aliased,
