@@ -48,12 +48,13 @@ def build_da2_backbone(args):
 class FeatureGetter(object):
     def __init__(self, da_model: DepthAnythingV2):
         # self._handle = da_model.depth_head.scratch.output_conv1.register_forward_hook(self)
-        self._handle = da_model.depth_head.scratch.refinenet4.register_forward_hook(self)
+        # self._handle = da_model.depth_head.scratch.refinenet4.register_forward_hook(self)
+        self._handle = da_model.depth_head.scratch.layer1_rn.register_forward_hook(self)
         self._embedding = None
 
     def __call__(self, module, input, output):
-        # self._embedding = input[0].squeeze()
-        self._embedding = output.squeeze()
+        self._embedding = input[0].squeeze()
+        # self._embedding = output.squeeze()
 
     def get_image_embedding(self):
         return self._embedding

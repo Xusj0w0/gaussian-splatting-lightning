@@ -82,15 +82,6 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             render_feature = outputs["render_feature"]
             adapted_render_feature = self.feature_adapter(render_feature)
             gt_feature = batch[-1]["semantic_feature"]
-            if gt_feature.shape[:2] != adapted_render_feature.shape[:2]:
-                # fmt: off
-                adapted_render_feature = F.interpolate(
-                    adapted_render_feature.permute(2, 0, 1).unsqueeze(0),
-                    size=(gt_feature.shape[0], gt_feature.shape[1]),
-                    mode="bilinear",
-                    align_corners=True,
-                ).squeeze(0).permute(1, 2, 0)
-                # fmt: on
 
             loss_feature = F.l1_loss(adapted_render_feature, gt_feature)
             metrics["loss"] += self.config.lambda_feature * loss_feature

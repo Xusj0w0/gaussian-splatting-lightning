@@ -12,9 +12,10 @@ from internal.density_controllers.density_controller import \
     Utils as OptimizerManipulator
 from internal.density_controllers.vanilla_density_controller import (
     VanillaDensityController, VanillaDensityControllerImpl)
-from myimpl.models.grid_gaussians import (GridFactory, GridGaussianModel,
-                                          LoDGridGaussianModel,
-                                          ScaffoldGaussianModelMixin)
+from myimpl.models.grid_gaussians import (  # ScaffoldGaussianModelMixin,
+    GridFactory, GridGaussianModel, LoDGridGaussianModel)
+from myimpl.models.refined_implicit_grid_gaussian import \
+    RefinedScaffoldGaussianModelMixin
 
 __all__ = [
     "GridGaussianDensityController",
@@ -648,15 +649,16 @@ class CandidateAnchors:
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
         return {"levels": self.levels, "extra_levels": extra_levels}
 
-    def get_scaffold_properties(self, gaussian_model: ScaffoldGaussianModelMixin, voxel_size: float):
-        anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
+    def get_scaffold_properties(self, gaussian_model: RefinedScaffoldGaussianModelMixin, voxel_size: float):
+        semantic_features = repeat(gaussian_model.get_semantic_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
         # if anchors are added, shape of anchor_features may dismatch grad_mask
-        anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
+        semantic_features = semantic_features[: len(self.grad_mask)][self.grad_mask]
         # select max value of anchor features among primitives that convert to same grid
-        anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
-        anchor_features = anchor_features[self.keep_mask]
+        semantic_features = scatter_max(semantic_features, self.unique_indices.unsqueeze(1).expand(-1, semantic_features.shape[-1]), dim=0)[0]  # fmt: skip
+        semantic_features = semantic_features[self.keep_mask]
+        anchor_features = semantic_features.new_zeros(semantic_features.shape)
 
-        return {"anchor_features": anchor_features}  # , "opacities": opacities}
+        return {"semantic_features": semantic_features, "anchor_features": anchor_features}  # , "opacities": opacities}
 
     def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)
