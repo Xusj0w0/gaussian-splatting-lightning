@@ -53,7 +53,7 @@ class CitySceneConfig(PartitionableSceneConfig):
     down_sample_factor: int = 4
     """ down sample factor when coarse training """
 
-    config: str = None
+    train_config: str = None
     """ path to config file for coarse training """
 
     num_gaussians_per_partition_threshold: int = 25_000
@@ -65,7 +65,7 @@ class CitySceneConfig(PartitionableSceneConfig):
     radius_bounding_box_ratio: List[float] = field(default_factory=lambda: [])
     """ ratios of radius bounding box to camera center bounding box, [xmin, xmax, ymin, ymax, zmin, zmax] """
 
-    visibility_threshold: float = 0.05
+    visibility_threshold: float = field(default=0.05)
 
     outlier_ratio: float = 0.01
 
@@ -162,10 +162,10 @@ class CityScene(PartitionableScene):
                 k: v[self.gaussians_assigned_to_partition[partition_idx]] for k, v in complete_properties.items()
             }
             model.properties = incomplete_properties
-            self.save_gaussian_in_partition(osp.join(partition_dir, "partitions", partition_id_str), model)
+            self.save_gaussians(osp.join(partition_dir, "partitions", partition_id_str), model)
         model.properties = complete_properties
 
-    def save_gaussian_in_partition(self, dst_dir: str, model: VanillaGaussianModel):
+    def save_gaussians(self, dst_dir: str, model: VanillaGaussianModel):
         if isinstance(model, VanillaGaussianModel):
             dst_path = osp.join(dst_dir, "gaussian_model.ply")
             GaussianPlyUtils.load_from_model(model).to_ply_format().save_to_ply(dst_path)
@@ -222,8 +222,8 @@ class CityScene(PartitionableScene):
                 "--ckpt_path={}".format(ckpt_path),
             ]
         else:
-            if self.scene_config.config is not None:
-                args += ["--config={}".format(self.scene_config.config)]
+            if self.scene_config.train_config is not None:
+                args += ["--config={}".format(self.scene_config.train_config)]
             else:
                 args += [
                     "--data.path={}".format(dataset_path),

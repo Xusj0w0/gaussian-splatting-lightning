@@ -307,8 +307,12 @@ class LoDGridGaussianModel(GridGaussianModelBase):
     def activate_level(self, value: int):
         self._activate_level = value
 
+    def set_activate_level(self, value: int):
+        self._activate_level = min(max(value, 0), self.max_level)
+
     @property
     def standard_dist(self) -> float:
+        self._standart_dist: torch.Tensor
         return self._standard_dist.item()
 
     @property

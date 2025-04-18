@@ -35,6 +35,9 @@ from internal.utils.partitioning_utils import (MinMaxBoundingBox,
                                                PartitionCoordinates,
                                                Partitioning, SceneBoundingBox)
 from internal.utils.sh_utils import eval_sh
+from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
+                                                  ImplicitLoDGridGaussianModel)
+from myimpl.renderers.grid_renderer import GridGaussianRendererModule
 
 from ..base.partitionable_scene import (PartitionableScene,
                                         PartitionableSceneConfig)
@@ -48,10 +51,10 @@ class UncontractAllVisCitySceneConfig(PartitionableSceneConfig):
     down_sample_factor: int = 4
     """ down sample factor when coarse training """
 
-    config: str = None
+    train_config: str = None
     """ path to config file for coarse training """
 
-    visibility_threshold: float = 0.05
+    visibility_threshold: float = field(default=0.05)
 
     def instantiate(self):
         return UncontractAllVisCityScene(self)

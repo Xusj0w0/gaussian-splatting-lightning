@@ -28,6 +28,8 @@ def _build_conv_net(dim_in, dim_out, dim_h, n_layers, size_in: int = 256, size_o
 class AdapterOptimizationConfig:
     weight_lr: float = 2e-3
 
+    weight_lr_final: float = 2e-5
+
     # embedding_lr_init: float = 2e-3
     # embedding_lr_final: float = 2e-4
 
@@ -82,18 +84,18 @@ class Adapter(nn.Module):
             [{
                 "params": self.weight,
                 "lr": self.config.optimization.weight_lr,
-                "name": "adapter_network",
+                "name": "adapter_weight",
             }],
             lr=0.0,
         )
         # fmt: on
-        # net_scheduler = (
-        #     ExponentialDecayScheduler(
-        #         lr_final=self.config.optimization.network_lr_final,
-        #         max_steps=self.config.optimization.max_steps,
-        #     )
-        #     .instantiate()
-        #     .get_scheduler(optimizer=net_optimizer, lr_init=self.config.optimization.weight_lr)
-        # )
+        net_scheduler = (
+            ExponentialDecayScheduler(
+                lr_final=self.config.optimization.weight_lr_final,
+                max_steps=self.config.optimization.max_steps,
+            )
+            .instantiate()
+            .get_scheduler(optimizer=net_optimizer, lr_init=self.config.optimization.weight_lr)
+        )
 
-        return [net_optimizer], []
+        return [net_optimizer], [net_scheduler]

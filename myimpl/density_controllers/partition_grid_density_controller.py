@@ -130,7 +130,7 @@ class PartitionGridGaussianDensityControllerImpl(GridGaussianDensityControllerIm
         primitive_mask = (self._primitive_denom > denom_thresh).squeeze(dim=1)
 
         # densify anchors
-        if isinstance(gaussian_model, LoDGridGaussianModel):
+        if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
             LoDGridDensityController.densify_anchors(self, grads_norm, primitive_mask, gaussian_model, optimizers)
         else:
             GridDensityController.densify_anchors_paperversion(
@@ -376,8 +376,9 @@ class LoDGridDensityController:
 class GridFilteringUtils:
     @staticmethod
     def filter_exsiting_grids(
-        candidate_grids: torch.Tensor, existing_grids: torch.Tensor, num_overlap: int = 1, use_chunk=True
+        candidate_grids: torch.Tensor, existing_grids: torch.Tensor, overlap: int = 1, use_chunk=True
     ):
+        assert overlap > 0
         count = candidate_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.int)
         if use_chunk:
             chunk_size = 4096
@@ -389,14 +390,15 @@ class GridFilteringUtils:
         else:
             count = (candidate_grids.unsqueeze(1) == cur_existing_grids).all(-1).sum(-1)
 
-        return count < num_overlap
+        return count < overlap
 
-    @staticmethod
+    @classmethod
     def filter_primitives(
+        cls,
         gaussian_model: GridGaussianModel,
         all_primitives: torch.Tensor,  # Avoid duplicate calculations
         grad_mask: torch.Tensor,
-        overlap: bool = False,
+        overlap: int = 1,
     ):
         # filter by grad mask
         candidate_primitives = all_primitives.view(-1, 3)[grad_mask]
@@ -412,11 +414,11 @@ class GridFilteringUtils:
         filtered_anchors = candidate_primitives.new_zeros((0, 3))
         keep_mask = existing_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.bool)
 
-        if overlap:
+        if overlap < 0:
             keep_mask = existing_grids.new_ones((candidate_grids.shape[0],), dtype=torch.bool)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids, gaussian_model.voxel_size)
         else:
-            keep_mask = GridFilteringUtils.filter_exsiting_grids(candidate_grids, existing_grids)
+            keep_mask = cls.filter_exsiting_grids(candidate_grids, existing_grids, overlap=overlap)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids[keep_mask], gaussian_model.voxel_size)
 
         return CandidateAnchors(
@@ -427,13 +429,14 @@ class GridFilteringUtils:
             keep_mask=keep_mask,
         )
 
-    @staticmethod
+    @classmethod
     def filter_primitives_paperversion(
+        cls,
         gaussian_model: GridGaussianModel,
         all_primitives: torch.Tensor,  # Avoid duplicate calculations
         grad_mask: torch.Tensor,
         voxel_size: float,
-        overlap: bool = False,
+        overlap: int = 1,
     ):
         # filter by grad mask
         candidate_primitives = all_primitives.view(-1, 3)[grad_mask]
@@ -447,11 +450,11 @@ class GridFilteringUtils:
         filtered_anchors = candidate_primitives.new_zeros((0, 3))
         keep_mask = existing_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.bool)
 
-        if overlap:
+        if overlap < 0:
             keep_mask = existing_grids.new_ones((candidate_grids.shape[0],), dtype=torch.bool)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids, gaussian_model.voxel_size)
         else:
-            keep_mask = GridFilteringUtils.filter_exsiting_grids(candidate_grids, existing_grids)
+            keep_mask = cls.filter_exsiting_grids(candidate_grids, existing_grids, overlap=overlap)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids[keep_mask], gaussian_model.voxel_size)
 
         return CandidateAnchors(
@@ -462,15 +465,16 @@ class GridFilteringUtils:
             keep_mask=keep_mask,
         )
 
-    @staticmethod
+    @classmethod
     def filter_lod_primitives(
+        cls,
         gaussian_model: LoDGridGaussianModel,
         all_primitives: torch.Tensor,  # Avoid duplicate calculations
         grad_mask: torch.Tensor,
         res_level: torch.Tensor,
         level_mask: torch.Tensor,  # Avoid duplicate calculations
         cam_infos: torch.Tensor,
-        overlap: bool = False,
+        overlap: int = 1,
         is_next_level: bool = False,
     ):
         """
@@ -504,11 +508,11 @@ class GridFilteringUtils:
         ):
             if candidate_grids.shape[0] > 0:
                 # don't filter by existing anchors
-                if overlap:
+                if overlap < 0:
                     keep_mask = existing_grids.new_ones((candidate_grids.shape[0],), dtype=torch.bool)
                     candidate_anchors = gaussian_model.grid2xyz(candidate_grids, voxel_size)
                 else:
-                    keep_mask = GridFilteringUtils.filter_exsiting_grids(candidate_grids, existing_grids)
+                    keep_mask = cls.filter_exsiting_grids(candidate_grids, existing_grids, overlap=overlap)
                     candidate_anchors = gaussian_model.grid2xyz(candidate_grids[keep_mask], voxel_size)
 
                 candidate_levels = gaussian_model.get_levels.new_ones((candidate_anchors.shape[0],)) * res_level
@@ -578,9 +582,9 @@ class CandidateAnchors:
 
     def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size: float, partition_info: PartitionInfo):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)
-        if isinstance(gaussian_model, LoDGridGaussianModel):
+        if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
             property_dict.update(self.get_lod_grid_properties(gaussian_model, voxel_size))
-        if isinstance(gaussian_model, ScaffoldGaussianModelMixin):
+        if getattr(gaussian_model, "gaussian_mlps", None) is not None:
             property_dict.update(self.get_scaffold_properties(gaussian_model, voxel_size))
         # TODO: explicit model
 
@@ -589,6 +593,3 @@ class CandidateAnchors:
             _property_dict = {k: v[mask] for k, v in property_dict.items()}
             property_dict = _property_dict
         return property_dict
-
-    def filter_in_partition(self, property_dict, partition_info: PartitionInfo):
-        means = property_dict["anchors"]
