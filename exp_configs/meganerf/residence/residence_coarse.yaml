@@ -14,23 +14,24 @@ model:
   gaussian:
     class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
     init_args:
+      base_layer: 11
       optimization:
         means_lr_init: 0.0
         scales_lr: 0.007
         rotations_lr_init: 0.001
-        offsets_lr_init: 1.6e-5
+        offsets_lr_init: 0.00016
         offsets_lr_scheduler:
           init_args:
-            lr_final: 1.6e-6
+            lr_final: 0.0000016
         anchor_features_lr: 0.0075
-        opacity_mlp_lr_init: 2e-4
-        opacity_mlp_lr_final: 2e-5
-        cov_mlp_lr_init: 4e-3
-        cov_mlp_lr_final: 4e-3
-        color_mlp_lr_init: 8e-4
-        color_mlp_lr_final: 5e-5
-        feature_bank_mlp_lr_init: 1e-4
-        feature_bank_mlp_lr_final: 1e-5
+        opacity_mlp_lr_init: 0.002
+        opacity_mlp_lr_final: 2.0e-05
+        cov_mlp_lr_init: 0.004
+        cov_mlp_lr_final: 0.004
+        color_mlp_lr_init: 0.008
+        color_mlp_lr_final: 5.0e-05
+        feature_bank_mlp_lr_init: 0.01
+        feature_bank_mlp_lr_final: 1.0e-05
   renderer:
     class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
   metric:

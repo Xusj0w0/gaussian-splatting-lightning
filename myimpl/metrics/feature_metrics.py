@@ -21,6 +21,8 @@ class FeatureMetrics(VanillaMetrics):
 
     lambda_dist: float = 0.0
 
+    feature_end_iter: Optional[int] = None
+
     normal_start_iter: int = 7_000
 
     dist_start_iter: int = 3_000
@@ -40,6 +42,9 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
         super().setup(stage, pl_module)
 
         if stage == "fit":
+            if self.config.feature_end_iter is None:
+                self.config.feature_end_iter = pl_module.trainer.max_steps
+
             render_feature_size = pl_module.renderer.config.render_feature_size
             render_feature_dim = pl_module.gaussian_model.config.feature_dim
             # hwc shape
@@ -76,21 +81,13 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             metrics["loss_dreg"] = scaling_reg
             prog_bar["loss_dreg"] = False
 
-        if self.config.lambda_feature > 0:
+        if self.config.lambda_feature > 0 and global_step <= self.config.feature_end_iter + 1:
             render_feature = outputs["render_feature"]
             adapted_render_feature = self.feature_adapter(render_feature)
             gt_feature = batch[-1]["semantic_feature"]
-            if gt_feature.shape[:2] != adapted_render_feature.shape[:2]:
-                # fmt: off
-                adapted_render_feature = F.interpolate(
-                    adapted_render_feature.permute(2, 0, 1).unsqueeze(0),
-                    size=(gt_feature.shape[0], gt_feature.shape[1]),
-                    mode="bilinear",
-                    align_corners=True,
-                ).squeeze(0).permute(1, 2, 0)
-                # fmt: on
 
             loss_feature = F.l1_loss(adapted_render_feature, gt_feature)
+
             metrics["loss"] += self.config.lambda_feature * loss_feature
             metrics["loss_feature"] = loss_feature
             prog_bar["loss_feature"] = True

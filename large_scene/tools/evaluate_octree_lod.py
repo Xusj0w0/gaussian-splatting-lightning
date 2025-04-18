@@ -5,7 +5,6 @@ import csv
 import os
 import os.path as osp
 import time
-from dataclasses import asdict
 from typing import Tuple
 
 import torch
@@ -19,7 +18,6 @@ from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.renderers import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
-from internal.utils.visualizers import Visualizers
 from utils.common import AsyncImageSaver
 
 
@@ -128,13 +126,20 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
             dataparser_config.eval_list = osp.join(args.dataset_path, "splits/val_images.txt")
 
     elif args.ckpt.endswith(".ply"):
-        raise NotImplementedError("Loading from .ply is not supported yet.")
+        assert args.dataset_path is not None, "ply model detected, dataset path should be specified"
 
-    from myimpl.renderers.grid_feature_renderer import GridFeatureGaussianRenderer
+        gaussian_model, _ = GaussianModelLoader.initialize_model_and_renderer_from_ply_file(
+            args.ckpt, device, pre_activate=False
+        )
+        dataset_path = args.dataset_path
+        dataparser_config = Colmap(
+            split_mode="experiment",
+            eval_image_select_mode="list",
+            eval_list=osp.join(args.dataset_path, "splits/val_images.txt"),
+            down_sample_factor=args.down_sample_factor,
+        )
 
-    ckpt_renderer = ckpt["hyper_parameters"]["renderer"]
-    params = {k: getattr(ckpt_renderer, k) for k in GridFeatureGaussianRenderer.__dataclass_fields__ if k in ckpt_renderer.__dict__}
-    renderer = GridFeatureGaussianRenderer(**params).instantiate()
+    renderer = ckpt["hyper_parameters"]["renderer"].instantiate()
     renderer.setup(stage="validation")
     renderer = RendererWithMetricsWrapper(renderer)
     # avoid loading point cloud
@@ -171,73 +176,56 @@ def main():
     # image saver
     async_image_saver = AsyncImageSaver(is_rgb=True)
 
-    def image_saver(predicts, batch):
-        render = (torch.clamp_max(predicts["render"], max=1.0) * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
-        gt = (batch[1][1] * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
-        montage = torch.cat([render, gt], dim=1)
-        diff = torch.abs(render.float() - gt.float())
-        feature = Visualizers.pca_colormap(predicts["render_feature"].permute(2, 0, 1)).permute(1, 2, 0)  # clamped
-        feature = (feature * 255.0).to(torch.uint8).cpu()
+    assert hasattr(gaussian_model, "get_levels")
 
-        for d in ["render", "gt", "montage", "diff", "feature"]:
-            os.makedirs(os.path.join(output_dir, d), exist_ok=True)
-
-        async_image_saver.save(render.numpy(), os.path.join(output_dir, "render", "{}.png".format(batch[1][0])))
-        async_image_saver.save(gt.numpy(), os.path.join(output_dir, "gt", "{}.png".format(batch[1][0])))
-        async_image_saver.save(montage.numpy(), os.path.join(output_dir, "montage", "{}.png".format(batch[1][0])))
-        async_image_saver.save(diff.numpy(), os.path.join(output_dir, "diff", "{}.png".format(batch[1][0])))
-        async_image_saver.save(feature.numpy(), os.path.join(output_dir, "feature", "{}.png".format(batch[1][0])))
-
-    try:
-        metrics = validate(dataloader, gaussian_model, renderer, get_metric_calculator(device), image_saver)
-    finally:
-        async_image_saver.stop()
-
-    print("Repeat rendering for evaluating FPS...")
-    cameras = [camera for camera, _, _ in dataloader]
-    bg_color = torch.zeros((3,), dtype=torch.float, device=cameras[0].device)
-    n_gaussian_list = []
-    time_list = []
-    n_rendered_frames = 0
-    for _ in range(8):
-        for camera in cameras:
-            predicts = renderer(
-                camera,
-                gaussian_model,
-                bg_color,
-            )
-            n_gaussian_list.append(predicts["n_gaussians"])
-            time_list.append(predicts["time"])
-            n_rendered_frames += 1
-
-    metric_list_key_by_name = {}
     available_metric_keys = ["psnr", "ssim", "vgg_lpips", "alex_lpips"]
-    with open(os.path.join(output_dir, "metrics-{}.csv".format(os.path.basename(output_dir))), "w") as f:
-        metrics_writer = csv.writer(f)
-        metrics_writer.writerow(["name"] + available_metric_keys)
-        for image_name, image_metrics in metrics.items():
-            metric_row = [image_name]
+
+    for i in range(gaussian_model.max_level + 1):
+        gaussian_model.set_activate_level(i)
+        metric_list_key_by_name = {}
+
+        def image_saver(predicts, batch):
+            render = (torch.clamp_max(predicts["render"], max=1.0) * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
+            gt = (batch[1][1] * 255.0).to(torch.uint8).permute(1, 2, 0).cpu()
+            montage = torch.cat([render, gt], dim=1)
+            diff = torch.abs(render.float() - gt.float())
+
+            async_image_saver.save(
+                render.numpy(), os.path.join(output_dir, f"lod-{i}", "render", "{}.png".format(batch[1][0]))
+            )
+            async_image_saver.save(gt.numpy(), os.path.join(output_dir, f"lod-{i}", "gt", "{}.png".format(batch[1][0])))
+            async_image_saver.save(
+                montage.numpy(), os.path.join(output_dir, f"lod-{i}", "montage", "{}.png".format(batch[1][0]))
+            )
+            async_image_saver.save(
+                diff.numpy(), os.path.join(output_dir, f"lod-{i}", "diff", "{}.png".format(batch[1][0]))
+            )
+
+        metrics = validate(dataloader, gaussian_model, renderer, get_metric_calculator(device), image_saver)
+
+        with open(
+            os.path.join(output_dir, f"lod-{i}", "metrics-{}.csv".format(os.path.basename(output_dir))), "w"
+        ) as f:
+            metrics_writer = csv.writer(f)
+            metrics_writer.writerow(["name"] + available_metric_keys)
+            for image_name, image_metrics in metrics.items():
+                metric_row = [image_name]
+                for k in available_metric_keys:
+                    v = image_metrics[k]
+                    metric_list_key_by_name.setdefault(k, []).append(v)
+                    metric_row.append(v.item())
+
+                metrics_writer.writerow(metric_row)
+
+            metrics_writer.writerow([""] * len(available_metric_keys))
+
+            mean_row = ["MEAN"]
             for k in available_metric_keys:
-                v = image_metrics[k]
-                metric_list_key_by_name.setdefault(k, []).append(v)
-                metric_row.append(v.item())
+                mean_row.append(torch.mean(torch.stack(metric_list_key_by_name[k]).float()).item())
+            metrics_writer.writerow(mean_row)
 
-            metrics_writer.writerow(metric_row)
-
-        metrics_writer.writerow([""] * len(available_metric_keys))
-
-        mean_row = ["MEAN"]
-        for k in available_metric_keys:
-            mean_row.append(torch.mean(torch.stack(metric_list_key_by_name[k]).float()).item())
-        metrics_writer.writerow(mean_row)
-
-        average_n_gaussians = torch.mean(torch.tensor(n_gaussian_list, dtype=torch.float)).item()
-        fps = n_rendered_frames / torch.sum(torch.tensor(time_list, dtype=torch.float))
-        metrics_writer.writerow(["FPS", "{}".format(fps)])
-        metrics_writer.writerow(["AverageNGaussians", "{}".format(average_n_gaussians)])
-
-        print(mean_row)
-        print("FPS={}, AverageNGaussians={}".format(fps, average_n_gaussians))
+    async_image_saver.stop()
 
 
-main()
+if __name__ == "__main__":
+    main()

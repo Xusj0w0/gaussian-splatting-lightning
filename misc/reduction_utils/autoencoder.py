@@ -343,8 +343,11 @@ class DiagonalGaussianDistribution(object):
     def mode(self):
         return self.mean
 
+
 class AutoencoderKL(nn.Module):
-    def __init__(self, ):
+    def __init__(
+        self,
+    ):
         super().__init__()
         self.encoder = Encoder()
         self.decoder = Decoder()

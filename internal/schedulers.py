@@ -66,6 +66,7 @@ class ExponentialDecaySchedulerImpl(SchedulerImpl):
             lr_final = self.config.lr_final
 
         def func(step):
+            nonlocal lr_init
             if step < self.config.warmup_steps:
                 if self.config.ramp == "cosine":
                     lr = self.config.lr_pre_warmup + (lr_init - self.config.lr_pre_warmup) * np.sin(
@@ -80,7 +81,10 @@ class ExponentialDecaySchedulerImpl(SchedulerImpl):
                 t = np.clip(
                     (step - self.config.warmup_steps) / (self.config.max_steps - self.config.warmup_steps), 0, 1
                 )
-                lr = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
+                if lr_init > 0:
+                    lr = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
+                else:
+                    lr, lr_init = 0.0, 1.0
             return lr / lr_init  # divided by lr_init because the multiplier is with the initial learning rate
 
         scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=func)
@@ -119,7 +123,10 @@ class ExponentialDecaySchedulerImpl(SchedulerImpl):
                         )
                 else:
                     t = np.clip((step - self.config.warmup_steps) / (max_step - self.config.warmup_steps), 0, 1)
-                    lr = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
+                    if lr_init > 0:
+                        lr = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
+                    else:
+                        lr, lr_init = 0.0, 1.0
                 return lr / lr_init  # divided by lr_init because the multiplier is with the initial learning rate
 
             funcs.append(func)

@@ -1,14 +1,21 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import lightning
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from einops import repeat
+from gsplat.cuda._wrapper import spherical_harmonics
+from pytorch3d.transforms import quaternion_multiply
 
+from internal.cameras.cameras import Camera
 from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
+
+from .base import GridGaussianModelBase
 
 __all__ = ["ScaffoldGaussianMixin", "ScaffoldGaussianModelMixin", "ScaffoldOptimizationConfigMixin"]
 
@@ -53,6 +60,88 @@ class ScaffoldGaussianMixin:
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     config: ScaffoldGaussianMixin
     _extra_property_names: List[str] = ["anchor_features"]
+
+    def calculate_implicit_properties(
+        self: Union["ScaffoldGaussianModelMixin", GridGaussianModelBase],
+        viewpoint_camera: Camera,
+        appearance_code: Optional[torch.Tensor] = None,
+        anchor_mask: Optional[torch.Tensor] = None,
+        prog_ratio: Optional[torch.Tensor] = None,
+        transition_mask: Optional[torch.Tensor] = None,
+        *args,
+        **kwargs,
+    ):
+        if anchor_mask is None:
+            anchor_mask = self.get_anchors.new_ones((self.n_anchors,), dtype=torch.bool)
+        anchors = self.get_anchors[anchor_mask]
+        features = self.get_anchor_features[anchor_mask]
+        offsets = self.get_offsets[anchor_mask]
+        scalings = self.get_scalings[anchor_mask]
+        rotations = self.get_rotations[anchor_mask]
+
+        n_anchors, n_offsets = self.n_anchors, self.n_offsets
+
+        viewdirs = anchors - viewpoint_camera.camera_center
+        viewdirs_norm = torch.norm(viewdirs, dim=1, keepdim=True)
+        viewdirs = viewdirs / viewdirs_norm
+
+        if self.config.use_feature_bank:
+            bank_weight = F.softmax(self.get_feature_bank_mlp(viewdirs), dim=-1).unsqueeze(dim=1)
+            features = features.unsqueeze(dim=-1)
+            features = (
+                features[:, ::4, :1].repeat(1, 4, 1) * bank_weight[:, :, 0:1]
+                + features[:, ::2, :1].repeat(1, 2, 1) * bank_weight[:, :, 1:2]
+                + features[:, ::1, :1] * bank_weight[:, :, 2:3]
+            )
+            features = features.squeeze(dim=-1)
+        cat_local_view = torch.cat([features, viewdirs], dim=1)
+
+        opacities_offsets = self.get_opacity_mlp(features).reshape(-1, n_offsets, 1)  # try: remove viewdirs
+        opacities = torch.clamp(opacities_offsets, max=1.0)
+        if prog_ratio is not None and transition_mask is not None:
+            prog = prog_ratio[anchor_mask]
+            transition = transition_mask[anchor_mask]
+            prog[~transition] = 1.0
+            opacities = opacities * prog
+        opacities = opacities.reshape(-1, 1)
+
+        primitive_mask = (opacities > 0.0).view(-1)
+
+        if appearance_code is not None:
+            appearance_code = appearance_code.to(cat_local_view).view(1, -1).repeat(self.n_anchors, 1)
+            color_input = torch.cat([cat_local_view, appearance_code], dim=-1)
+        else:
+            color_input = cat_local_view
+        colors = self.get_color_mlp(color_input).reshape(-1, 3)
+
+        scale_rots = self.get_cov_mlp(cat_local_view).reshape(-1, n_offsets, 7)
+        scale_rots[..., -4:] = quaternion_multiply(
+            rotations.unsqueeze(1),
+            self.rotation_activation(scale_rots[..., -4:].clone()),
+        )
+        scale_rots = scale_rots.reshape(-1, 7)
+
+        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
+        concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
+        concatenated_masked = concatenated[primitive_mask]
+        (
+            _anchors,
+            _scalings_offset,
+            _scalings_scales,
+            _offsets,
+            _opacities,
+            _colors,
+            _scales,
+            _rots,
+        ) = torch.split(concatenated_masked, [3, 3, 3, 3, 1, 3, self.color_dim, 4], dim=-1)
+
+        xyz = _anchors + _offsets * _scalings_offset
+        scales = F.sigmoid(_scales) * _scalings_scales
+        rots = self.rotation_activation(_rots)
+        colors = _colors
+        opacities = _opacities.squeeze()
+
+        return xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask
 
     def create_mlps(self):
         self.gaussian_mlps = nn.ModuleDict()

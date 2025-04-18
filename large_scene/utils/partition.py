@@ -16,6 +16,7 @@ from large_scene.impls.city_gaussian import (CityScene, CitySceneConfig,
                                              UncontractAllVisCitySceneConfig,
                                              UncontractCityScene,
                                              UncontractCitySceneConfig)
+from large_scene.impls.grid_gaussian import GridScene, GridSceneConfig
 from large_scene.impls.vast_gaussian import VastScene, VastSceneConfig
 
 __all__ = ["Partition"]

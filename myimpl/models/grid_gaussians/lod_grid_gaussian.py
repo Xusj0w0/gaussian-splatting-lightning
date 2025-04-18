@@ -75,6 +75,29 @@ class LoDGridGaussianModel(GridGaussianModelBase):
         ]
         self._buffer_names = tuple(list(self._buffer_names) + buffer_names)
 
+    def filter_anchor_by_level(self, viewpoint_camera: Camera):
+        """
+        Returns:
+            A tuple:
+            If `self.config.dist2level` is "progressive":
+            - **anchor_mask**. [n_anchors, ]. Indicating whether the anchor is visible based on viewpoint camera and anchor levels.
+            - **prog_ratio**. [n_anchors, ]. Fractional part of predicted level, used for anti-alising cross levels.
+            - **transition_mask**. [n_anchors, ]. Indicating whether the level of anchor equals to int level.
+            Else:
+            - **anchor_mask**. [n_anchors, ]. Indicating whether the anchor is visible based on viewpoint camera and anchor levels.
+            - **prog_ratio**. None
+            - **transition_mask**. None
+        """
+        dists = torch.sqrt(torch.sum((self.get_anchors - viewpoint_camera.camera_center) ** 2, dim=1))
+        pred_level = self.predict_level(dists) + self.get_extra_levels
+        int_level, prog_ratio = self.map_to_int_level(pred_level, self.activate_level)
+        anchor_mask = self.get_levels <= int_level
+
+        transition_mask = None
+        if self.config.dist2level == "progressive":
+            transition_mask = self.get_levels == int_level
+        return anchor_mask, prog_ratio, transition_mask
+
     def setup_multi_level_grid(self, points: torch.Tensor, camera_infos: torch.Tensor, *args, **kwargs):
         # calculate levels and register
         standard_dist, max_level = GridFactory.get_levels_by_distances(
@@ -284,8 +307,12 @@ class LoDGridGaussianModel(GridGaussianModelBase):
     def activate_level(self, value: int):
         self._activate_level = value
 
+    def set_activate_level(self, value: int):
+        self._activate_level = min(max(value, 0), self.max_level)
+
     @property
     def standard_dist(self) -> float:
+        self._standart_dist: torch.Tensor
         return self._standard_dist.item()
 
     @property

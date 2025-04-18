@@ -22,8 +22,8 @@ from myimpl.dataparsers.feature_dataparser import FeatureShapeCamera
 from myimpl.models.grid_gaussians import (GridGaussianModel,
                                           LoDGridGaussianModel,
                                           ScaffoldGaussianModelMixin)
-from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
-                                                  ImplicitLoDGridGaussianModel)
+from myimpl.models.refined_implicit_grid_gaussian import (
+    ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel)
 from myimpl.renderers.grid_renderer import (GridGaussianRenderer,
                                             GridGaussianRendererModule,
                                             OptimizationConfig)
@@ -92,7 +92,7 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         opacities = scatter_mean(opacities, scatter_indices, dim=0, dim_size=len(primitive_mask) // pc.n_offsets)
 
         xyz = pc.get_anchors[anchor_mask].clone().detach()
-        features = pc.get_anchor_features[anchor_mask]
+        features = pc.get_semantic_features[anchor_mask]
         scales = pc.get_scalings[anchor_mask][..., :3].clone().detach()
         rotations = pc.get_rotations[anchor_mask].clone().detach()
         # opacities = pc.get_opacities[anchor_mask].clone().detach()
@@ -163,7 +163,7 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         )
 
         anchor_mask, primitive_mask = output_pkg["anchor_mask"], output_pkg["primitive_mask"]
-        features = pc.get_anchor_features[anchor_mask]
+        features = pc.get_semantic_features[anchor_mask]
         features = features.unsqueeze(0).expand(pc.n_offsets, -1, -1).permute(1, 0, 2).reshape(-1, features.shape[-1])
         features = features[primitive_mask]
 

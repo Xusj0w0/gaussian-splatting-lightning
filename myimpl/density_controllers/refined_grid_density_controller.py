@@ -1,4 +1,3 @@
-import os.path as osp
 from dataclasses import dataclass
 from functools import reduce
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -13,96 +12,51 @@ from internal.density_controllers.density_controller import \
     Utils as OptimizerManipulator
 from internal.density_controllers.vanilla_density_controller import (
     VanillaDensityController, VanillaDensityControllerImpl)
-from internal.utils.partitioning_utils import (MinMaxBoundingBox,
-                                               PartitionCoordinates)
-from myimpl.density_controllers.grid_density_controller import (
-    GridGaussianDensityController, GridGaussianDensityControllerImpl)
-from myimpl.models.grid_gaussians import (GridFactory, GridGaussianModel,
-                                          LoDGridGaussianModel,
-                                          ScaffoldGaussianModelMixin)
+from myimpl.models.grid_gaussians import (  # ScaffoldGaussianModelMixin,
+    GridFactory, GridGaussianModel, LoDGridGaussianModel)
+from myimpl.models.refined_implicit_grid_gaussian import \
+    RefinedScaffoldGaussianModelMixin
 
 __all__ = [
-    "PartitionGridGaussianDensityController",
-    "PartitionGridGaussianDensityControllerImpl",
+    "GridGaussianDensityController",
+    "GridGaussianDensityControllerImpl",
     "GridFilteringUtils",
     "CandidateAnchors",
 ]
 
 
-class PartitionInfo:
-    def __init__(self, partition_info_path: str, partition_name: str):
-        partition_info = torch.load(partition_info_path, map_location="cpu")
-
-        # get manhattan transform
-        self.manhattan_trans: torch.Tensor = (
-            partition_info["extra_data"]["rotation_transform"] if partition_info["extra_data"] is not None else None
-        )
-
-        # get partition bounding box
-        coords = PartitionCoordinates(**partition_info["partition_coordinates"])
-
-        partition_bbox = coords.get_bounding_boxes()
-        scene_bbox = (torch.min(partition_bbox.min, dim=0).values, torch.max(partition_bbox.max, dim=0).values)
-
-        for idx in range(len(coords)):
-            if coords.get_str_id(idx) == partition_name:
-                bounding_box = partition_bbox[idx]
-                # enlarge
-                self.bounding_box = MinMaxBoundingBox(
-                    min=bounding_box.min - 0.1 * (bounding_box.max - bounding_box.min),
-                    max=bounding_box.max + 0.1 * (bounding_box.max - bounding_box.min),
-                )
-
-                # update
-                if torch.isclose(bounding_box.min[0], scene_bbox[0][0], atol=1e-4):
-                    # x == scene bbox x min -> bbox.x_min = -inf
-                    self.bounding_box.min[0] = -torch.inf
-                    print("xmin updated to -inf")
-                if torch.isclose(bounding_box.min[1], scene_bbox[0][1], atol=1e-4):
-                    # y == scene bbox y min -> bbox.y_min = -inf
-                    self.bounding_box.min[1] = -torch.inf
-                    print("ymin updated to -inf")
-                if torch.isclose(bounding_box.max[0], scene_bbox[1][0], atol=1e-4):
-                    # x == scene bbox x max -> bbox.x_max = inf
-                    self.bounding_box.max[0] = torch.inf
-                    print("xmax updated to inf")
-                if torch.isclose(bounding_box.max[1], scene_bbox[1][1], atol=1e-4):
-                    # x == scene bbox x max -> bbox.x_max = inf
-                    self.bounding_box.max[1] = torch.inf
-                    print("ymax updated to inf")
-
-                break
-
-    def is_in_partition(self, coordinates: torch.Tensor):
-        if self.manhattan_trans.device != coordinates.device:
-            self.manhattan_trans = self.manhattan_trans.to(coordinates.device)
-            self.bounding_box = MinMaxBoundingBox(
-                min=self.bounding_box.min.to(coordinates.device),
-                max=self.bounding_box.max.to(coordinates.device),
-            )
-
-        coordinates = coordinates @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
-        mask = torch.logical_and(
-            torch.prod(coordinates[:, :2] > self.bounding_box.min[:2], dim=-1),
-            torch.prod(coordinates[:, :2] < self.bounding_box.max[:2], dim=-1),
-        )
-        return mask
-
-
 @dataclass
-class PartitionGridGaussianDensityController(GridGaussianDensityController):
-    densify_in_partition: bool = True
-    prune_in_partition: bool = True
+class GridGaussianDensityController(VanillaDensityController):
+    densification: bool = True
+
+    overlap: bool = False
+
+    success_threshold: float = 0.8
+
+    densification_ratio: float = 0.2
+
+    extra_ratio: float = 0.25
+
+    extra_up: float = 0.02
+
+    update_from_iter: int = 500
+
+    densify_from_iter: int = 1_500
+
+    densify_until_iter: int = 30_000
 
     def instantiate(self, *args, **kwargs):
-        return PartitionGridGaussianDensityControllerImpl(self)
+        return GridGaussianDensityControllerImpl(self)
 
 
-class PartitionGridGaussianDensityControllerImpl(GridGaussianDensityControllerImpl):
-    config: PartitionGridGaussianDensityController
+class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
+    config: GridGaussianDensityController
 
     def __init__(self, config, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
+
+        density_states = ["_primitive_gradient_accum", "_primitive_denom", "_anchor_opacity_accum", "_anchor_denom"]
+        self._density_state_names = tuple(density_states)
 
     @property
     def density_state_names(self):
@@ -111,14 +65,107 @@ class PartitionGridGaussianDensityControllerImpl(GridGaussianDensityControllerIm
     def setup(self, stage: str, pl_module: LightningModule) -> None:
         super().setup(stage, pl_module)
 
-        partition_info_path = osp.join(pl_module.hparams["output_path"], "../..", "partition_infos/partitions.pt")
-        if osp.exists(partition_info_path):
-            partition_name = osp.basename(
-                pl_module.hparams["output_path"]
-            )  # TODO: find attribute `name` from `pl_module`
-            partition_info = PartitionInfo(partition_info_path, partition_name)
-            if hasattr(partition_info, "bounding_box"):
-                self.partition_info = partition_info
+        if stage == "fit":
+            device = pl_module.device
+            n_anchors = pl_module.gaussian_model.get_anchors.shape[0]
+            n_offsets = pl_module.gaussian_model.config.n_offsets
+            self._init_density_state(n_anchors, n_offsets, device)
+
+            cameras: Cameras = pl_module.trainer.datamodule.dataparser_outputs.train_set.cameras
+            cam_centers = cameras.camera_center
+            camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)
+            self.register_buffer("_camera_infos", camera_infos)
+
+    def _init_state(self, n_gaussians: int, device):
+        pass
+
+    def before_backward(
+        self,
+        outputs: dict,
+        batch,
+        gaussian_model: GridGaussianModel,
+        optimizers: List,
+        global_step: int,
+        pl_module: LightningModule,
+    ) -> None:
+        if global_step >= self.config.densify_until_iter:
+            return
+
+        outputs["viewspace_points"].retain_grad()
+
+    def after_backward(
+        self,
+        outputs: dict,
+        batch,
+        gaussian_model: GridGaussianModel,
+        optimizers: List,
+        global_step: int,
+        pl_module: LightningModule,
+    ) -> None:
+        if global_step >= self.config.densify_until_iter:
+            return
+
+        if global_step >= self.config.update_from_iter:
+            with torch.no_grad():
+                self.update_state(outputs)
+
+                if (
+                    self.config.densification
+                    and global_step >= self.config.densify_from_iter
+                    and global_step % self.config.densification_interval == 0
+                ):
+                    # filter out mlp optimizers
+                    property_optimizers = []
+                    for opt in optimizers:
+                        if not any(["mlp" in pg["name"] for pg in opt.param_groups]):
+                            property_optimizers.append(opt)
+
+                    self._densify_and_prune(gaussian_model=gaussian_model, optimizers=property_optimizers)
+
+    def _init_density_state(self, n_anchors: int, n_offsets: int, device):
+        self._primitive_gradient_accum: torch.Tensor; self._primitive_denom: torch.Tensor  # fmt: skip
+        self._anchor_opacity_accum: torch.Tensor; self._anchor_denom: torch.Tensor  # fmt: skip
+
+        self.register_buffer("_anchor_opacity_accum", torch.zeros((n_anchors, 1), device=device))
+        self.register_buffer("_anchor_denom", torch.zeros((n_anchors, 1), device=device))
+        self.register_buffer("_primitive_gradient_accum", torch.zeros((n_anchors * n_offsets, 1), device=device))
+        self.register_buffer("_primitive_denom", torch.zeros((n_anchors * n_offsets, 1), device=device))
+
+    def register_density_states(self):
+        for name in self.density_state_names:
+            self.register_buffer(name, getattr(self, name))
+
+    def update_state(self, outputs):
+        viewspace_point_tensor = outputs["viewspace_points"]
+        anchor_mask, primitive_mask, visibility_filter = (
+            outputs["anchor_mask"],  # [N, ], mask anchor by pred level and pro-projection
+            outputs["primitive_mask"],  # [N'*n_offsets, ], mask primitives by opacities(>0), N'=anchor_mask.sum()
+            outputs["visibility_filter"],  # [M, ], mask primitives further by projection, M=primitive_mask.sum()
+        )
+        opacities: torch.Tensor = outputs["opacities"]
+        viewspace_points_grad_scale = outputs.get("viewspace_points_grad_scale", None)
+
+        n_offsets = int(primitive_mask.shape[0] / anchor_mask.sum().item())
+
+        _opacities = opacities.new_zeros((primitive_mask.shape[0]))
+        _opacities[primitive_mask] = opacities.clone().view(-1).detach()
+        _opacities = _opacities.view(-1, n_offsets)
+        self._anchor_opacity_accum[anchor_mask] += _opacities.sum(dim=-1, keepdim=True)
+        self._anchor_denom[anchor_mask] += 1
+
+        # anchor_mask_repeat = torch.repeat_interleave(anchor_mask, n_offsets, dim=0)
+        anchor_mask_repeat = repeat(anchor_mask, "n -> (n o)", o=n_offsets)
+        combined_mask = primitive_mask.new_zeros((self._primitive_gradient_accum.shape[0],))
+        combined_mask[anchor_mask_repeat] = primitive_mask
+        combined_mask[combined_mask.clone()] = visibility_filter
+
+        xys_grad = viewspace_point_tensor.absgrad if self.config.absgrad else viewspace_point_tensor.grad
+        xys_grad = xys_grad[visibility_filter, :2]
+        if viewspace_points_grad_scale is not None:
+            xys_grad = xys_grad * viewspace_points_grad_scale
+        grad_norm = torch.norm(xys_grad, dim=-1, keepdim=True)
+        self._primitive_gradient_accum[combined_mask] += grad_norm
+        self._primitive_denom[combined_mask] += 1
 
     def _densify_and_prune(self, gaussian_model: GridGaussianModel, optimizers: List):
         n_offsets = gaussian_model.n_offsets
@@ -146,11 +193,7 @@ class PartitionGridGaussianDensityControllerImpl(GridGaussianDensityControllerIm
         anchor_denom_thresh = self.config.densification_interval * self.config.success_threshold
         opacity_mask = (self._anchor_opacity_accum < self.config.cull_opacity_threshold).squeeze(1)
         denom_mask = (self._anchor_denom > anchor_denom_thresh).squeeze(1)
-        remove_mask = torch.logical_and(denom_mask, opacity_mask)
-        if hasattr(self, "partition_info") and self.config.prune_in_partition:
-            is_in_partition = self.partition_info.is_in_partition(gaussian_model.get_xyz)
-            remove_mask = torch.logical_and(remove_mask, is_in_partition)
-        keep_mask = ~remove_mask
+        keep_mask = ~torch.logical_and(denom_mask, opacity_mask)
 
         # re-accumulate: set denom and opacity_accum of anchors that denom > denom_thresh to 0
         # prune anchors that denom > denom_thresh and opacity_accum < opacity_thresh
@@ -163,12 +206,65 @@ class PartitionGridGaussianDensityControllerImpl(GridGaussianDensityControllerIm
         # register buffer
         self.register_density_states()
 
+    def _prune_anchors(self, keep_mask, gaussian_model: GridGaussianModel, optimizers):
+        new_properties = OptimizerManipulator.prune_properties(keep_mask, gaussian_model, optimizers)
+        gaussian_model.properties = new_properties
+
+    def _densify_buffers(self, num_anchors, num_primitives, primitive_mask):
+        self._anchor_denom = torch.cat([self._anchor_denom, self._anchor_denom.new_zeros((num_anchors, 1))], dim=0)
+        self._anchor_opacity_accum = torch.cat(
+            [self._anchor_opacity_accum, self._anchor_opacity_accum.new_zeros((num_anchors, 1))], dim=0
+        )
+        self._primitive_denom[primitive_mask] = 0
+        self._primitive_gradient_accum[primitive_mask] = 0.0
+        self._primitive_denom = torch.cat(
+            [self._primitive_denom, self._primitive_denom.new_zeros((num_primitives, 1))], dim=0
+        )
+        self._primitive_gradient_accum = torch.cat(
+            [self._primitive_gradient_accum, self._primitive_gradient_accum.new_zeros((num_primitives, 1))], dim=0
+        )
+
+    def _prune_buffers(self, denom_mask, keep_mask, n_offsets):
+        self._primitive_denom = self._primitive_denom.view(-1, n_offsets)[keep_mask].view(-1, 1)
+        self._primitive_gradient_accum = self._primitive_gradient_accum.view(-1, n_offsets)[keep_mask].view(-1, 1)
+        if denom_mask.sum() > 0:
+            self._anchor_denom[denom_mask] = 0
+            self._anchor_opacity_accum[denom_mask] = 0.0
+        self._anchor_denom = self._anchor_denom[keep_mask]
+        self._anchor_opacity_accum = self._anchor_opacity_accum[keep_mask]
+
+    def on_load_checkpoint(self, module, checkpoint):
+        density_state_dict = {
+            k.replace("density_controller.", "", 1): v
+            for k, v in checkpoint["state_dict"].items()
+            if k.startswith("density_controller")
+        }
+        assert (
+            "_anchor_denom" in density_state_dict and "_primitive_denom" in density_state_dict
+        ), "Density controller states not found in checkpoint"
+        n_anchors = density_state_dict["_anchor_denom"].shape[0]
+        n_offsets = density_state_dict["_primitive_denom"].shape[0] // n_anchors
+        self._init_density_state(n_anchors, n_offsets, device="cpu")
+
+        assert "_camera_infos" in density_state_dict, "Camera infos not found in checkpoint"
+        self.register_buffer("_camera_infos", torch.zeros_like(density_state_dict["_camera_infos"]))
+
+        super().load_state_dict(density_state_dict)
+
+    def after_density_changed(self, gaussian_model, optimizers, pl_module):
+        self.register_density_states()
+
+    @property
+    def camera_infos(self) -> torch.Tensor:
+        self._camera_infos: torch.Tensor
+        return self._camera_infos
+
 
 class GridDensityController:
     @classmethod
     def densify_anchors(
         cls,
-        controller: PartitionGridGaussianDensityControllerImpl,
+        controller: GridGaussianDensityControllerImpl,
         grads,
         primitive_mask,
         gaussian_model: GridGaussianModel,
@@ -190,19 +286,14 @@ class GridDensityController:
         )
 
         if filtered_res.n_anchors > 0:
-            partition_info = getattr(controller, "partition_info", None)
-            property_dict = filtered_res.get_all_properties(
-                gaussian_model,
-                gaussian_model.voxel_size,
-                partition_info if controller.config.densify_in_partition else None,
-            )
+            property_dict = filtered_res.get_all_properties(gaussian_model, gaussian_model.voxel_size)
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
     @classmethod
     def densify_anchors_paperversion(
         cls,
-        controller: PartitionGridGaussianDensityControllerImpl,
+        controller: GridGaussianDensityControllerImpl,
         grads,
         primitive_mask,
         gaussian_model: GridGaussianModel,
@@ -243,10 +334,7 @@ class GridDensityController:
             )
 
             if filtered_res.n_anchors > 0:
-                partition_info = getattr(controller, "partition_info", None)
-                property_dict = filtered_res.get_all_properties(
-                    gaussian_model, cur_size, partition_info if controller.config.densify_in_partition else None
-                )
+                property_dict = filtered_res.get_all_properties(gaussian_model, cur_size)
                 new_properties = OptimizerManipulator.cat_tensors_to_properties(
                     property_dict, gaussian_model, optimizers
                 )
@@ -257,7 +345,7 @@ class LoDGridDensityController:
     @classmethod
     def densify_anchors(
         cls,
-        controller: PartitionGridGaussianDensityControllerImpl,
+        controller: GridGaussianDensityControllerImpl,
         grads,
         primitive_mask,
         gaussian_model: LoDGridGaussianModel,
@@ -282,7 +370,7 @@ class LoDGridDensityController:
     @classmethod
     def densify_anchor_per_level(
         cls,
-        controller: PartitionGridGaussianDensityControllerImpl,
+        controller: GridGaussianDensityControllerImpl,
         n_anchors_init: int,
         grads: torch.Tensor,
         anchor_grads: torch.Tensor,
@@ -357,18 +445,13 @@ class LoDGridDensityController:
         )
 
         # cat new anchors to gaussian_model and
-        partition_info = getattr(controller, "partition_info", None)
         if filtered_res.n_anchors > 0:
-            property_dict = filtered_res.get_all_properties(
-                gaussian_model, cur_size, partition_info if controller.config.densify_in_partition else None
-            )
+            property_dict = filtered_res.get_all_properties(gaussian_model, cur_size)
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
         if filtered_res_ds.n_anchors > 0:
-            property_dict = filtered_res_ds.get_all_properties(
-                gaussian_model, ds_size, partition_info if controller.config.densify_in_partition else None
-            )
+            property_dict = filtered_res_ds.get_all_properties(gaussian_model, ds_size)
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
@@ -376,9 +459,8 @@ class LoDGridDensityController:
 class GridFilteringUtils:
     @staticmethod
     def filter_exsiting_grids(
-        candidate_grids: torch.Tensor, existing_grids: torch.Tensor, overlap: int = 1, use_chunk=True
+        candidate_grids: torch.Tensor, existing_grids: torch.Tensor, num_overlap: int = 1, use_chunk=True
     ):
-        assert overlap > 0
         count = candidate_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.int)
         if use_chunk:
             chunk_size = 4096
@@ -390,15 +472,14 @@ class GridFilteringUtils:
         else:
             count = (candidate_grids.unsqueeze(1) == cur_existing_grids).all(-1).sum(-1)
 
-        return count < overlap
+        return count < num_overlap
 
-    @classmethod
+    @staticmethod
     def filter_primitives(
-        cls,
         gaussian_model: GridGaussianModel,
         all_primitives: torch.Tensor,  # Avoid duplicate calculations
         grad_mask: torch.Tensor,
-        overlap: int = 1,
+        overlap: bool = False,
     ):
         # filter by grad mask
         candidate_primitives = all_primitives.view(-1, 3)[grad_mask]
@@ -414,11 +495,11 @@ class GridFilteringUtils:
         filtered_anchors = candidate_primitives.new_zeros((0, 3))
         keep_mask = existing_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.bool)
 
-        if overlap < 0:
+        if overlap:
             keep_mask = existing_grids.new_ones((candidate_grids.shape[0],), dtype=torch.bool)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids, gaussian_model.voxel_size)
         else:
-            keep_mask = cls.filter_exsiting_grids(candidate_grids, existing_grids, overlap=overlap)
+            keep_mask = GridFilteringUtils.filter_exsiting_grids(candidate_grids, existing_grids)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids[keep_mask], gaussian_model.voxel_size)
 
         return CandidateAnchors(
@@ -429,14 +510,13 @@ class GridFilteringUtils:
             keep_mask=keep_mask,
         )
 
-    @classmethod
+    @staticmethod
     def filter_primitives_paperversion(
-        cls,
         gaussian_model: GridGaussianModel,
         all_primitives: torch.Tensor,  # Avoid duplicate calculations
         grad_mask: torch.Tensor,
         voxel_size: float,
-        overlap: int = 1,
+        overlap: bool = False,
     ):
         # filter by grad mask
         candidate_primitives = all_primitives.view(-1, 3)[grad_mask]
@@ -450,11 +530,11 @@ class GridFilteringUtils:
         filtered_anchors = candidate_primitives.new_zeros((0, 3))
         keep_mask = existing_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.bool)
 
-        if overlap < 0:
+        if overlap:
             keep_mask = existing_grids.new_ones((candidate_grids.shape[0],), dtype=torch.bool)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids, gaussian_model.voxel_size)
         else:
-            keep_mask = cls.filter_exsiting_grids(candidate_grids, existing_grids, overlap=overlap)
+            keep_mask = GridFilteringUtils.filter_exsiting_grids(candidate_grids, existing_grids)
             filtered_anchors = gaussian_model.grid2xyz(candidate_grids[keep_mask], gaussian_model.voxel_size)
 
         return CandidateAnchors(
@@ -465,16 +545,15 @@ class GridFilteringUtils:
             keep_mask=keep_mask,
         )
 
-    @classmethod
+    @staticmethod
     def filter_lod_primitives(
-        cls,
         gaussian_model: LoDGridGaussianModel,
         all_primitives: torch.Tensor,  # Avoid duplicate calculations
         grad_mask: torch.Tensor,
         res_level: torch.Tensor,
         level_mask: torch.Tensor,  # Avoid duplicate calculations
         cam_infos: torch.Tensor,
-        overlap: int = 1,
+        overlap: bool = False,
         is_next_level: bool = False,
     ):
         """
@@ -508,11 +587,11 @@ class GridFilteringUtils:
         ):
             if candidate_grids.shape[0] > 0:
                 # don't filter by existing anchors
-                if overlap < 0:
+                if overlap:
                     keep_mask = existing_grids.new_ones((candidate_grids.shape[0],), dtype=torch.bool)
                     candidate_anchors = gaussian_model.grid2xyz(candidate_grids, voxel_size)
                 else:
-                    keep_mask = cls.filter_exsiting_grids(candidate_grids, existing_grids, overlap=overlap)
+                    keep_mask = GridFilteringUtils.filter_exsiting_grids(candidate_grids, existing_grids)
                     candidate_anchors = gaussian_model.grid2xyz(candidate_grids[keep_mask], voxel_size)
 
                 candidate_levels = gaussian_model.get_levels.new_ones((candidate_anchors.shape[0],)) * res_level
@@ -570,26 +649,22 @@ class CandidateAnchors:
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
         return {"levels": self.levels, "extra_levels": extra_levels}
 
-    def get_scaffold_properties(self, gaussian_model: ScaffoldGaussianModelMixin, voxel_size: float):
-        anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
+    def get_scaffold_properties(self, gaussian_model: RefinedScaffoldGaussianModelMixin, voxel_size: float):
+        semantic_features = repeat(gaussian_model.get_semantic_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
         # if anchors are added, shape of anchor_features may dismatch grad_mask
-        anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
+        semantic_features = semantic_features[: len(self.grad_mask)][self.grad_mask]
         # select max value of anchor features among primitives that convert to same grid
-        anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
-        anchor_features = anchor_features[self.keep_mask]
+        semantic_features = scatter_max(semantic_features, self.unique_indices.unsqueeze(1).expand(-1, semantic_features.shape[-1]), dim=0)[0]  # fmt: skip
+        semantic_features = semantic_features[self.keep_mask]
+        anchor_features = semantic_features.new_zeros(semantic_features.shape)
 
-        return {"anchor_features": anchor_features}  # , "opacities": opacities}
+        return {"semantic_features": semantic_features, "anchor_features": anchor_features}  # , "opacities": opacities}
 
-    def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size: float, partition_info: PartitionInfo):
+    def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)
         if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
             property_dict.update(self.get_lod_grid_properties(gaussian_model, voxel_size))
         if getattr(gaussian_model, "gaussian_mlps", None) is not None:
             property_dict.update(self.get_scaffold_properties(gaussian_model, voxel_size))
         # TODO: explicit model
-
-        if partition_info is not None:
-            mask = partition_info.is_in_partition(self.anchors)
-            _property_dict = {k: v[mask] for k, v in property_dict.items()}
-            property_dict = _property_dict
         return property_dict
