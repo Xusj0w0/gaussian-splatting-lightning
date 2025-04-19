@@ -22,7 +22,7 @@ model:
         means_lr_init: 0.0
         scales_lr: 5e-3
         rotations_lr_init: 1e-3
-        offsets_lr_init: 1.6e-4
+        offsets_lr_init: 1.6e-5
         offsets_lr_scheduler:
           init_args:
             lr_final: 1.6e-6
@@ -39,6 +39,10 @@ model:
     class_path: myimpl.renderers.grid_feature_renderer.GridFeatureGaussianRenderer
   metric:
     class_path: myimpl.metrics.feature_metrics.FeatureMetrics
+    init_args:
+      lambda_feature: 0.1
+      feature_start_iter: 10_000
+      feature_end_iter: 40_000
   density:
     class_path: myimpl.density_controllers.partition_grid_density_controller.PartitionGridGaussianDensityController
     init_args:

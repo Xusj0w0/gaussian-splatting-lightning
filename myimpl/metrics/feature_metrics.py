@@ -21,6 +21,8 @@ class FeatureMetrics(VanillaMetrics):
 
     lambda_dist: float = 0.0
 
+    feature_start_iter: Optional[int] = None
+
     feature_end_iter: Optional[int] = None
 
     normal_start_iter: int = 7_000
@@ -42,6 +44,8 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
         super().setup(stage, pl_module)
 
         if stage == "fit":
+            if self.config.feature_start_iter is None:
+                self.config.feature_start_iter = 0
             if self.config.feature_end_iter is None:
                 self.config.feature_end_iter = pl_module.trainer.max_steps
 
@@ -81,7 +85,11 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             metrics["loss_dreg"] = scaling_reg
             prog_bar["loss_dreg"] = False
 
-        if self.config.lambda_feature > 0 and global_step <= self.config.feature_end_iter + 1:
+        if (
+            self.config.lambda_feature > 0
+            and global_step >= self.config.feature_start_iter
+            and global_step <= self.config.feature_end_iter + 1
+        ):
             render_feature = outputs["render_feature"]
             adapted_render_feature = self.feature_adapter(render_feature)
             gt_feature = batch[-1]["semantic_feature"]
