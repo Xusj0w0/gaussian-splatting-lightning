@@ -22,3 +22,11 @@ class RecordGradient(Callback):
 
     def on_fit_start(self, trainer, pl_module: GaussianSplatting):
         pl_module.on_after_backward_hooks.append(self.log_gradient)
+
+
+class ZeroLearningRate(Callback):
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        if pl_module.trainer.global_step >= 50000:
+            for optimizer in pl_module.optimizers():
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = 0.0

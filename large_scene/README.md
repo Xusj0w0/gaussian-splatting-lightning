@@ -1,7 +1,7 @@
 **partition**
 
 ```shell
-CUDA_VISIBLE_DEVICES=7 python large_scene/tools/partition.py --project_name residence-octree-feature-3_5 --dataset_path datasets/MegaNeRF/residence --partition_dim="[3,5]" --scene_config.class_path large_scene.impls.city_gaussian.UncontractCitySceneConfig --scene_config.config exp_configs/meganerf/residence/residence_implicit_lod_feature_coarse.yaml
+CUDA_VISIBLE_DEVICES=7 python large_scene/tools/partition.py --project_name residence-feat-part3 --dataset_path datasets/MegaNeRF/residence --partition_dim="[2,4]" --scene_config.class_path large_scene.impls.grid_gaussian.GridSceneConfig --scene_config.train_config exp_configs/meganerf/residence/coarse_feature.yaml
 ```
 
 **partition trianing**

@@ -57,7 +57,6 @@ class GridSceneConfig(PartitionableSceneConfig):
         return GridScene(self)
 
     def __post_init__(self):
-        super().__post_init__()
         self.visibility_threshold = 0.05
 
 
@@ -88,14 +87,7 @@ class GridScene(PartitionableScene):
         # get scene bbox by enlarged camera centers
         self.get_scene_bounding_box()
         self.build_partition_coordinates()
-
-        bounded_coordinates = self.bound_partition_coordinates_by_camera_bbox()
-        partition_coordinates = self.partition_coordinates
-
-        self.partition_coordinates = bounded_coordinates
-        PartitionableScene.camera_center_based_partition_assignment(self)
-        # visibility calculation, use orig coordinates
-        self.partition_coordinates = partition_coordinates
+        self.camera_center_based_partition_assignment()
 
         bg_color = ckpt["hyper_parameters"]["background_color"]
         self.gaussians_in_partitions = Partitioning.is_in_bounding_boxes(
@@ -107,7 +99,6 @@ class GridScene(PartitionableScene):
         self.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
         self.visibility_based_partition_assignment()
 
-        self.partition_coordinates = bounded_coordinates
         # visualization
         point_cloud = self.load_point_cloud(dataset_path)
         points3D_transformed = (
@@ -116,7 +107,6 @@ class GridScene(PartitionableScene):
         self.save_plots(
             output_path, BasicPointCloud(points=points3D_transformed, colors=point_cloud.colors, normals=None)
         )
-        self.partition_coordinates = partition_coordinates
         self.save_partitioning_results(output_path, image_set, coarse_model)
 
     def load_coarse_model(
@@ -214,23 +204,18 @@ class GridScene(PartitionableScene):
         return self.scene_bounding_box
 
     def build_partition_coordinates(self):
-        partition_dict = self.balanced_camera_based_division()
-        bbox_dict = self.refine_region_division(partition_dict)
-        id_tensor, xy_tensor, sz_tensor = (
-            torch.empty([0, 2], dtype=torch.int),
-            torch.empty([0, 2], dtype=torch.float32),
-            torch.empty([0, 2], dtype=torch.float32),
-        )
-        for partition_id, bbox in bbox_dict.items():
-            _id = torch.tensor([[int(s) for s in partition_id.split("_")]])
-            _xy = deepcopy(bbox.min).unsqueeze(0)
-            _sz = deepcopy(bbox.max - bbox.min).unsqueeze(0)
-            id_tensor = torch.cat([id_tensor, _id], 0)
-            xy_tensor = torch.cat([xy_tensor, _xy], 0)
-            sz_tensor = torch.cat([sz_tensor, _sz], 0)
+        ids, xys = torch.empty([0, 2], dtype=torch.int), torch.empty([0, 2], dtype=torch.float32)
+        scene_bbox = self.scene_bounding_box.bounding_box
+        sizes = (scene_bbox.max - scene_bbox.min)[:2] / self.partition_dim[:2]
+        origin = scene_bbox.min[:2]
 
-        self.partition_coordinates = PartitionCoordinates(id=id_tensor, xy=xy_tensor, size=sz_tensor)
-
+        for i in range(self.partition_dim[0]):
+            for j in range(self.partition_dim[1]):
+                xy = origin + torch.tensor([i, j], dtype=torch.float32) * sizes
+                ids = torch.cat([ids, torch.tensor([[i, j]], dtype=torch.int)])
+                xys = torch.cat([xys, xy.view(1, 2)])
+        sizes = sizes.repeat(len(ids), 1)
+        self.partition_coordinates = PartitionCoordinates(id=ids, xy=xys, size=sizes)
         return self.partition_coordinates
 
     def calculate_camera_visibilities(
@@ -288,24 +273,6 @@ class GridScene(PartitionableScene):
     def visibility_based_partition_assignment(self):
         self.is_partitions_visible_to_cameras = self.camera_visibilities > self.scene_config.visibility_threshold
         return self.is_partitions_visible_to_cameras
-
-    def bound_partition_coordinates_by_camera_bbox(self):
-        bbox = self.camera_center_based_bounding_box
-        ids, xys, sizes = [], [], []
-        for id, xy, size in self.partition_coordinates:
-            ids.append(id)
-            _bbox = MinMaxBoundingBox(min=xy, max=xy + size)
-            bounded_box = MinMaxBoundingBox(
-                min=torch.maximum(_bbox.min, bbox.min),
-                max=torch.minimum(_bbox.max, bbox.max),
-            )
-            xys.append(bounded_box.min)
-            sizes.append(bounded_box.max - bounded_box.min)
-        return PartitionCoordinates(
-            id=torch.stack(ids, dim=0),
-            xy=torch.stack(xys, dim=0),
-            size=torch.stack(sizes, dim=0),
-        )
 
     def load_point_cloud(self, dataset_path):
         from glob import glob
@@ -367,109 +334,3 @@ class GridScene(PartitionableScene):
         else:
             raise ValueError("unsupported model type")
         return dst_path
-
-    def balanced_camera_based_division(self):
-        """
-        Reference VastGaussian implementation: https://github.com/kangpeilun/VastGaussian
-        Correspond to Camera_position_based_region_division() in VastGS
-        1. Divide cameras along x-axis;
-        2. Divide cameras along y-axis;
-        """
-        assert self.camera_centers is not None, "Camera centers are not available."
-        num_cameras = len(self.camera_centers)
-        x_dim, y_dim, z_dim = self.partition_dim.long().tolist()
-
-        # 1. Divide cameras along x-axis
-        # diff: VastGaussian uses floor, and merge remaining cameras into the last partition
-        num_cameras_per_column = math.ceil(num_cameras / x_dim)
-        camera_positions = deepcopy(self.camera_centers)
-        _, x_sort_indices = torch.sort(camera_positions[:, 0], dim=0)
-        partition_dict: Dict[str, Dict[str, Optional[torch.Tensor]]] = {}
-        for i, x_st in enumerate(range(0, num_cameras, num_cameras_per_column)):
-            x_ed = min(x_st + num_cameras_per_column, num_cameras)
-            x_mid_camera_id = x_sort_indices[-1] if x_ed < num_cameras else None
-            camera_indices_in_column = x_sort_indices[x_st:x_ed]
-            camera_centers_in_column = camera_positions[camera_indices_in_column]
-
-            # 2. Divide cameras along y-axis
-            _, y_sort_indices = torch.sort(camera_centers_in_column[:, 1], dim=0)
-            num_cameras_in_column = len(camera_centers_in_column)
-            num_cameras_per_partition = math.ceil(num_cameras_in_column / y_dim)
-            for j, y_st in enumerate(range(0, num_cameras_in_column, num_cameras_per_partition)):
-                y_ed = min(y_st + num_cameras_per_partition, num_cameras_in_column)
-                camera_indices_in_partition = camera_indices_in_column[y_sort_indices[y_st:y_ed]]
-                y_mid_camera_id = camera_indices_in_partition[-1] if y_ed < num_cameras_in_column else None
-
-                partition_dict[f"{i}_{j}"] = {
-                    "camera_indices": camera_indices_in_partition,
-                    "x_mid_camera_id": x_mid_camera_id,
-                    "y_mid_camera_id": y_mid_camera_id,
-                }
-
-        return partition_dict
-
-    def refine_region_division(self, partition_dict: Dict[str, Dict[str, Optional[torch.Tensor]]]):
-        """
-        Reference VastGaussian implementation: https://github.com/kangpeilun/VastGaussian
-        Correspond to refine_ori_bbox() in VastGS
-        Original implementation use camera position as boundary.
-        We use the average of min-max range as boundary.
-        """
-        x_dim, y_dim, z_dim = self.partition_dim.long().tolist()
-        camera_positions = deepcopy(self.camera_centers)
-
-        # Calculate partition bbox by cameras in partition
-        # Stitching result contains gaps.
-        bbox_dict: Dict[str, MinMaxBoundingBox] = {}
-        for partition_idx, camera_id_dict in partition_dict.items():
-            camera_indices = camera_id_dict["camera_indices"]
-            camera_positions_in_partition = camera_positions[camera_indices]
-            bbox_dict[partition_idx] = MinMaxBoundingBox(
-                min=torch.min(camera_positions_in_partition[:, :2], dim=0).values,
-                max=torch.max(camera_positions_in_partition[:, :2], dim=0).values,
-            )
-
-        # Refine along y-axis
-        for i in range(x_dim):
-            for j in range(y_dim - 1):
-                bottom_partition_id = f"{i}_{j}"
-                up_partition_id = f"{i}_{j+1}"
-                # mid_camera_id = partition_dict[bottom_partition_id]["y_mid_camera_id"]
-                # y_mid = camera_positions[mid_camera_id, 1]
-                y_mid = 0.5 * (bbox_dict[bottom_partition_id].max[1] + bbox_dict[up_partition_id].min[1])
-                bbox_dict[bottom_partition_id].max[1] = y_mid
-                bbox_dict[up_partition_id].min[1] = y_mid
-
-                if j == 0:
-                    bbox_dict[bottom_partition_id].min[1] = self.scene_bounding_box.bounding_box.min[1]
-                if j == y_dim - 2:
-                    bbox_dict[up_partition_id].max[1] = self.scene_bounding_box.bounding_box.max[1]
-
-        # Refine along x-axis
-        for j in range(y_dim):
-            for i in range(x_dim - 1):
-                left_partition_id = f"{i}_{j}"
-                right_partition_id = f"{i+1}_{j}"
-                # mid_camera_id = partition_dict[left_partition_id]["x_mid_camera_id"]
-                # x_mid = camera_positions[mid_camera_id, 0]
-                x_mid = 0.5 * (bbox_dict[left_partition_id].max[0] + bbox_dict[right_partition_id].min[0])
-                bbox_dict[left_partition_id].max[0] = x_mid
-                bbox_dict[right_partition_id].min[0] = x_mid
-
-                if i == 0:
-                    bbox_dict[left_partition_id].min[0] = self.scene_bounding_box.bounding_box.min[0]
-                if i == x_dim - 2:
-                    bbox_dict[right_partition_id].max[0] = self.scene_bounding_box.bounding_box.max[0]
-
-        return bbox_dict
-
-    def get_extra_data(self):
-        extra_data = super().get_extra_data()
-        extra_data.update(
-            {
-                "up": torch.linalg.inv(self.manhattan_trans)[:3, 1],
-                "rotation_transform": self.manhattan_trans,
-                "gaussians_in_partitions": self.gaussians_in_partitions,
-            }
-        )
-        return extra_data
