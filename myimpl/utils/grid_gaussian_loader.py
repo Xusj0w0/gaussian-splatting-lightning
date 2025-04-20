@@ -29,13 +29,15 @@ class GridGaussianUtils:
             "buffers": ["voxel_size", "grid_origin"],
             "properties": ["anchors", "offsets", "scales", "rotations",
                         "anchor_features",],
-            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp"],
+            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp",
+                     "feature_adapter_mlp"],
         },
         2: {
             "buffers": ["voxel_size", "grid_origin", "max_level", "start_level", "standard_dist", "visibility_threshold"],
             "properties": ["anchors", "offsets", "scales", "rotations", "levels", "extra_levels",
                         "anchor_features",],
-            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp"],
+            "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp",
+                     "feature_adapter_mlp"],
         }
     }
     # fmt: on

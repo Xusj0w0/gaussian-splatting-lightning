@@ -13,20 +13,15 @@ from torch_scatter import scatter_mean
 
 from internal.optimizers import Adam
 from internal.renderers import RendererOutputInfo, RendererOutputTypes
-from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
-                                                   GSplatV1RendererModule)
+from internal.renderers.gsplat_v1_renderer import GSplatV1, GSplatV1Renderer, GSplatV1RendererModule
 from internal.schedulers import ExponentialDecayScheduler
 from internal.utils.network_factory import NetworkFactory
+
 # from internal.cameras.cameras import Camera
 from myimpl.dataparsers.feature_dataparser import FeatureShapeCamera
-from myimpl.models.grid_gaussians import (GridGaussianModel,
-                                          LoDGridGaussianModel,
-                                          ScaffoldGaussianModelMixin)
-from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
-                                                  ImplicitLoDGridGaussianModel)
-from myimpl.renderers.grid_renderer import (GridGaussianRenderer,
-                                            GridGaussianRendererModule,
-                                            OptimizationConfig)
+from myimpl.models.grid_gaussians import GridGaussianModel, LoDGridGaussianModel, ScaffoldGaussianModelMixin
+from myimpl.models.implicit_grid_gaussian import ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel
+from myimpl.renderers.grid_renderer import GridGaussianRenderer, GridGaussianRendererModule, OptimizationConfig
 
 __all__ = ["GridFeatureGaussianRenderer", "GridFeatureGaussianRendererModule"]
 
@@ -42,14 +37,6 @@ class GridFeatureGaussianRenderer(GridGaussianRenderer):
 
 class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
     config: GridFeatureGaussianRenderer
-
-    def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
-        super().setup(stage, lightning_module, *args, **kwargs)
-
-    def training_setup(self, module: lightning.LightningModule):
-        optimizers, schedulers = super().training_setup(module)
-
-        return optimizers, schedulers
 
     def preprocess_feature_camera(self, viewpoint_camera: FeatureShapeCamera):
         if viewpoint_camera.width > viewpoint_camera.height:
@@ -158,9 +145,7 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         # TODO: feature loss won't decrease
 
         # reuse implicit properties
-        xyz, scales, rotations, opacities = (
-            output_pkg[i] for i in ["xyz", "scales", "rotations", "opacities"]  # .clone().detach()
-        )
+        xyz, scales, rotations, opacities = (output_pkg[i] for i in ["xyz", "scales", "rotations", "opacities"])  # .clone().detach()
 
         anchor_mask, primitive_mask = output_pkg["anchor_mask"], output_pkg["primitive_mask"]
         features = pc.get_anchor_features[anchor_mask]
@@ -234,6 +219,10 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         # output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
         output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
 
+        if hasattr(pc, "get_feature_adapter"):
+            render_feature_adapted = pc.get_feature_adapter(output_pkg["render_feature"])
+            output_pkg.update({"render_feature_adapted": render_feature_adapted})
+
         return output_pkg
 
     def get_rgbs_from_SHs(
@@ -246,17 +235,6 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
     ):
         viewdirs = xyz.detach() - camera.camera_center
         return spherical_harmonics(activate_sh_degree, viewdirs, colors, visibility_filter)
-
-    def setup_web_viewer_tabs(self, viewer, server, tabs):
-        super().setup_web_viewer_tabs(viewer, server, tabs)
-
-        # if isinstance(viewer.gaussian_model, LoDGridGaussianModel):
-        if (
-            getattr(viewer.gaussian_model, "get_levels", None) is not None
-            and viewer.gaussian_model.get_levels.shape[0] > 0
-        ):
-            with tabs.add_tab("Octree"):
-                self._lod_options = ViewerOptions(viewer, server)
 
     @property
     def feature_map_size(self) -> List[int]:
@@ -274,27 +252,3 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         }
         available_outputs.update(extra_outputs)
         return available_outputs
-
-
-from viser import ViserServer
-
-from internal.viewer.viewer import Viewer
-
-
-class ViewerOptions:
-    def __init__(self, viewer: Viewer, server: ViserServer):
-        self.viewer = viewer
-        self.server = server
-
-        self.activate_level_slider = server.gui.add_slider(
-            label="Activate LoD Level",
-            min=0,
-            step=1,
-            max=viewer.gaussian_model.max_level,
-            initial_value=viewer.gaussian_model.max_level,
-        )
-
-        @self.activate_level_slider.on_update
-        def _(_):
-            viewer.viewer_renderer.gaussian_model.activate_level = self.activate_level_slider.value
-            viewer.rerender_for_all_client()

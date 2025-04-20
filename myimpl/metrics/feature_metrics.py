@@ -31,8 +31,6 @@ class FeatureMetrics(VanillaMetrics):
 
     fused_ssim: bool = True
 
-    feature_adapter: AdapterConfig = field(default_factory=lambda: AdapterConfig())
-
     def instantiate(self, *args, **kwargs):
         return FeatureMetricsImpl(self)
 
@@ -49,26 +47,9 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             if self.config.feature_end_iter is None:
                 self.config.feature_end_iter = pl_module.trainer.max_steps
 
-            render_feature_size = pl_module.renderer.config.render_feature_size
-            render_feature_dim = pl_module.gaussian_model.config.feature_dim
             # hwc shape
             gt_feature_shape = pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0]["semantic_feature"].shape  # fmt: skip
-
-            self.feature_adapter = self.config.feature_adapter.instantiate(
-                render_feature_dim=render_feature_dim,
-                render_feature_size=render_feature_size,
-                gt_feature_shape=gt_feature_shape,
-            )
-
-    def training_setup(self, pl_module):
-        optimizers, schedulers = super().training_setup(pl_module)
-        if self.config.feature_adapter.optimization.max_steps is None:
-            self.config.feature_adapter.optimization.max_steps = pl_module.trainer.max_steps
-
-        _optimizers, _schedulers = self.feature_adapter.training_setup()
-        optimizers.extend(_optimizers)
-        schedulers.extend(_schedulers)
-        return optimizers, schedulers
+            self.output_size = gt_feature_shape[:2]
 
     def _get_basic_metrics(self, pl_module, gaussian_model, batch, outputs):
         metrics, prog_bar = super()._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
@@ -90,9 +71,14 @@ class FeatureMetricsImpl(VanillaMetricsImpl):
             and global_step >= self.config.feature_start_iter
             and global_step <= self.config.feature_end_iter + 1
         ):
-            render_feature = outputs["render_feature"]
-            adapted_render_feature = self.feature_adapter(render_feature)
+            adapted_render_feature = outputs["render_feature_adapted"]
             gt_feature = batch[-1]["semantic_feature"]
+
+            # fmt: off
+            adapted_render_feature = F.interpolate(
+                adapted_render_feature.permute(2, 0, 1).unsqueeze(0), size=self.output_size, mode="bicubic", align_corners=True
+            ).squeeze(0).permute(1, 2, 0)
+            # fmt: on
 
             loss_feature = F.l1_loss(adapted_render_feature, gt_feature)
 

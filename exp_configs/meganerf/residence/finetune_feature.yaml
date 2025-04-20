@@ -14,8 +14,13 @@ data:
   async_caching: true
 model:
   gaussian:
-    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
+    class_path: myimpl.models.grid_adapter_gaussian.LoDGridAdapterGaussian
     init_args:
+      feature_adapter:
+        dim_out: 32
+        optimization:
+          lr_init: 0
+          lr_final: 0
       base_layer: 11
       max_level: 3
       optimization:
@@ -26,7 +31,7 @@ model:
         offsets_lr_scheduler:
           init_args:
             lr_final: 1.6e-6
-        anchor_features_lr: 2.5e-3
+        anchor_features_lr: 2.5e-4
         opacity_mlp_lr_init: 0
         opacity_mlp_lr_final: 0
         cov_mlp_lr_init: 0
@@ -39,10 +44,6 @@ model:
     class_path: myimpl.renderers.grid_feature_renderer.GridFeatureGaussianRenderer
   metric:
     class_path: myimpl.metrics.feature_metrics.FeatureMetrics
-    init_args:
-      lambda_feature: 0.1
-      feature_start_iter: 10_000
-      feature_end_iter: 40_000
   density:
     class_path: myimpl.density_controllers.partition_grid_density_controller.PartitionGridGaussianDensityController
     init_args:
