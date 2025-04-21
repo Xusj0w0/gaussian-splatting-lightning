@@ -32,14 +32,14 @@ model:
           init_args:
             lr_final: 3.2e-7
         anchor_features_lr: 2.5e-4
-        opacity_mlp_lr_init: 0
-        opacity_mlp_lr_final: 0
-        cov_mlp_lr_init: 0
-        cov_mlp_lr_final: 0
-        color_mlp_lr_init: 0
-        color_mlp_lr_final: 0
-        feature_bank_mlp_lr_init: 0
-        feature_bank_mlp_lr_final: 0
+        opacity_mlp_lr_init: 2e-4
+        opacity_mlp_lr_final: 2e-6
+        cov_mlp_lr_init: 4e-4
+        cov_mlp_lr_final: 4e-6
+        color_mlp_lr_init: 8e-4
+        color_mlp_lr_final: 5e-6
+        feature_bank_mlp_lr_init: 1e-4
+        feature_bank_mlp_lr_final: 1e-6
   renderer:
     class_path: myimpl.renderers.grid_feature_renderer.GridFeatureGaussianRenderer
   metric:
