@@ -7,8 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
-from gsplat import spherical_harmonics
-from pytorch3d.transforms import quaternion_multiply
+from gsplat.cuda._wrapper import rasterize_to_pixels, spherical_harmonics
+from pytorch3d.transforms import quaternion_multiply, quaternion_to_matrix
 
 from internal.cameras.cameras import Camera
 from internal.optimizers import Adam
@@ -53,6 +53,12 @@ class GridGaussianRenderer(GSplatV1Renderer):
 
 
 class GridGaussianRendererModule(GSplatV1RendererModule):
+    _PGSR_DEPTH_REQUIRED = 1 << 10
+    RENDER_TYPE_BITS = {
+        **GSplatV1RendererModule.RENDER_TYPE_BITS,
+        "pgsr_depth": _PGSR_DEPTH_REQUIRED,
+    }
+
     config: GridGaussianRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
@@ -105,7 +111,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             )
         return appearance_embedding_optimizer, appearance_embedding_scheduler
 
-    def prepare_primitives(self, pc: GridGaussianModel, viewpoint_camera: Camera):
+    def prepare_primitives(self, pc: GridGaussianModel, viewpoint_camera: Camera, **kwargs):
         # filter by level
         anchor_mask, prog_ratio, transition_mask = [None] * 3
 
@@ -130,6 +136,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 anchor_mask=anchor_mask,
                 prog_ratio=prog_ratio,
                 transition_mask=transition_mask,
+                **kwargs,
             )
         # TODO elif explicit model
         else:
@@ -145,7 +152,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         **kwargs,
     ):
         xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask = self.prepare_primitives(
-            pc, viewpoint_camera
+            pc, viewpoint_camera, **kwargs
         )
 
         # fmt: off
@@ -158,7 +165,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         # 1. get scales and then project
         if scaling_modifier != 1.0:
             scales = scales * scaling_modifier
-        
+
         projections = GSplatV1.project(
             preprocessed_camera,
             xyz,
@@ -170,13 +177,18 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             # radius_clip_from=self.runtime_options.radius_clip_from,
             camera_model=self.runtime_options.camera_model,
         )
+        # radii: [C, N], means2d: [C, N, 2], depths: [C, N], conics: [C, N, 3], compensations: [C, N]
         radii, means2d, depths, conics, compensations = projections
 
         radii_squeezed = radii.squeeze(0)
         visibility_filter = radii_squeezed > 0
 
         # 2. get opacities and then isect encoding
-        opacities = opacities.unsqueeze(0)  # [1, N]
+        # extend camera dim
+        opacities = opacities.unsqueeze(0)  # opacities: [C, N]
+        colors = colors.unsqueeze(0)
+        bg_color = bg_color.unsqueeze(0)
+
         if self.config.anti_aliased:
             opacities = opacities * compensations
 
@@ -188,121 +200,56 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         )
 
         # 3. rasterization
-        means2d = means2d.squeeze(0)
-        projection_for_rasterization = radii, means2d, depths, conics, compensations
+        # fmt: on
+        if pc.config.color_mode == "SHs":
+            viewdirs = xyz.detach() - viewpoint_camera.camera_center
+            colors = spherical_harmonics(pc.activate_sh_degree, viewdirs, colors, visibility_filter)
 
-        def rasterize(input_features: torch.Tensor, background, return_alpha: bool = False):
-            rendered_colors, rendered_alphas = GSplatV1.rasterize(
-                preprocessed_camera,
-                projection_for_rasterization,
-                isects,
-                opacities=opacities,
-                colors=input_features,
-                background=background,
-                tile_size=self.config.block_size,
+        if self.is_type_required(render_type_bits, self._PGSR_DEPTH_REQUIRED):
+            pgsr_props = self.get_pgsr_props(xyz, scales, rots, viewpoint_camera)
+            colors = torch.cat([colors, pgsr_props], dim=-1)  # [N, 8]
+            bg_color = torch.cat([bg_color, bg_color.new_zeros((pgsr_props.shape[0], pgsr_props.shape[-1]))], dim=-1)
+
+        # render: [C, H, W, D], alpha_map: [C, H, W, 1]
+        render, alpha_map = rasterize_to_pixels(
+            means2d=means2d,
+            conics=conics,
+            colors=colors,
+            opacities=opacities,
+            image_width=preprocessed_camera[-1][0],
+            image_height=preprocessed_camera[-1][1],
+            tile_size=self.config.block_size,
+            isect_offsets=isects[-1],
+            flatten_ids=isects[-2],
+            backgrounds=bg_color,
+        )
+
+        rgb = render[..., :3]
+        acc_vis = means2d.has_hit_any_pixels
+
+        normal_map, invdepth_map, plane_dist_map, unbiased_depth_map, normal_map_from_depth, point_map = [None] * 6
+        if self.is_type_required(render_type_bits, self._PGSR_DEPTH_REQUIRED):
+            pgsr_maps = render[..., 3:]
+            local_normal_map = F.normalize(pgsr_maps[..., :3], dim=-1)  # [C, H, W, 3]
+            invdepth_map = pgsr_maps[..., 3]  # [C, H, W]
+            plane_dist_map = pgsr_maps[..., 4]  # [C, H, W]
+            unbiased_depth_map = self.calc_unbiased_depth_map(local_normal_map, plane_dist_map, preprocessed_camera[1])
+            normal_map = torch.einsum(
+                "c i j k, c k m -> c i j m", local_normal_map, preprocessed_camera[0][..., :3, :3]
             )
-
-            if return_alpha:
-                return rendered_colors, rendered_alphas.squeeze(0).squeeze(-1)
-            return rendered_colors
-
-        # rgb
-        rgb = None
-        acc_vis = None
-        if self.is_type_required(render_type_bits, self._RGB_REQUIRED):
-            if pc.config.color_mode == 'SHs':
-                viewdirs = xyz.detach() - viewpoint_camera.camera_center
-                colors = spherical_harmonics(pc.activate_sh_degree, viewdirs, colors, visibility_filter)
-            rgb = rasterize(colors, bg_color).permute(2, 0, 1)
-            # avoid overriding by hard depth
-            acc_vis = means2d.has_hit_any_pixels
-
-        alpha = None
-        acc_depth_im = None
-        acc_depth_inverted_im = None
-        exp_depth_im = None
-        exp_depth_inverted_im = None
-        inv_depth_alt = None
-        if self.is_type_required(render_type_bits, self._ACC_DEPTH_REQUIRED):
-            # acc depth
-            acc_depth_im, alpha = rasterize(depths[0].unsqueeze(-1), torch.zeros((1,), device=bg_color.device), True)
-            alpha = alpha[..., None]
-
-            # acc depth inverted
-            if self.is_type_required(render_type_bits, self._ACC_DEPTH_INVERTED_REQUIRED):
-                acc_depth_inverted_im = torch.where(acc_depth_im > 0, 1.0 / acc_depth_im, acc_depth_im.detach().max())
-                acc_depth_inverted_im = acc_depth_inverted_im.permute(2, 0, 1)
-
-            # exp depth
-            if self.is_type_required(render_type_bits, self._EXP_DEPTH_REQUIRED):
-                exp_depth_im = torch.where(alpha > 0, acc_depth_im / alpha, acc_depth_im.detach().max())
-
-                exp_depth_im = exp_depth_im.permute(2, 0, 1)
-
-            # alpha
-            if self.is_type_required(render_type_bits, self._ALPHA_REQUIRED):
-                alpha = alpha.permute(2, 0, 1)
-            else:
-                alpha = None
-
-            # permute acc depth
-            acc_depth_im = acc_depth_im.permute(2, 0, 1)
-
-            # exp depth inverted
-            if self.is_type_required(render_type_bits, self._EXP_DEPTH_INVERTED_REQUIRED):
-                exp_depth_inverted_im = torch.where(exp_depth_im > 0, 1.0 / exp_depth_im, exp_depth_im.detach().max())
-
-        # inverse depth
-        inverse_depth_im = None
-        if self.is_type_required(render_type_bits, self._INVERSE_DEPTH_REQUIRED):
-            inverse_depth = 1.0 / (depths[0].clamp_min(0.0) + 1e-8).unsqueeze(-1)
-            inverse_depth_im = rasterize(
-                inverse_depth, torch.zeros((1,), dtype=torch.float, device=bg_color.device)
-            ).permute(2, 0, 1)
-            inv_depth_alt = inverse_depth_im
-
-        # hard depth
-        hard_depth_im = None
-        if self.is_type_required(render_type_bits, self._HARD_DEPTH_REQUIRED):
-            hard_depth_im, _ = GSplatV1.rasterize(
-                preprocessed_camera,
-                projection_for_rasterization,
-                isects,
-                opacities=opacities + (1 - opacities.detach()),
-                colors=depths[0].unsqueeze(-1),
-                background=torch.zeros((1,), dtype=torch.float, device=bg_color.device),
-                tile_size=self.config.block_size,
-            )
-            hard_depth_im = hard_depth_im.permute(2, 0, 1)
-
-        # hard inverse depth
-        hard_inverse_depth_im = None
-        if self.is_type_required(render_type_bits, self._HARD_INVERSE_DEPTH_REQUIRED):
-            inverse_depth = 1.0 / (depths[0].clamp_min(0.0) + 1e-8).unsqueeze(-1)
-            hard_inverse_depth_im, _ = GSplatV1.rasterize(
-                preprocessed_camera,
-                projection_for_rasterization,
-                isects,
-                opacities=opacities + (1 - opacities.detach()),
-                colors=inverse_depth,
-                background=torch.zeros((1,), dtype=torch.float, device=bg_color.device),
-                tile_size=self.config.block_size,
-            )
-
-            hard_inverse_depth_im = hard_inverse_depth_im.permute(2, 0, 1)
-            inv_depth_alt = hard_inverse_depth_im
+            point_map = self.depths_to_points(viewpoint_camera, unbiased_depth_map)
+            normal_map_from_depth = self.points_to_normals(point_map)
 
         return {
-            "render": rgb,
-            "alpha": alpha,
-            "acc_depth": acc_depth_im,
-            "acc_depth_inverted": acc_depth_inverted_im,
-            "exp_depth": exp_depth_im,
-            "exp_depth_inverted": exp_depth_inverted_im,
-            "inverse_depth": inverse_depth_im,
-            "hard_depth": hard_depth_im,
-            "hard_inverse_depth": hard_inverse_depth_im,
-            "inv_depth_alt": inv_depth_alt,
+            "render": rgb.squeeze(0).permute(2, 0, 1),  # [H, W, 3]
+            "alpha": alpha_map.squeeze(-1),  # [1, H, W]
+            "normals": normal_map.squeeze(0),
+            "normals_from_depths": normal_map_from_depth.squeeze(0),
+            "inverse_depths": invdepth_map.squeeze(0),
+            "plane_dists": plane_dist_map.squeeze(0),
+            "depths_unbiased": unbiased_depth_map.squeeze(0),
+            "points": point_map.squeeze(0),
+            # intermediates
             "viewspace_points": means2d,
             "viewspace_points_grad_scale": 0.5
             * torch.tensor([preprocessed_camera[-1]]).to(means2d).clamp_(max=self.config.max_viewspace_grad_scale),
@@ -321,6 +268,101 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             "primitive_mask": primitive_mask,
         }
         # fmt: on
+
+    def get_pgsr_props(
+        self, xyz: torch.Tensor, scales: torch.Tensor, rotations: torch.Tensor, viewpoint_cam: Camera, **kwargs
+    ) -> torch.Tensor:
+        """
+        Return:
+        - **pgsr_props**: [C, N, 5].
+            - 0-3 ~ normals in camera coordinates
+            - 4 ~ invdepths
+            - 5 ~ distances to the plane defined by gaussians.
+        """
+
+        rotation_matrices = quaternion_to_matrix(rotations)  # [N, 3, 3]
+        smallest_scale_idx = scales.argmin(dim=-1)[..., None, None].expand(-1, 3, -1)
+        normal_global = rotation_matrices.gather(2, smallest_scale_idx).squeeze(dim=-1)  # [N, 3]
+
+        gaussian_to_cam_global = viewpoint_cam.camera_center - xyz  # [N, 3]
+        neg_mask = (normal_global * gaussian_to_cam_global).sum(-1) < 0.0
+        normal_global[neg_mask] = -normal_global[neg_mask]
+
+        local_normal = normal_global @ viewpoint_cam.world_to_camera[:3, :3]
+        pts_in_cam = xyz @ viewpoint_cam.world_to_camera[:3, :3] + viewpoint_cam.world_to_camera[-1, :3]
+        depth_z = pts_in_cam[:, 2]
+        local_dist = (local_normal * pts_in_cam).sum(-1).abs()
+        pgsr_props = xyz.new_zeros((xyz.shape[0], 5))
+        pgsr_props[:, :3] = local_normal
+        pgsr_props[:, 3] = 1.0 / (depth_z.clamp_min(0.0) + 1e-8)
+        pgsr_props[:, 4] = local_dist
+
+        return pgsr_props.unsqueeze(0)
+
+    def calc_unbiased_depth_map(self, local_normal_map: torch.Tensor, plane_dist: torch.Tensor, Ks: torch.Tensor):
+        # local_normal_map: [C, H, W, 3]
+        H, W = local_normal_map.shape[-3:-1]
+        grid_x, grid_y = torch.meshgrid(
+            torch.arange(W).to(local_normal_map), torch.arange(H).to(local_normal_map), indexing="xy"
+        )
+        points = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)  # [1, H, W, 2]
+        offsets = Ks[..., :2, -1].unsqueeze(1).unsqueeze(1)
+        scales = 1.0 / torch.diagonal(Ks[..., :2, :2], dim1=-2, dim2=-1).unsqueeze(1).unsqueeze(1)
+        coordinates = (points - offsets) * scales
+
+        cosine = -(coordinates * local_normal_map[..., :2] + local_normal_map[..., -1:]).sum(dim=-1)
+        unbiased_depth_map = plane_dist / (cosine + 1e-8)
+        return unbiased_depth_map
+
+    @classmethod
+    def get_normals(
+        cls, xyz: torch.Tensor, scales: torch.Tensor, rotations: torch.Tensor, viewpoint_cam: Camera, **kwargs
+    ) -> torch.Tensor:
+        rotation_matrices = quaternion_to_matrix(rotations)  # [N, 3, 3]
+        smallest_scale_idx = scales.argmin(dim=-1)[..., None, None].expand(-1, 3, -1)
+        normals = rotation_matrices.gather(2, smallest_scale_idx).squeeze(dim=-1)  # [N, 3]
+
+        gaussian_to_cam_global = viewpoint_cam.camera_center - xyz  # [N, 3]
+        neg_mask = (normals * gaussian_to_cam_global).sum(-1) < 0.0
+        normals[neg_mask] = -normals[neg_mask]
+        return normals
+
+    @staticmethod
+    def depths_to_points(view, depthmap):
+        c2w = (view.world_to_camera.T).inverse()
+        W, H = view.width, view.height
+        ndc2pix = torch.tensor([[W / 2, 0, 0, W / 2], [0, H / 2, 0, H / 2], [0, 0, 0, 1]]).float().cuda().T
+        projection_matrix = c2w.T @ view.full_projection
+        intrins = (projection_matrix @ ndc2pix)[:3, :3].T
+
+        grid_x, grid_y = torch.meshgrid(
+            torch.arange(W, device="cuda").float(), torch.arange(H, device="cuda").float(), indexing="xy"
+        )
+        points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3)
+        rays_d = points @ intrins.inverse().T @ c2w[:3, :3].T
+        rays_o = c2w[:3, 3]
+        points = depthmap.reshape(-1, 1) * rays_d + rays_o
+        points = points.reshape(*depthmap.shape, 3)
+        return points
+
+    @classmethod
+    def points_to_normals(cls, points):
+        output = torch.zeros_like(points)
+        dx = torch.cat([points[2:, 1:-1] - points[:-2, 1:-1]], dim=0)
+        dy = torch.cat([points[1:-1, 2:] - points[1:-1, :-2]], dim=1)
+        normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
+        output[1:-1, 1:-1, :] = normal_map
+        return output
+
+    @classmethod
+    def depth_to_normal(cls, view, depth):
+        """
+        view: view camera
+        depth: depthmap
+        """
+        points = cls.depths_to_points(view, depth).reshape(*depth.shape[1:], 3)
+        output = cls.points_to_normals(points)
+        return output
 
     def setup_web_viewer_tabs(self, viewer, server, tabs):
         super().setup_web_viewer_tabs(viewer, server, tabs)

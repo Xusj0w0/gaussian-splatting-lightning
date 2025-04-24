@@ -74,11 +74,11 @@ if __name__ == "__main__":
     output_path = args.output
     if output_path is None:
         output_path = os.path.join(os.path.dirname(image_path.rstrip("/")))
-    print(f"output_path={os.path.join(output_path, 'semantic')}")
+    print(f"output_path={os.path.join(output_path, 'extra')}")
 
     # build output dirs
-    feature_dir = os.path.join(output_path, "semantic", "sam2_feature_dim{}".format(args.feat_dim))
-    feature_preview_dir = os.path.join(output_path, "semantic", "sam2_feature_preview_dim{}".format(args.feat_dim))
+    feature_dir = os.path.join(output_path, "extra", "sam2_feature_dim{}".format(args.feat_dim))
+    feature_preview_dir = os.path.join(output_path, "extra", "sam2_feature_preview_dim{}".format(args.feat_dim))
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(feature_preview_dir, exist_ok=True)
 

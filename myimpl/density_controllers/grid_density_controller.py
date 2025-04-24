@@ -1,11 +1,11 @@
 from dataclasses import dataclass
 from functools import reduce
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import torch
 from einops import repeat
 from lightning import LightningModule
-from torch_scatter import scatter_max
+from torch_scatter import scatter_max, scatter_mean
 
 from internal.cameras.cameras import Cameras
 from internal.density_controllers.density_controller import \
@@ -44,6 +44,8 @@ class GridGaussianDensityController(VanillaDensityController):
     densify_from_iter: int = 1_500
 
     densify_until_iter: int = 30_000
+
+    scatter_mode: Literal["max", "mean"] = "max"
 
     def instantiate(self, *args, **kwargs):
         return GridGaussianDensityControllerImpl(self)
@@ -160,6 +162,8 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         combined_mask[combined_mask.clone()] = visibility_filter
 
         xys_grad = viewspace_point_tensor.absgrad if self.config.absgrad else viewspace_point_tensor.grad
+        if len(xys_grad.shape) == 3:  # [C, N, 2]
+            xys_grad = xys_grad.mean(dim=0)
         xys_grad = xys_grad[visibility_filter, :2]
         if viewspace_points_grad_scale is not None:
             xys_grad = xys_grad * viewspace_points_grad_scale
@@ -286,7 +290,9 @@ class GridDensityController:
         )
 
         if filtered_res.n_anchors > 0:
-            property_dict = filtered_res.get_all_properties(gaussian_model, gaussian_model.voxel_size)
+            property_dict = filtered_res.get_all_properties(
+                gaussian_model, gaussian_model.voxel_size, scatter_mode=controller.config.scatter_mode
+            )
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
@@ -334,7 +340,9 @@ class GridDensityController:
             )
 
             if filtered_res.n_anchors > 0:
-                property_dict = filtered_res.get_all_properties(gaussian_model, cur_size)
+                property_dict = filtered_res.get_all_properties(
+                    gaussian_model, cur_size, scatter_mode=controller.config.scatter_mode
+                )
                 new_properties = OptimizerManipulator.cat_tensors_to_properties(
                     property_dict, gaussian_model, optimizers
                 )
@@ -446,12 +454,16 @@ class LoDGridDensityController:
 
         # cat new anchors to gaussian_model and
         if filtered_res.n_anchors > 0:
-            property_dict = filtered_res.get_all_properties(gaussian_model, cur_size)
+            property_dict = filtered_res.get_all_properties(
+                gaussian_model, cur_size, scatter_mode=controller.config.scatter_mode
+            )
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
         if filtered_res_ds.n_anchors > 0:
-            property_dict = filtered_res_ds.get_all_properties(gaussian_model, ds_size)
+            property_dict = filtered_res_ds.get_all_properties(
+                gaussian_model, ds_size, scatter_mode=controller.config.scatter_mode
+            )
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
@@ -649,25 +661,35 @@ class CandidateAnchors:
         rotations[..., 0] = 1.0
         return {"means": self.anchors, "scales": scales, "offsets": offsets, "rotations": rotations}
 
-    def get_lod_grid_properties(self, gaussian_model: LoDGridGaussianModel, voxel_size: float):
+    def get_lod_grid_properties(self, gaussian_model: LoDGridGaussianModel):
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
         return {"levels": self.levels, "extra_levels": extra_levels}
 
-    def get_scaffold_properties(self, gaussian_model: ScaffoldGaussianModelMixin, voxel_size: float):
+    def get_scaffold_properties(
+        self, gaussian_model: ScaffoldGaussianModelMixin, scatter_mode: Literal["max", "mean"] = "max"
+    ):
         anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
         # if anchors are added, shape of anchor_features may dismatch grad_mask
         anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
-        # select max value of anchor features among primitives that convert to same grid
-        anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
+
+        # select value of anchor features among primitives that convert to same grid
+        if scatter_mode == "max":
+            anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
+        elif scatter_mode == "mean":
+            anchor_features = scatter_mean(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
+        else:
+            raise ValueError(f"scatter_mode {scatter_mode} not supported")
         anchor_features = anchor_features[self.keep_mask]
 
         return {"anchor_features": anchor_features}  # , "opacities": opacities}
 
-    def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size):
+    def get_all_properties(
+        self, gaussian_model: GridGaussianModel, voxel_size, scatter_mode: Literal["max", "mean"] = "max"
+    ):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)
         if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
-            property_dict.update(self.get_lod_grid_properties(gaussian_model, voxel_size))
+            property_dict.update(self.get_lod_grid_properties(gaussian_model))
         if getattr(gaussian_model, "gaussian_mlps", None) is not None:
-            property_dict.update(self.get_scaffold_properties(gaussian_model, voxel_size))
+            property_dict.update(self.get_scaffold_properties(gaussian_model, scatter_mode))
         # TODO: explicit model
         return property_dict

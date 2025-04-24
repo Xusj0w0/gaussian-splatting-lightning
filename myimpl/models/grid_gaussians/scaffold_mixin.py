@@ -57,6 +57,8 @@ class ScaffoldGaussianMixin:
 
     tcnn: bool = False
 
+    stop_feature_grad: bool = False
+
 
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     config: ScaffoldGaussianMixin
@@ -79,6 +81,9 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         offsets = self.get_offsets[anchor_mask]
         scalings = self.get_scalings[anchor_mask]
         rotations = self.get_rotations[anchor_mask]
+
+        if kwargs.get("stop_feature_grad", False):
+            features = features.clone().detach()
 
         n_anchors, n_offsets = self.n_anchors, self.n_offsets
 

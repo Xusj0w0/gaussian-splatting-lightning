@@ -36,11 +36,11 @@ image_path = args.image_path
 output_path = args.output
 if output_path is None:
     output_path = os.path.join(os.path.dirname(image_path.rstrip("/")))
-print(f"output_path={os.path.join(output_path, 'semantic')}")
+print(f"output_path={os.path.join(output_path, 'extra')}")
 
 # build output dirs
-mask_dir = os.path.join(output_path, "semantic", "masks")
-mask_preview_dir = os.path.join(output_path, "semantic", "masks_preview")
+mask_dir = os.path.join(output_path, "extra", "masks")
+mask_preview_dir = os.path.join(output_path, "extra", "masks_preview")
 os.makedirs(mask_dir, exist_ok=True)
 os.makedirs(mask_preview_dir, exist_ok=True)
 

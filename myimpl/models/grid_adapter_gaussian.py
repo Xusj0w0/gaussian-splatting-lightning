@@ -4,13 +4,9 @@ import torch
 
 from myimpl.model_components.feature_adapter import AdapterConfig
 from myimpl.models.implicit_grid_gaussian import (
-    ImplicitGridGaussian,
-    ImplicitGridGaussianModel,
-    ImplicitGridOptimizationConfig,
-    ImplicitLoDGridGaussian,
-    ImplicitLoDGridGaussianModel,
-    ImplicitLoDGridOptimizationConfig,
-)
+    ImplicitGridGaussian, ImplicitGridGaussianModel,
+    ImplicitGridOptimizationConfig, ImplicitLoDGridGaussian,
+    ImplicitLoDGridGaussianModel, ImplicitLoDGridOptimizationConfig)
 
 
 class GridAdapterGaussianModelMixin:
@@ -28,7 +24,9 @@ class GridAdapterGaussianModelMixin:
         return properties
 
     def training_setup_extra_properties(self, module, *args, **kwargs):
-        [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler] = super().training_setup_extra_properties(module, *args, **kwargs)
+        [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler] = super().training_setup_extra_properties(
+            module, *args, **kwargs
+        )
 
         if self.config.feature_adapter.optimization.max_steps is None:
             self.config.feature_adapter.optimization.max_steps = module.trainer.max_steps

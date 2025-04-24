@@ -23,27 +23,6 @@ __all__ = [
 ]
 
 
-class PartitionableMLPWrapper:
-    def __init__(self, pc: "PartitionableImplicitGridGaussianModel", mlp_key: str):
-        self._pc = pc
-        self._mlp_key = mlp_key
-
-    def __call__(self, features: torch.Tensor):
-        mlp = self._pc.gaussian_mlps[self._mlp_key]
-        anchor_partition_ids = self._pc.masked_anchor_partition_ids
-
-        for layer in reversed(list(mlp.values())[0]):
-            if isinstance(layer, nn.Linear):
-                dim_out = layer.out_features
-                break
-        output = features.new_zeros((features.shape[0], dim_out))
-        unique_ids = torch.unique(anchor_partition_ids)
-        for i in unique_ids:
-            mask = anchor_partition_ids == i
-            output[mask] = mlp[str(i.item())](features[mask])
-        return output
-
-
 class PartitionableMixin:
     def calculate_implicit_properties(
         self: Union["PartitionableMixin", ImplicitGridGaussianModel],
@@ -71,7 +50,6 @@ class PartitionableMixin:
         viewdirs = viewdirs / viewdirs_norm
 
         if self.config.use_feature_bank:
-
             bank_weight = F.softmax(
                 self.forward_by_partition_id(self.get_feature_bank_mlp, anchor_partition_ids, viewdirs), dim=-1
             ).unsqueeze(dim=1)

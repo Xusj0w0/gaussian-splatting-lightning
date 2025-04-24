@@ -9,7 +9,7 @@ data:
       eval_list: datasets/MegaNeRF/residence/splits/val_images.txt
       down_sample_factor: 4
   train_max_num_images_to_cache: 64
-  num_workers: 1
+  num_workers: 2
   async_caching: true
 model:
   gaussian:
@@ -35,11 +35,11 @@ model:
         feature_bank_mlp_lr_init: 1e-3
         feature_bank_mlp_lr_final: 1e-5
   renderer:
-    class_path: myimpl.renderers.grid_feature_renderer.GridFeatureGaussianRenderer
+    class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
   metric:
     class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
   density:
-    class_path: myimpl.density_controllers.partition_grid_density_controller.PartitionGridGaussianDensityController
+    class_path: myimpl.density_controllers.grid_density_controller.GridGaussianDensityController
     init_args:
       densify_until_iter: 40_000
 save_iterations:

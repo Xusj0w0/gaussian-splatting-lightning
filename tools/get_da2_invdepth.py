@@ -15,7 +15,7 @@ from utils.distibuted_tasks import (configure_arg_parser,
 
 
 def make_parser():
-    parser = argparse.ArgumentParser(description="Get HWC features. min(H, W) == 518 / 14")
+    parser = argparse.ArgumentParser()
     parser.add_argument("image_dir")
     parser.add_argument("--input_size", "-s", type=int, default=518)
     parser.add_argument("--output", "-o", default=None)
@@ -23,7 +23,7 @@ def make_parser():
     parser.add_argument("--extensions", "-e", default=["jpg", "JPG", "jpeg", "JPEG", "png", "PNG"])
     parser.add_argument("--da2_ckpt", "-c", type=str, default="checkpoints/da2/depth_anything_v2_vitl.pth")
     parser.add_argument("--preview", action="store_true", default=False)
-    parser.add_argument("--colormap", type=str, default="default")
+    parser.add_argument("--colormap", type=str, default="gray")
     configure_arg_parser(parser)
     return parser
 
@@ -45,21 +45,6 @@ def build_da2_backbone(args):
     return depth_anything
 
 
-class FeatureGetter(object):
-    def __init__(self, da_model: DepthAnythingV2):
-        # self._handle = da_model.depth_head.scratch.output_conv1.register_forward_hook(self)
-        # self._handle = da_model.depth_head.scratch.refinenet4.register_forward_hook(self)
-        self._handle = da_model.depth_head.scratch.layer1_rn.register_forward_hook(self)
-        self._embedding = None
-
-    def __call__(self, module, input, output):
-        self._embedding = input[0].squeeze()
-        # self._embedding = output.squeeze()
-
-    def get_image_embedding(self):
-        return self._embedding
-
-
 def apply_color_map(normalized_depth, colormap):
     colored_depth = Visualizers.float_colormap(torch.from_numpy(normalized_depth).unsqueeze(0), colormap=colormap)
     colored_depth = (colored_depth.permute(1, 2, 0) * 255).to(torch.uint8).numpy()
@@ -74,16 +59,12 @@ if __name__ == "__main__":
     if output_path is None:
         output_path = os.path.join(os.path.dirname(image_path.rstrip("/")))
     print(f"output_path={os.path.join(output_path, 'extra')}")
-    depth_dir = os.path.join(output_path, "extra", "depth")
-    depth_preview_dir = os.path.join(output_path, "extra", "depth_preview")
-    feature_dir = os.path.join(output_path, "extra", "da2_feature")
-    feature_preview_dir = os.path.join(output_path, "extra", "da2_feature_preview")
+    depth_dir = os.path.join(output_path, "extra", "estimated_invdepth")
+    depth_preview_dir = os.path.join(output_path, "extra", "estimated_invdepth_preview")
 
-    for d in [depth_dir, feature_dir]:
-        os.makedirs(d, exist_ok=True)
+    os.makedirs(depth_dir, exist_ok=True)
     if args.preview:
-        for d in [depth_preview_dir, feature_preview_dir]:
-            os.makedirs(d, exist_ok=True)
+        os.makedirs(depth_preview_dir, exist_ok=True)
 
     images = get_task_list_with_args(args, find_files(args.image_dir, args.extensions, as_relative_path=False))
     assert len(images) > 0, "not an image with extension name '{}' can be found in '{}'".format(
@@ -91,7 +72,6 @@ if __name__ == "__main__":
     )
 
     depth_anything = build_da2_backbone(args)
-    feature_getter = FeatureGetter(da_model=depth_anything)
 
     image_reader = AsyncImageReader(image_list=images)
     ndarray_saver = AsyncNDArraySaver()
@@ -106,11 +86,8 @@ if __name__ == "__main__":
 
                 depth = depth_anything.infer_image(raw_image, args.input_size)  # [H, W]
                 normalized_depth = (depth - depth.min()) / (depth.max() - depth.min())
-                image_embedding = feature_getter.get_image_embedding()
 
                 ndarray_saver.save(normalized_depth, os.path.join(depth_dir, "{}.npy".format(image_name)))
-                image_embedding_np = image_embedding.permute(1, 2, 0).clone().detach().cpu().numpy()
-                ndarray_saver.save(image_embedding_np, os.path.join(feature_dir, "{}.npy".format(image_name)))
 
                 if args.preview:
                     image_saver.save(
@@ -118,19 +95,6 @@ if __name__ == "__main__":
                         os.path.join(depth_preview_dir, "{}.png".format(image_name)),
                         processor=lambda x: apply_color_map(x, colormap=args.colormap),
                     )
-
-                    image_embedding_flatten_normalized = torch.nn.functional.normalize(
-                        image_embedding.permute(1, 2, 0).reshape((-1, image_embedding.shape[0])), dim=-1
-                    )
-                    pca_projection_matrix = SegAnyGSUtils.get_pca_projection_matrix(
-                        semantic_features=image_embedding_flatten_normalized
-                    )
-                    pca_color = SegAnyGSUtils.get_pca_projected_colors(
-                        image_embedding_flatten_normalized, pca_projection_matrix
-                    )
-                    feature_preview = pca_color.reshape((image_embedding.shape[1], image_embedding.shape[2], -1))
-                    feature_preview = (feature_preview * 255).to(torch.uint8).cpu().numpy()
-                    image_saver.save(feature_preview, os.path.join(feature_preview_dir, f"{image_name}.png"))
 
     finally:
         ndarray_saver.stop()

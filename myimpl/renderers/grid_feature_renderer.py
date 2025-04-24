@@ -13,25 +13,39 @@ from torch_scatter import scatter_mean
 
 from internal.optimizers import Adam
 from internal.renderers import RendererOutputInfo, RendererOutputTypes
-from internal.renderers.gsplat_v1_renderer import GSplatV1, GSplatV1Renderer, GSplatV1RendererModule
+from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
+                                                   GSplatV1RendererModule)
 from internal.schedulers import ExponentialDecayScheduler
 from internal.utils.network_factory import NetworkFactory
-
 # from internal.cameras.cameras import Camera
 from myimpl.dataparsers.feature_dataparser import FeatureShapeCamera
-from myimpl.models.grid_gaussians import GridGaussianModel, LoDGridGaussianModel, ScaffoldGaussianModelMixin
-from myimpl.models.implicit_grid_gaussian import ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel
-from myimpl.renderers.grid_renderer import GridGaussianRenderer, GridGaussianRendererModule, OptimizationConfig
+from myimpl.models.grid_gaussians import (GridGaussianModel,
+                                          LoDGridGaussianModel,
+                                          ScaffoldGaussianModelMixin)
+from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
+                                                  ImplicitLoDGridGaussianModel)
+from myimpl.renderers.grid_renderer import (GridGaussianRenderer,
+                                            GridGaussianRendererModule,
+                                            OptimizationConfig)
 
 __all__ = ["GridFeatureGaussianRenderer", "GridFeatureGaussianRendererModule"]
 
 
 @dataclass
 class GridFeatureGaussianRenderer(GridGaussianRenderer):
+    stop_feature_grad: bool = False
+    """whether stop feature gradient when prepare implicit properties with MLPs"""
+
+    stop_property_grad: bool = False
+    """whether stop other property gradient when rendering feature map"""
+
     render_feature_size: int = 256
     """short side of the feature map"""
 
     def instantiate(self, *args, **kwargs):
+        assert not (
+            self.stop_feature_grad and self.stop_property_grad
+        ), "stop_feature_grad and stop_property_grad cannot be True at the same time"
         return GridFeatureGaussianRendererModule(self)
 
 
@@ -142,17 +156,20 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         *args,
         **kwargs,
     ):
-        # TODO: feature loss won't decrease
-
         # reuse implicit properties
-        xyz, scales, rotations, opacities = (output_pkg[i] for i in ["xyz", "scales", "rotations", "opacities"])  # .clone().detach()
+        xyz, scales, rotations, opacities = (
+            output_pkg[i] for i in ["xyz", "scales", "rotations", "opacities"]
+        )  # .clone().detach()
+        if self.config.stop_property_grad:
+            xyz, scales, rotations, opacities = list(
+                map(lambda x: x.clone().detach(), [xyz, scales, rotations, opacities])
+            )
 
         anchor_mask, primitive_mask = output_pkg["anchor_mask"], output_pkg["primitive_mask"]
         features = pc.get_anchor_features[anchor_mask]
         features = features.unsqueeze(0).expand(pc.n_offsets, -1, -1).permute(1, 0, 2).reshape(-1, features.shape[-1])
         features = features[primitive_mask]
 
-        # preprocessed_camera = GSplatV1.preprocess_camera(viewpoint_camera)
         preprocessed_camera = self.preprocess_feature_camera(viewpoint_camera)
         if scaling_modifier != 1.0:
             scales = scales * scaling_modifier
@@ -213,10 +230,25 @@ class GridFeatureGaussianRendererModule(GridGaussianRendererModule):
         else:
             known_types = list(filter(lambda x: x in self.RENDER_TYPE_BITS, render_types))
 
-        output_pkg = super().forward(viewpoint_camera, pc, bg_color, scaling_modifier, known_types, **kwargs)
+        output_pkg = super().forward(
+            viewpoint_camera,
+            pc,
+            bg_color,
+            scaling_modifier,
+            known_types,
+            stop_feature_grad=self.config.stop_feature_grad,
+            **kwargs,
+        )
 
         # render features
-        # output_pkg = self.rasterize_feature_anchor(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
+        output_pkg = self.rasterize_feature_anchor(
+            viewpoint_camera,
+            pc,
+            output_pkg,
+            scaling_modifier,
+            stop_feature_grad=self.config.stop_feature_grad,
+            **kwargs,
+        )
         output_pkg = self.rasterize_feature_primitive(viewpoint_camera, pc, output_pkg, scaling_modifier, **kwargs)
 
         if hasattr(pc, "get_feature_adapter"):
