@@ -44,6 +44,17 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             self.config.lambda_depth.max_steps = pl_module.trainer.max_steps
         self.render_depth = "acc_depth" in pl_module.renderer_output_types
 
+    @staticmethod
+    def _create_fused_ssim_adapter():
+        # fmt: off
+        from fused_ssim import fused_ssim
+        def adapter(pred, gt):
+            if len(pred.shape) == 3:
+                pred, gt = pred.unsqueeze(0), gt.unsqueeze(0)
+            return fused_ssim(pred, gt)
+        # fmt: on
+        return adapter
+
     def _get_basic_metrics(
         self,
         pl_module,
@@ -55,7 +66,10 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         global_step = pl_module.trainer.global_step + 1
         _, image_info, extra_data = batch
         image_name, gt_image, mask = image_info
+
+        # if single batch
         if isinstance(image_name, str):
+            gt_image = gt_image.unsqueeze(0)
             extra_data = {k: [v] for k, v in extra_data.items()}
 
         if self.config.lambda_dreg > 0:
@@ -82,21 +96,25 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             prog_bar["loss_flatten"] = False
 
         if self.render_depth and self.config.lambda_normal > 0 and global_step >= self.config.normal_start_iter:
-            normal_map = outputs["normal"]
-            normal_map_from_depth = outputs["normal_from_depth"]
+            normal = outputs["normal"]
+            normal_from_depth = outputs["normal_from_depth"]
 
             if self.config.grad_weighted_normal:
+                if len(normal.shape) <= 3:
+                    normal = normal.unsqueeze(0)
+                    normal_from_depth = normal_from_depth.unsqueeze(0)
+
                 # calculate plane confidence from gt_image grad
-                rgb_grad = gt_image.new_ones(gt_image.shape[-2:])
-                grad_x = (gt_image[..., 1:-1, 2:] - gt_image[..., 1:-1, :-2]).abs().mean(dim=0, keepdim=True)
-                grad_y = (gt_image[..., 2:, 1:-1] - gt_image[..., :-2, 1:-1]).abs().mean(dim=0, keepdim=True)
-                grad = torch.cat([grad_x, grad_y], dim=0).max(dim=0).values
+                rgb_grad = gt_image.new_ones((gt_image.shape[0], *gt_image.shape[-2:]))
+                grad_x = (gt_image[..., 1:-1, 2:] - gt_image[..., 1:-1, :-2]).abs().mean(dim=1, keepdim=True)
+                grad_y = (gt_image[..., 2:, 1:-1] - gt_image[..., :-2, 1:-1]).abs().mean(dim=1, keepdim=True)
+                grad = torch.cat([grad_x, grad_y], dim=1).max(dim=1).values
                 grad = (grad - grad.min()) / (grad.max() - grad.min())
-                rgb_grad[1:-1, 1:-1] = grad
+                rgb_grad[..., 1:-1, 1:-1] = grad
                 conf = (1.0 - rgb_grad) ** 2
-                loss_normal = ((normal_map - normal_map_from_depth).abs().sum(-1) * conf).mean()
+                loss_normal = ((normal - normal_from_depth).abs().sum(1) * conf).mean()
             else:
-                loss_normal = ((normal_map - normal_map_from_depth).abs().sum(-1)).mean()
+                loss_normal = ((normal - normal_from_depth).abs().sum(1)).mean()
 
             metrics["loss"] += self.config.lambda_normal * loss_normal
             metrics["loss_normal"] = loss_normal
