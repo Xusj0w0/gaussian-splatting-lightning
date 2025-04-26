@@ -395,6 +395,11 @@ class BatchedCacheDataLoader(CacheDataLoader):
 
         return batched
 
+    def __iter__(self):
+        for _ in range(self.batch_size):
+            for item in super().__iter__():
+                yield item
+
 
 # fmt: off
 class DataModule(LightningDataModule):
