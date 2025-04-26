@@ -270,7 +270,7 @@ class LoDGridGaussianModel(GridGaussianModelBase):
 
     @property
     def get_levels(self) -> torch.Tensor:
-        """[N_anchors, 1]"""
+        """[N_anchors,]"""
         return self.gaussians["levels"]
 
     @property
@@ -312,7 +312,7 @@ class LoDGridGaussianModel(GridGaussianModelBase):
 
     @property
     def standard_dist(self) -> float:
-        self._standart_dist: torch.Tensor
+        self._standard_dist: torch.Tensor
         return self._standard_dist.item()
 
     @property

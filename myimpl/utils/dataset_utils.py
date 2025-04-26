@@ -30,6 +30,10 @@ class ExtraDataProcessor(ABC, Callable):
     def update_properties(self, *args, **kwargs):
         pass
 
+    @classmethod
+    def collate_fn(cls, extra_data_list: list):
+        return torch.stack(extra_data_list, dim=0)
+
 
 class ExtraDataContainer(dict):
     def add_extra_data(self, extra_data: ExtraData):

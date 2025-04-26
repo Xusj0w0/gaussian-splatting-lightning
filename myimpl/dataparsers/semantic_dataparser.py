@@ -13,10 +13,10 @@ import torch
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers import DataParser, DataParserOutputs
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
-from myimpl.dataparsers.extra_data_processors import (DepthData,
-                                                      DepthDataProcessor,
-                                                      SemanticData,
-                                                      SemanticDataProcessor)
+from myimpl.dataparsers.extra_dataparsers import (DepthData,
+                                                  DepthDataProcessor,
+                                                  SemanticData,
+                                                  SemanticDataProcessor)
 from myimpl.utils.dataset_utils import (ExtraData, ExtraDataContainer,
                                         ExtraDataProcessor,
                                         ExtraDataProcessorContainer)

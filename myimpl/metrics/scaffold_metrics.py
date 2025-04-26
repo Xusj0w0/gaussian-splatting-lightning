@@ -42,7 +42,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
 
         if self.config.lambda_depth.max_steps is None:
             self.config.lambda_depth.max_steps = pl_module.trainer.max_steps
-        self.render_depth = "pgsr_depth" in pl_module.renderer_output_types
+        self.render_depth = "acc_depth" in pl_module.renderer_output_types
 
     def _get_basic_metrics(
         self,
@@ -54,7 +54,9 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         metrics, prog_bar = super()._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
         global_step = pl_module.trainer.global_step + 1
         _, image_info, extra_data = batch
-        _, gt_image, mask = image_info
+        image_name, gt_image, mask = image_info
+        if isinstance(image_name, str):
+            extra_data = {k: [v] for k, v in extra_data.items()}
 
         if self.config.lambda_dreg > 0:
             scales = outputs["scales"]
@@ -62,6 +64,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 scaling_reg = torch.prod(scales, dim=-1).mean()
             else:
                 scaling_reg = torch.tensor(0.0)
+
             metrics["loss"] += self.config.lambda_dreg * scaling_reg
             metrics["loss_dreg"] = scaling_reg
             prog_bar["loss_dreg"] = False
@@ -73,13 +76,14 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 flatten_reg = torch.min(scales, dim=-1).values.mean()
             else:
                 flatten_reg = torch.tensor(0.0)
+
             metrics["loss"] += self.config.lambda_flatten * flatten_reg
             metrics["loss_flatten"] = flatten_reg
             prog_bar["loss_flatten"] = False
 
         if self.render_depth and self.config.lambda_normal > 0 and global_step >= self.config.normal_start_iter:
-            normal_map = outputs["normals"]
-            normal_map_from_depth = outputs["normals_from_depths"]
+            normal_map = outputs["normal"]
+            normal_map_from_depth = outputs["normal_from_depth"]
 
             if self.config.grad_weighted_normal:
                 # calculate plane confidence from gt_image grad
@@ -100,7 +104,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
 
         gt_depth = extra_data.get(DepthData.KEY, None)
         if self.render_depth and gt_depth is not None:
-            pred_depth = outputs["inverse_depths"]
+            pred_depth = outputs["inverse_depth"]
             loss_depth = self.config.depth_loss_func(gt_depth, pred_depth, mask)
 
             metrics["loss"] += self.config.lambda_depth(global_step) * loss_depth
@@ -136,8 +140,23 @@ class DepthLossFunction:
     mean_normalized: bool = False
 
     def __call__(
+        self, gt_depth: List[torch.Tensor], pred_depth: torch.Tensor, mask: Optional[List[torch.Tensor]] = None
+    ):
+        loss = torch.tensor(0.0, device=pred_depth.device)
+        cnt = 0
+        for i in range(len(gt_depth)):
+            gt = gt_depth[i]
+
+            if gt is not None:
+                msk = mask[i] if mask is not None else None
+                loss += self.loss_iter(gt, pred_depth[i], msk)
+                cnt += 1
+        return loss / cnt
+
+    def loss_iter(
         self, gt_depth: torch.Tensor, pred_depth: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+
         gt_depth = gt_depth.to(pred_depth)
         if self.normalized:
             with torch.no_grad():

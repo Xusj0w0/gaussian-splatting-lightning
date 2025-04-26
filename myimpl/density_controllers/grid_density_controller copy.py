@@ -156,12 +156,36 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         self._anchor_opacity_accum += scatter_sum(opacities, anchor_indices, dim=0, dim_size=n_anchors)
         self._anchor_denom += torch.bincount(anchor_indices, minlength=n_anchors).float() / self.batch_size
 
+        # indices = torch.arange(n_anchors, device=opacities.device)
+        # indices = indices[anchor_mask].unsqueeze(dim=-1).repeat(1, n_offsets).view(-1)
+        # anchor_indices = indices[primitive_mask]
+        # anchor_opacities = scatter_sum(opacities, anchor_indices, dim=0, dim_size=n_anchors)
+        # anchor_denom = torch.bincount(indices, minlength=n_anchors).float() / self.batch_size
+        # self._anchor_opacity_accum += anchor_opacities
+        # self._anchor_denom += anchor_denom
+
+        # _opacities = opacities.new_zeros((primitive_mask.shape[0]))
+        # _opacities[primitive_mask] = opacities.clone().view(-1).detach()
+        # _opacities = _opacities.view(-1, n_offsets)
+        # self._anchor_opacity_accum[anchor_mask] += _opacities.sum(dim=-1, keepdim=True)
+        # self._anchor_denom[anchor_mask] += 1
+
+        # anchor_mask_repeat = torch.repeat_interleave(anchor_mask, n_offsets, dim=0)
+        # _anchor_mask = primitive_mask.new_zeros((n_anchors,), dtype=torch.bool)
+        # _anchor_mask[anchor_mask] = True
+        # anchor_mask_repeat = repeat(_anchor_mask, "n -> (n o)", o=n_offsets)
+        # combined_mask = primitive_mask.new_zeros((self._primitive_gradient_accum.shape[0],))
+        # combined_mask[anchor_mask_repeat] = primitive_mask
+        # combined_mask[combined_mask.clone()] = visibility_filter
+
         # TODO: use packed=True, xys_grad is filtered in projection process
         xys_grad = viewspace_point_tensor.absgrad if self.config.absgrad else viewspace_point_tensor.grad
         xys_grad = xys_grad[..., :2]
         if viewspace_points_grad_scale is not None:
             xys_grad = xys_grad * viewspace_points_grad_scale
         grad_norm = torch.norm(xys_grad, dim=-1)
+        # self._primitive_gradient_accum[combined_mask] += grad_norm
+        # self._primitive_denom[combined_mask] += 1
         projection_indices = primitive_indices[visibility_filter]
         self._primitive_gradient_accum += scatter_sum(
             grad_norm, projection_indices, dim=0, dim_size=n_anchors * n_offsets

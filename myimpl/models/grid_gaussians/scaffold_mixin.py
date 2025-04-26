@@ -102,8 +102,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             features = features.squeeze(dim=-1)
         cat_local_view = torch.cat([features, viewdirs], dim=1)
 
-        opacities_offsets = self.get_opacity_mlp(features).reshape(-1, n_offsets, 1)  # try: remove viewdirs
-        opacities = torch.clamp(opacities_offsets, max=1.0)
+        opacities = self.get_opacity_mlp(features).reshape(-1, n_offsets, 1).clamp(max=1.0)
         if prog_ratio is not None and transition_mask is not None:
             prog = prog_ratio[anchor_mask]
             transition = transition_mask[anchor_mask]

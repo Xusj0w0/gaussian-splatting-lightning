@@ -4,9 +4,9 @@ from jsonargparse import lazy_instance
 from lightning.pytorch.cli import ArgsType
 
 from internal.gaussian_splatting import GaussianSplatting
-from internal.dataset import DataModule
+# from internal.dataset import DataModule
 from internal.callbacks import SaveGaussian, KeepRunningIfWebViewerEnabled, StopImageSavingThreads, ProgressBar, ValidateOnTrainEnd, StopDataLoaderCacheThread
-
+from myimpl.dataset import DataModule
 
 def cli(args: ArgsType = None):
     CLI(

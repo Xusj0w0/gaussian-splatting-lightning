@@ -13,9 +13,11 @@ import torch
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers import DataParser, DataParserOutputs
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
-from myimpl.dataparsers.extra_data_processors import (
-    EstimatedInvDepthConfigMixin, EstimatedInvDepthMixin, MaskConfigMixin,
-    MaskMixin, SemanticConfigMixin, SemanticMixin)
+from myimpl.dataparsers.extra_dataparsers import (EstimatedInvDepthConfigMixin,
+                                                  EstimatedInvDepthMixin,
+                                                  MaskConfigMixin, MaskMixin,
+                                                  SemanticConfigMixin,
+                                                  SemanticMixin)
 from myimpl.utils.dataset_utils import (ExtraDataContainer,
                                         ExtraDataProcessorContainer)
 
