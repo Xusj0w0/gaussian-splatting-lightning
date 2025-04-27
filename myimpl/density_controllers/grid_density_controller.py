@@ -167,7 +167,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             if viewspace_points_grad_scale is not None:
                 xys_grad = xys_grad * viewspace_points_grad_scale
             grad_norm = torch.norm(xys_grad, dim=-1)
-            proj_indices = primitive_indices[visibility_filter].clamp(0, n_anchors - 1)
+            proj_indices = primitive_indices[visibility_filter].clamp(0, n_anchors * n_offsets - 1)
             self._primitive_gradient_accum += scatter_sum(grad_norm, proj_indices, dim=0, dim_size=n_anchors * n_offsets)
             # self._primitive_denom += (
             #     torch.bincount(projection_indices, minlength=n_anchors * n_offsets).float() / self.batch_size
