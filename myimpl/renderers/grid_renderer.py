@@ -224,8 +224,8 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             backgrounds=bg_color,
         )
 
-        rgb = render[..., :3]
-        acc_vis = means2d.has_hit_any_pixels
+        rgb = render[..., :3].permute(0, 3, 1, 2).squeeze(0)
+        # acc_vis = means2d.has_hit_any_pixels
 
         normal_map, invdepth_map, plane_dist_map, unbiased_depth_map, normal_map_from_depth, point_map = [None] * 6
         if self.is_type_required(render_type_bits, self._PGSR_DEPTH_REQUIRED):
@@ -240,21 +240,26 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             point_map = self.depths_to_points(viewpoint_camera, unbiased_depth_map)
             normal_map_from_depth = self.points_to_normals(point_map)
 
+            normal_map = normal_map.squeeze(0)
+            normal_map_from_depth = normal_map_from_depth.squeeze(0)
+            invdepth_map = invdepth_map.squeeze(0)
+            unbiased_depth_map = unbiased_depth_map.squeeze(0)
+
         return {
-            "render": rgb.squeeze(0).permute(2, 0, 1),  # [H, W, 3]
-            "alpha": alpha_map.squeeze(-1),  # [1, H, W]
-            "normals": normal_map.squeeze(0),
-            "normals_from_depths": normal_map_from_depth.squeeze(0),
-            "inverse_depths": invdepth_map.squeeze(0),
-            "plane_dists": plane_dist_map.squeeze(0),
-            "depths_unbiased": unbiased_depth_map.squeeze(0),
-            "points": point_map.squeeze(0),
+            "render": rgb,  # [H, W, 3]
+            "alpha": alpha_map,  # [1, H, W]
+            "normals": normal_map,
+            "normals_from_depths": normal_map_from_depth,
+            "inverse_depths": invdepth_map,
+            "plane_dists": plane_dist_map,
+            "depths_unbiased": unbiased_depth_map,
+            "points": point_map,
             # intermediates
             "viewspace_points": means2d,
             "viewspace_points_grad_scale": 0.5
             * torch.tensor([preprocessed_camera[-1]]).to(means2d).clamp_(max=self.config.max_viewspace_grad_scale),
             "visibility_filter": visibility_filter,
-            "acc_vis": acc_vis,
+            # "acc_vis": acc_vis,
             "radii": radii_squeezed,
             "xyz": xyz,
             "scales": scales,

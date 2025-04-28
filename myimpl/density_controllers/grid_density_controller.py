@@ -5,16 +5,12 @@ from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 import torch
 from einops import repeat
 from lightning import LightningModule
-from torch_scatter import scatter_max, scatter_mean
+from torch_scatter import scatter_max, scatter_mean, scatter_sum
 
 from internal.cameras.cameras import Cameras
-from internal.density_controllers.density_controller import \
-    Utils as OptimizerManipulator
-from internal.density_controllers.vanilla_density_controller import (
-    VanillaDensityController, VanillaDensityControllerImpl)
-from myimpl.models.grid_gaussians import (GridFactory, GridGaussianModel,
-                                          LoDGridGaussianModel,
-                                          ScaffoldGaussianModelMixin)
+from internal.density_controllers.density_controller import Utils as OptimizerManipulator
+from internal.density_controllers.vanilla_density_controller import VanillaDensityController, VanillaDensityControllerImpl
+from myimpl.models.grid_gaussians import GridFactory, GridGaussianModel, LoDGridGaussianModel, ScaffoldGaussianModelMixin
 
 __all__ = [
     "GridGaussianDensityController",
@@ -147,19 +143,16 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         opacities: torch.Tensor = outputs["opacities"]
         viewspace_points_grad_scale = outputs.get("viewspace_points_grad_scale", None)
 
+        n_anchors = anchor_mask.shape[0]
         n_offsets = int(primitive_mask.shape[0] / anchor_mask.sum().item())
 
-        _opacities = opacities.new_zeros((primitive_mask.shape[0]))
-        _opacities[primitive_mask] = opacities.clone().view(-1).detach()
-        _opacities = _opacities.view(-1, n_offsets)
-        self._anchor_opacity_accum[anchor_mask] += _opacities.sum(dim=-1, keepdim=True)
+        indices = torch.arange(n_anchors * n_offsets, device=opacities.device)
+        indices = indices.reshape(-1, n_offsets)[anchor_mask].reshape(-1)
+        primitive_indices = indices[primitive_mask]
+        anchor_indices = (primitive_indices.float() / n_offsets).long().clamp(0, n_anchors - 1)
+        self._anchor_opacity_accum += scatter_sum(opacities, anchor_indices, dim=0, dim_size=n_anchors).unsqueeze(-1)
+        # self._anchor_denom += scatter_sum(opacities.new_ones(opacities.shape), anchor_indices, dim=0, dim_size=n_anchors).unsqueeze(-1)
         self._anchor_denom[anchor_mask] += 1
-
-        # anchor_mask_repeat = torch.repeat_interleave(anchor_mask, n_offsets, dim=0)
-        anchor_mask_repeat = repeat(anchor_mask, "n -> (n o)", o=n_offsets)
-        combined_mask = primitive_mask.new_zeros((self._primitive_gradient_accum.shape[0],))
-        combined_mask[anchor_mask_repeat] = primitive_mask
-        combined_mask[combined_mask.clone()] = visibility_filter
 
         xys_grad = viewspace_point_tensor.absgrad if self.config.absgrad else viewspace_point_tensor.grad
         if len(xys_grad.shape) == 3:  # [C, N, 2]
@@ -167,9 +160,10 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         xys_grad = xys_grad[visibility_filter, :2]
         if viewspace_points_grad_scale is not None:
             xys_grad = xys_grad * viewspace_points_grad_scale
-        grad_norm = torch.norm(xys_grad, dim=-1, keepdim=True)
-        self._primitive_gradient_accum[combined_mask] += grad_norm
-        self._primitive_denom[combined_mask] += 1
+        grad_norm = torch.norm(xys_grad, dim=-1)
+        proj_indices = primitive_indices[visibility_filter].clamp(0, n_anchors * n_offsets - 1)
+        self._primitive_gradient_accum += scatter_sum(grad_norm, proj_indices, dim=0, dim_size=n_anchors * n_offsets).unsqueeze(-1)
+        self._primitive_denom += scatter_sum(grad_norm.new_ones(grad_norm.shape), proj_indices, dim=0, dim_size=n_anchors * n_offsets).unsqueeze(-1)
 
     def _densify_and_prune(self, gaussian_model: GridGaussianModel, optimizers: List):
         n_offsets = gaussian_model.n_offsets
@@ -184,9 +178,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
             LoDGridDensityController.densify_anchors(self, grads_norm, primitive_mask, gaussian_model, optimizers)
         else:
-            GridDensityController.densify_anchors_paperversion(
-                self, grads_norm, primitive_mask, gaussian_model, optimizers
-            )
+            GridDensityController.densify_anchors_paperversion(self, grads_norm, primitive_mask, gaussian_model, optimizers)
 
         # enlarge buffers
         num_anchors = gaussian_model.n_anchors - self._anchor_denom.shape[0]
@@ -221,9 +213,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         )
         self._primitive_denom[primitive_mask] = 0
         self._primitive_gradient_accum[primitive_mask] = 0.0
-        self._primitive_denom = torch.cat(
-            [self._primitive_denom, self._primitive_denom.new_zeros((num_primitives, 1))], dim=0
-        )
+        self._primitive_denom = torch.cat([self._primitive_denom, self._primitive_denom.new_zeros((num_primitives, 1))], dim=0)
         self._primitive_gradient_accum = torch.cat(
             [self._primitive_gradient_accum, self._primitive_gradient_accum.new_zeros((num_primitives, 1))], dim=0
         )
@@ -307,9 +297,7 @@ class GridDensityController:
     ):
         n_anchors_init, n_offsets = gaussian_model.get_anchors.shape[0], gaussian_model.config.n_offsets
         for i in range(gaussian_model.config.update_depth):
-            cur_threshold = controller.config.densify_grad_threshold * (
-                (gaussian_model.config.update_hierachy_factor // 2) ** i
-            )
+            cur_threshold = controller.config.densify_grad_threshold * ((gaussian_model.config.update_hierachy_factor // 2) ** i)
             candidate_mask = grads >= cur_threshold
             candidate_mask = torch.logical_and(candidate_mask, primitive_mask)
 
@@ -321,9 +309,7 @@ class GridDensityController:
                 if i > 0:
                     continue
             else:
-                candidate_mask = torch.cat(
-                    [candidate_mask, candidate_mask.new_zeros((n_anchors_diff * n_offsets,))], dim=0
-                )
+                candidate_mask = torch.cat([candidate_mask, candidate_mask.new_zeros((n_anchors_diff * n_offsets,))], dim=0)
 
             all_primitives = gaussian_model.get_anchors.unsqueeze(dim=1) + (
                 gaussian_model.get_offsets * gaussian_model.get_scalings[:, :3].unsqueeze(dim=1)
@@ -340,12 +326,8 @@ class GridDensityController:
             )
 
             if filtered_res.n_anchors > 0:
-                property_dict = filtered_res.get_all_properties(
-                    gaussian_model, cur_size, scatter_mode=controller.config.scatter_mode
-                )
-                new_properties = OptimizerManipulator.cat_tensors_to_properties(
-                    property_dict, gaussian_model, optimizers
-                )
+                property_dict = filtered_res.get_all_properties(gaussian_model, cur_size, scatter_mode=controller.config.scatter_mode)
+                new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
                 gaussian_model.properties = new_properties
 
 
@@ -454,25 +436,19 @@ class LoDGridDensityController:
 
         # cat new anchors to gaussian_model and
         if filtered_res.n_anchors > 0:
-            property_dict = filtered_res.get_all_properties(
-                gaussian_model, cur_size, scatter_mode=controller.config.scatter_mode
-            )
+            property_dict = filtered_res.get_all_properties(gaussian_model, cur_size, scatter_mode=controller.config.scatter_mode)
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
         if filtered_res_ds.n_anchors > 0:
-            property_dict = filtered_res_ds.get_all_properties(
-                gaussian_model, ds_size, scatter_mode=controller.config.scatter_mode
-            )
+            property_dict = filtered_res_ds.get_all_properties(gaussian_model, ds_size, scatter_mode=controller.config.scatter_mode)
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
 
 class GridFilteringUtils:
     @staticmethod
-    def filter_exsiting_grids(
-        candidate_grids: torch.Tensor, existing_grids: torch.Tensor, overlap: int = 1, use_chunk=True
-    ):
+    def filter_exsiting_grids(candidate_grids: torch.Tensor, existing_grids: torch.Tensor, overlap: int = 1, use_chunk=True):
         assert overlap > 0
         count = candidate_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.int)
         if use_chunk:
@@ -598,9 +574,7 @@ class GridFilteringUtils:
         # if is current level, then directly filter by existing anchors and weed out by cameras
         # if is next level, execute filtering after activate_level == max_level
         # and current level shouldn't exceed max_level
-        if not is_next_level or (
-            gaussian_model.activate_level >= gaussian_model.max_level and res_level < gaussian_model.max_level
-        ):
+        if not is_next_level or (gaussian_model.activate_level >= gaussian_model.max_level and res_level < gaussian_model.max_level):
             if candidate_grids.shape[0] > 0:
                 # don't filter by existing anchors
                 if overlap < 0:
@@ -653,9 +627,7 @@ class CandidateAnchors:
         return self.anchors.shape[0]
 
     def get_basic_properties(self, gaussian_model: GridGaussianModel, voxel_size: float):
-        scales = gaussian_model.scale_inverse_activation(
-            gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size
-        )
+        scales = gaussian_model.scale_inverse_activation(gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size)
         offsets = gaussian_model.get_anchors.new_zeros((self.n_anchors, gaussian_model.n_offsets, 3))
         rotations = gaussian_model.get_anchors.new_zeros((self.n_anchors, 4))
         rotations[..., 0] = 1.0
@@ -665,9 +637,7 @@ class CandidateAnchors:
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
         return {"levels": self.levels, "extra_levels": extra_levels}
 
-    def get_scaffold_properties(
-        self, gaussian_model: ScaffoldGaussianModelMixin, scatter_mode: Literal["max", "mean"] = "max"
-    ):
+    def get_scaffold_properties(self, gaussian_model: ScaffoldGaussianModelMixin, scatter_mode: Literal["max", "mean"] = "max"):
         anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
         # if anchors are added, shape of anchor_features may dismatch grad_mask
         anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
@@ -683,9 +653,7 @@ class CandidateAnchors:
 
         return {"anchor_features": anchor_features}  # , "opacities": opacities}
 
-    def get_all_properties(
-        self, gaussian_model: GridGaussianModel, voxel_size, scatter_mode: Literal["max", "mean"] = "max"
-    ):
+    def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size, scatter_mode: Literal["max", "mean"] = "max"):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)
         if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
             property_dict.update(self.get_lod_grid_properties(gaussian_model))
