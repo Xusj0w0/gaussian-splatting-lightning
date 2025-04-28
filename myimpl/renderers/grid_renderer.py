@@ -661,13 +661,6 @@ class GridRendererUtils:
         scales = torch.cat(scales, dim=0)
         rots = torch.cat(rots, dim=0)
         opacities = torch.cat(opacities, dim=0)
-        # ams, pms, vms = [], [], []
-        # for am, pm, vm in zip(anchor_mask, primitive_mask, visibility_filter):
-        #     n_anchors = am.shape[0]
-        #     n_offsets = int(pm.shape[0] / am.sum())
-        #     anchor_indices = torch.nonzero(am, as_tuple=False).squeeze()
-        #     indices = torch.arange(n_anchors * n_offsets, device = am.device).reshape(n_anchors, -1)
-        #     primitive_indices = indices[pm].reshape(-1)
         anchor_mask = torch.cat([torch.nonzero(mask, as_tuple=False).squeeze() for mask in anchor_mask], dim=0)
         primitive_mask = torch.cat(primitive_mask, dim=0)
         visibility_filter = torch.cat(visibility_filter, dim=0)

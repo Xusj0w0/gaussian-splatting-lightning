@@ -140,47 +140,32 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             self.register_buffer(name, getattr(self, name))
 
     def update_state(self, outputs, n_anchors, n_offsets):
-        try:
-            viewspace_point_tensor = outputs["viewspace_points"]
-            anchor_mask, primitive_mask, visibility_filter = (
-                outputs["anchor_mask"],  # [N, ], mask anchor by pred level and pro-projection
-                outputs["primitive_mask"],  # [N'*n_offsets, ], mask primitives by opacities(>0), N'=anchor_mask.sum()
-                outputs["visibility_filter"],  # [M, ], mask primitives further by projection, M=primitive_mask.sum()
-            )
-            opacities: torch.Tensor = outputs["opacities"]
-            viewspace_points_grad_scale = outputs.get("viewspace_points_grad_scale", None)
+        viewspace_point_tensor = outputs["viewspace_points"]
+        anchor_mask, primitive_mask, visibility_filter = (
+            outputs["anchor_mask"],  # [N, ], mask anchor by pred level and pro-projection
+            outputs["primitive_mask"],  # [N'*n_offsets, ], mask primitives by opacities(>0), N'=anchor_mask.sum()
+            outputs["visibility_filter"],  # [M, ], mask primitives further by projection, M=primitive_mask.sum()
+        )
+        opacities: torch.Tensor = outputs["opacities"]
+        viewspace_points_grad_scale = outputs.get("viewspace_points_grad_scale", None)
 
-            indices = torch.arange(n_anchors * n_offsets, device=opacities.device)
-            indices = indices.reshape(-1, n_offsets)[anchor_mask].reshape(-1)
-            primitive_indices = indices[primitive_mask]
-            anchor_indices = (primitive_indices.float() / n_offsets).long().clamp(0, n_anchors - 1)
-            self._anchor_opacity_accum += scatter_sum(opacities, anchor_indices, dim=0, dim_size=n_anchors)
-            # self._anchor_denom += torch.bincount(anchor_indices, minlength=n_anchors).float() / self.batch_size
-            self._anchor_denom += (
-                scatter_sum(opacities.new_ones(opacities.shape), anchor_indices, dim=0, dim_size=n_anchors)
-                / self.batch_size
-            )
+        indices = torch.arange(n_anchors * n_offsets, device=opacities.device)
+        indices = indices.reshape(-1, n_offsets)[anchor_mask].reshape(-1)
+        primitive_indices = indices[primitive_mask]
+        anchor_indices = (primitive_indices.float() / n_offsets).long().clamp(0, n_anchors - 1)
+        self._anchor_opacity_accum += scatter_sum(opacities, anchor_indices, dim=0, dim_size=n_anchors)
+        self._anchor_denom += (
+            torch.bincount(anchor_mask.clamp(0, n_anchors - 1), minlength=n_anchors).float() / self.batch_size
+        )
 
-            # TODO: use packed=True, xys_grad is filtered in projection process
-            xys_grad = viewspace_point_tensor.absgrad if self.config.absgrad else viewspace_point_tensor.grad
-            xys_grad = xys_grad[..., :2]
-            if viewspace_points_grad_scale is not None:
-                xys_grad = xys_grad * viewspace_points_grad_scale
-            grad_norm = torch.norm(xys_grad, dim=-1)
-            proj_indices = primitive_indices[visibility_filter].clamp(0, n_anchors * n_offsets - 1)
-            self._primitive_gradient_accum += scatter_sum(grad_norm, proj_indices, dim=0, dim_size=n_anchors * n_offsets)
-            # self._primitive_denom += (
-            #     torch.bincount(projection_indices, minlength=n_anchors * n_offsets).float() / self.batch_size
-            # )
-            self._primitive_denom += (
-                scatter_sum(proj_indices.new_ones(proj_indices.shape), proj_indices, dim=0, dim_size=n_anchors * n_offsets)
-                / self.batch_size
-            )
-        except:
-            error_msg = {
-                "outputs": outputs, "n_anchors": n_anchors, "n_offsets": n_offsets, "grad": outputs["viewspace_points"].grad
-            }
-            torch.save(error_msg, "error_msg.pth")
+        xys_grad = viewspace_point_tensor.absgrad if self.config.absgrad else viewspace_point_tensor.grad
+        xys_grad = xys_grad[..., :2]
+        if viewspace_points_grad_scale is not None:
+            xys_grad = xys_grad * viewspace_points_grad_scale
+        grad_norm = torch.norm(xys_grad, dim=-1)
+        proj_indices = primitive_indices[visibility_filter].clamp(0, n_anchors * n_offsets - 1)
+        self._primitive_gradient_accum += scatter_sum(grad_norm, proj_indices, dim=0, dim_size=n_anchors * n_offsets)
+        self._primitive_denom += torch.bincount(proj_indices, minlength=n_anchors * n_offsets).float() / self.batch_size
 
     def _densify_and_prune(self, gaussian_model: GridGaussianModel, optimizers: List):
         n_offsets = gaussian_model.n_offsets
