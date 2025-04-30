@@ -6,8 +6,9 @@ from torchmetrics.image import StructuralSimilarityIndexMeasure
 
 from internal.cameras.cameras import Camera
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
-from myimpl.utils.dataset_utils import (DepthData, ExtraDataProcessorOutputs,
-                                        MaskData, SemanticData)
+from myimpl.utils.cameras import InstantiatedCameras
+from myimpl.utils.dataset_utils import DepthData, ExtraDataProcessorOutputs, MaskData, SemanticData
+from myimpl.utils.multiview_loss import MultiViewLoss
 
 __all__ = ["ScaffoldMetrics", "ScaffoldMetricsImpl"]
 
@@ -20,13 +21,17 @@ class ScaffoldMetrics(VanillaMetrics):
 
     lambda_normal: float = 0.015
 
-    normal_start_iter: int = 7_000
+    normal_from_iter: int = 7_000
 
     grad_weighted_normal: bool = True
 
     lambda_depth: "WeightScheduler" = field(default_factory=lambda: WeightScheduler())
 
     depth_loss_func: "DepthLossFunction" = field(default_factory=lambda: DepthLossFunction())
+
+    multiview_from_iter: int = 7_000
+
+    multiview_loss_func: MultiViewLoss = field(default_factory=lambda: MultiViewLoss())
 
     fused_ssim: bool = True
 
@@ -95,7 +100,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             metrics["loss_flatten"] = flatten_reg
             prog_bar["loss_flatten"] = False
 
-        if self.render_depth and self.config.lambda_normal > 0 and global_step >= self.config.normal_start_iter:
+        if self.render_depth and self.config.lambda_normal > 0 and global_step >= self.config.normal_from_iter:
             normal = outputs["normal"]
             normal_from_depth = outputs["normal_from_depth"]
 
@@ -130,6 +135,32 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             prog_bar["loss_depth"] = False
 
         return metrics, prog_bar
+
+    def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
+        cameras, (_, gt_image, _), extra_data = batch
+        if len(cameras.camera_center.shape) == 1:  # Camera
+            params = {}
+            for field in InstantiatedCameras.__dataclass_fields__:
+                val = getattr(cameras, field)
+                if isinstance(val, torch.Tensor):
+                    val = val.unsqueeze(0)
+                params[field] = val
+            cameras = InstantiatedCameras(**params)
+
+        metrics, pbar = self._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
+        if step + 1 >= self.config.multiview_from_iter:
+            pseudo_results = outputs.get("pseudo_results", None)
+            if pseudo_results is not None:
+                render_ps = pseudo_results["render"]
+                cameras_ps = pseudo_results["view"]
+                loss_multiview = self.config.multiview_loss_func(outputs, render_ps, cameras, cameras_ps, gt_image)
+                metrics["loss"] += loss_multiview["loss_multiview"]
+                metrics["loss_geom"] = loss_multiview["loss_geom"]
+                metrics["loss_ncc"] = loss_multiview["loss_ncc"]
+                pbar["loss_geom"] = False
+                pbar["loss_ncc"] = False
+
+        return metrics, pbar
 
 
 @dataclass

@@ -15,7 +15,8 @@ from internal.renderers import VanillaRenderer
 from internal.utils.gaussian_model_editor import MultipleGaussianModelEditor
 from internal.viewer.viewer import Viewer as _Viewer
 from myimpl.viewer.components.campose_controller import CamPoseController
-from myimpl.viewer.renderer import ViewerRenderer
+# from myimpl.viewer.renderer import ViewerRenderer
+from internal.viewer.renderer import ViewerRenderer
 
 __all__ = ["Viewer"]
 # fmt: off

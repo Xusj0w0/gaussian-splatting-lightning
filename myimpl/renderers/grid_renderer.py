@@ -8,25 +8,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
-from gsplat.cuda._wrapper import (fully_fused_projection, isect_offset_encode,
-                                  isect_tiles, rasterize_to_pixels,
-                                  spherical_harmonics)
+from gsplat.cuda._wrapper import (
+    fully_fused_projection,
+    isect_offset_encode,
+    isect_tiles,
+    rasterize_to_pixels,
+    spherical_harmonics,
+)
 from gsplat.utils import depth_to_normal, depth_to_points
 from pytorch3d.transforms import quaternion_multiply, quaternion_to_matrix
 
 from internal.cameras.cameras import Camera, Cameras
 from internal.optimizers import Adam
 from internal.renderers import RendererOutputInfo, RendererOutputTypes
-from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
-                                                   GSplatV1RendererModule,
-                                                   RuntimeOptions)
+from internal.renderers.gsplat_v1_renderer import GSplatV1, GSplatV1Renderer, GSplatV1RendererModule, RuntimeOptions
 from internal.schedulers import ExponentialDecayScheduler
-from myimpl.models.grid_gaussians import (GridGaussianModel,
-                                          LoDGridGaussianModel,
-                                          ScaffoldGaussianModelMixin)
-from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
-                                                  ImplicitLoDGridGaussianModel)
+from myimpl.models.grid_gaussians import GridGaussianModel, LoDGridGaussianModel, ScaffoldGaussianModelMixin
+from myimpl.models.implicit_grid_gaussian import ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel
 from myimpl.utils.cameras import InstantiatedCameras
+from myimpl.utils.multiview_loss import MultiViewLossUtils
 
 __all__ = ["GridGaussianRenderer", "GridGaussianRendererModule"]
 
@@ -51,12 +51,12 @@ class OptimizationConfig:
 class GridGaussianRenderer(GSplatV1Renderer):
     anti_aliased: bool = False
 
+    render_feature_size: int = 256
+    """short side of the feature map"""
+
     appearance_model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
 
     optimization: OptimizationConfig = field(default_factory=lambda: OptimizationConfig())
-
-    render_feature_size: int = 256
-    """short side of the feature map"""
 
     def instantiate(self, *args, **kwargs):
         return GridGaussianRendererModule(self)
@@ -64,6 +64,7 @@ class GridGaussianRenderer(GSplatV1Renderer):
 
 class GridGaussianRendererModule(GSplatV1RendererModule):
     _FEATURE_REQUIRED = 1 << 10
+    _PSEUDO_VIEW_REQUIRED = 1 << 11
     RENDER_TYPE_BITS = {
         **GSplatV1RendererModule.RENDER_TYPE_BITS,
         "acc_depth": GSplatV1RendererModule._ACC_DEPTH_REQUIRED,
@@ -71,6 +72,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         "normal": GSplatV1RendererModule._ACC_DEPTH_REQUIRED,
         "normal_from_depth": GSplatV1RendererModule._ACC_DEPTH_REQUIRED,  # all images rendered if depth is required
         "feature": _FEATURE_REQUIRED,
+        "pseudo_view": _PSEUDO_VIEW_REQUIRED,
     }
     config: GridGaussianRenderer
 
@@ -96,6 +98,8 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 num_embeddings=self.config.appearance_model.n_appearances,
                 embedding_dim=self.n_appearance_embedding_dims,
             )
+
+        self.multiview_from_iter = lightning_module.metric.config.multiview_from_iter
 
     def training_setup(self, module: lightning.LightningModule):
         appearance_embedding_optimizer, appearance_embedding_scheduler = [], []
@@ -123,6 +127,15 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 )
             )
         return appearance_embedding_optimizer, appearance_embedding_scheduler
+
+    def training_forward(self, step, module, viewpoint_camera, pc, bg_color, render_types=None, **kwargs):
+        output_pkg = self(viewpoint_camera, pc, bg_color, render_types=render_types, **kwargs)
+
+        render_type_bits = self.parse_render_types(render_types)
+        if self.is_type_required(render_type_bits, self._PSEUDO_VIEW_REQUIRED) and step + 1 >= self.multiview_from_iter:
+            render_pkg = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"])
+            output_pkg.update({"pseudo_result": {"view": render_pkg, "render": render_pkg}})
+        return output_pkg
 
     def forward(
         self,
@@ -196,15 +209,16 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         rgb = render[..., :3].permute(0, 3, 1, 2).squeeze(0)  # [C, 3, H, W] or [3, H, W]
         alpha = alpha.permute(0, 3, 1, 2).squeeze(0)  # [C, 1, H, W] or [1, H, W]
 
-        normal, inv_depth, acc_depth, normal_from_depth, pointmap = [None] * 5
+        normal, inv_depth, acc_depth, normal_from_depth, normal_local, plane_dist, pointmap = [None] * 7
         if self.is_type_required(render_type_bits, self._ACC_DEPTH_REQUIRED):
             c2w = viewmats.inverse()
             pgsr_maps = render[..., 3:]  # [C, H, W, 5]
             normal_local = F.normalize(pgsr_maps[..., :3], dim=-1)
+            plane_dist = pgsr_maps[..., 4:5]
 
             inv_depth = pgsr_maps[..., 3:4]  # [C, H, W, 1]
-            acc_depth = GridRendererUtils.calc_acc_depth(normal_local, pgsr_maps[..., 4:5], Ks=Ks)  # [C, H, W, 1]
-            normal = torch.einsum("...mk, ...ijk -> ...ijm", c2w[..., :3, :3], normal_local)  # [C, H, W, 3]
+            acc_depth = GridRendererUtils.calc_acc_depth(normal_local, plane_dist, Ks=Ks)  # [C, H, W, 1]
+            normal = torch.einsum("...hwd, ...md -> ...hwm", normal_local, c2w[..., :3, :3])  # [C, H, W, 3]
             pointmap, normal_from_depth = GridRendererUtils.depth_to_normal(depth=acc_depth, c2w=c2w, Ks=Ks)
 
             # change to CDHW mode, and maybe squeeze dim0
@@ -229,11 +243,13 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         output_pkg.update({"render": rgb, "alpha": alpha})
         output_pkg.update(
             {
+                # for viewer, [C, D, H, W] or [D, H, W]
                 "inverse_depth": inv_depth,
                 "acc_depth": acc_depth,
                 "normal": normal,
                 "normal_from_depth": normal_from_depth,
-                "pointmap": pointmap,
+                # used later, [C, H, W, D]
+                "plane_dist": plane_dist,
             }
         )
         output_pkg.update({"render_feature": render_feature})
@@ -266,7 +282,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         projections_list, isects_list, visibility_filter, preprocessed_camera = (
             GridRendererUtils.project_to_pixels_loop(
                 self,
-                projections_list,
+                properties_list,
                 viewpoint_camera,
                 scaling_modifier=scaling_modifier,
                 return_preprocessed_cam=True,
@@ -280,7 +296,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         input_opacities = means2d.new_zeros((0,))
         for cam_id in range(len(viewpoint_camera)):
             _, _, _, _, _opacities, anchor_mask, primitive_mask, _visibility_filter = properties_list[cam_id]
-            features = repeat(pc.get_anchor_features[anchor_mask], "n d -> n o d", o=pc.n_offsets)
+            features = repeat(pc.get_anchor_features[anchor_mask], "n d -> (n o) d", o=pc.n_offsets)
             features = features[primitive_mask]
             features = features[visibility_filter]
 
