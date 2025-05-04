@@ -23,7 +23,33 @@ class MultiViewLoss:
 
     check_plane_hypothesis: bool = True
 
-    def compute_multiview_loss(
+    def reproj_loss(
+        self,
+        output_pkg: Dict[str, torch.Tensor],
+        output_pkg_pseudo: Dict[str, torch.Tensor],
+        cameras: Cameras,
+        cameras_pseudo: Cameras,
+        rgb_gt: Optional[torch.Tensor] = None,
+    ):
+        n_cam = len(cameras)
+
+        rgb, depth, inv_depth = output_pkg["render"], output_pkg["inverse_depth"], output_pkg["acc_depth"]
+        rgb, depth, inv_depth = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb, depth, inv_depth]))
+        rgb_ps, depth_ps = output_pkg_pseudo["render"], output_pkg_pseudo["acc_depth"] # fmt: skip
+        rgb_ps, depth_ps = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb_ps, depth_ps]))
+
+        points3d = depth_to_points(
+            depth.permute(0, 2, 3, 1), cameras.world_to_camera.transpose(-1, -2).inverse(), MultiViewLossUtils.get_Ks(cameras), True
+        )
+        points2d, mask = MultiViewLossUtils.reproject(points3d, cameras_pseudo)
+        mask = mask & (inv_depth.squeeze(1) > 1e-2)
+        warp_rgb = F.grid_sample(rgb_ps, points2d, align_corners=True)
+
+        loss_multiview = (warp_rgb - rgb_gt).sum(dim=[-1, -2]) / (mask.sum(dim=[-1, -2]) + 1e-8)
+        loss_multiview = loss_multiview.mean(dim=0)
+        return {"loss_multiview": loss_multiview}
+
+    def patch_loss(
         self,
         output_pkg: Dict[str, torch.Tensor],
         output_pkg_pseudo: Dict[str, torch.Tensor],
@@ -41,9 +67,7 @@ class MultiViewLoss:
             output_pkg["plane_dist"],
         )
         rgb, depth, normal = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb, depth, normal]))
-        normal_local = torch.einsum(
-            "...dm, ...dhw -> ...hwm", cameras.world_to_camera[..., :3, :3], normal
-        )  # dm: w2c is transposed
+        normal_local = torch.einsum("...dm, ...dhw -> ...hwm", cameras.world_to_camera[..., :3, :3], normal)  # dm: w2c is transposed
         gray = MultiViewLossUtils.rgb2gray(rgb_gt if rgb_gt is not None else rgb)
 
         rgb_ps, depth_ps = output_pkg_pseudo["render"], output_pkg_pseudo["acc_depth"]
@@ -127,9 +151,7 @@ class MultiViewLoss:
         gray_patch_ref = F.grid_sample(
             gray_ref.unsqueeze(0), normalized_valid_pixels.view(1, -1, 1, 2), align_corners=True
         )  # [1, n_samples*ps*ps, 1, 1]
-        gray_patch_ref = gray_patch_ref.reshape(
-            self.patch_sample_num, self.patch_size, self.patch_size
-        )  # [n_samples, ps, ps]
+        gray_patch_ref = gray_patch_ref.reshape(self.patch_sample_num, self.patch_size, self.patch_size)  # [n_samples, ps, ps]
 
         # compute homography
         homograpy = MultiViewLossUtils.compute_homography(
@@ -142,9 +164,7 @@ class MultiViewLoss:
         normalized_pixels_warp = pixels_warp.clone()
         normalized_pixels_warp[..., 0] = normalized_pixels_warp[..., 0] / (float(W) / 2) - 1.0
         normalized_pixels_warp[..., 1] = normalized_pixels_warp[..., 1] / (float(H) / 2) - 1.0
-        gray_patch_qry = F.grid_sample(
-            gray_qry.unsqueeze(0), normalized_pixels_warp.reshape(1, -1, 1, 2), align_corners=True
-        )
+        gray_patch_qry = F.grid_sample(gray_qry.unsqueeze(0), normalized_pixels_warp.reshape(1, -1, 1, 2), align_corners=True)
         gray_patch_qry = gray_patch_qry.reshape(self.patch_sample_num, self.patch_size, self.patch_size)
         return gray_patch_ref, gray_patch_qry, valid
 
@@ -214,7 +234,7 @@ class MultiViewLossUtils:
         return Ks
 
     @classmethod
-    def reproject(cls, points3d: torch.Tensor, cameras: Cameras, return_ndc: bool = False):
+    def reproject(cls, points3d: torch.Tensor, cameras: Cameras):
         """
         :Args:
         - **points3d**: [C, H, W, 3], pointmap in world coordinates
@@ -244,20 +264,14 @@ class MultiViewLossUtils:
         points2d_ndc[..., 0] = points2d_ndc[..., 0] * 2.0 / cameras.width.unsqueeze(-1) - 1.0
         points2d_ndc[..., 1] = points2d_ndc[..., 1] * 2.0 / cameras.height.unsqueeze(-1) - 1.0
 
-        mask = (
-            (points3d_cam[..., -1] > 1e-2)
-            & torch.prod(points2d_ndc > -1, dim=-1)
-            & torch.prod(points2d_ndc < 1, dim=-1)
-        )
+        mask = (points3d_cam[..., -1] > 1e-2) & torch.prod(points2d_ndc > -1, dim=-1) & torch.prod(points2d_ndc < 1, dim=-1)
 
         points2d_ndc = points2d_ndc.reshape(n_cam, H, W, 2)
         mask = mask.reshape(n_cam, H, W)
         return points2d_ndc, mask
 
     @classmethod
-    def symmetric_transform(
-        cls, depth_ref: torch.Tensor, depth_qry: torch.Tensor, cameras_ref: Cameras, cameras_qry: Cameras
-    ):
+    def symmetric_transform(cls, depth_ref: torch.Tensor, depth_qry: torch.Tensor, cameras_ref: Cameras, cameras_qry: Cameras):
         """
         :Args:
         - **depth_ref**: [C, 1, H, W], depth map of reference view
@@ -282,9 +296,7 @@ class MultiViewLossUtils:
         qry_depth = F.grid_sample(depth_qry, ref_pts2d_in_qry, align_corners=True)  # [C, 1, H, W]
         qry_pts3d_in_qry = ref_pts2d_in_qry * qry_depth.permute(0, 2, 3, 1)  # [C, H, W, 2]
         qry_pts3d_in_qry *= (
-            torch.stack([torch.tan(cameras_qry.fov_x / 2), torch.tan(cameras_qry.fov_y / 2)], dim=-1)
-            .unsqueeze(1)
-            .unsqueeze(1)
+            torch.stack([torch.tan(cameras_qry.fov_x / 2), torch.tan(cameras_qry.fov_y / 2)], dim=-1).unsqueeze(1).unsqueeze(1)
         )
         qry_pts3d_in_qry = torch.cat([qry_pts3d_in_qry, qry_depth.permute(0, 2, 3, 1)], dim=-1)  # [C, H, W, 3]
         # transform to world
