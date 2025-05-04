@@ -8,23 +8,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
-from gsplat.cuda._wrapper import (
-    fully_fused_projection,
-    isect_offset_encode,
-    isect_tiles,
-    rasterize_to_pixels,
-    spherical_harmonics,
-)
+from gsplat.cuda._wrapper import (fully_fused_projection, isect_offset_encode,
+                                  isect_tiles, rasterize_to_pixels,
+                                  spherical_harmonics)
 from gsplat.utils import depth_to_normal, depth_to_points
 from pytorch3d.transforms import quaternion_multiply, quaternion_to_matrix
 
 from internal.cameras.cameras import Camera, Cameras
 from internal.optimizers import Adam
 from internal.renderers import RendererOutputInfo, RendererOutputTypes
-from internal.renderers.gsplat_v1_renderer import GSplatV1, GSplatV1Renderer, GSplatV1RendererModule, RuntimeOptions
+from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
+                                                   GSplatV1RendererModule,
+                                                   RuntimeOptions)
 from internal.schedulers import ExponentialDecayScheduler
-from myimpl.models.grid_gaussians import GridGaussianModel, LoDGridGaussianModel, ScaffoldGaussianModelMixin
-from myimpl.models.implicit_grid_gaussian import ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel
+from myimpl.models.grid_gaussians import (GridGaussianModel,
+                                          LoDGridGaussianModel,
+                                          ScaffoldGaussianModelMixin)
+from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
+                                                  ImplicitLoDGridGaussianModel)
 from myimpl.utils.cameras import InstantiatedCameras
 from myimpl.utils.multiview_loss import MultiViewLossUtils
 
@@ -99,7 +100,15 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 embedding_dim=self.n_appearance_embedding_dims,
             )
 
-        self.multiview_from_iter = lightning_module.metric.config.multiview_from_iter
+        if lightning_module is not None:
+            if "pseudo_view" in lightning_module.hparams["renderer_output_types"]:
+                self.multiview_from_iter = lightning_module.metric.config.multiview_from_iter
+                # compute disturb
+                from simple_knn._C import distCUDA2
+
+                cam_centers = lightning_module.trainer.datamodule.dataparser_outputs.train_set.cameras.camera_center
+                dist2 = torch.clamp_min(distCUDA2(cam_centers.cuda()), 0.0000001)
+                self.disturb = torch.median(torch.sqrt(dist2)) * 0.3 * math.sqrt(0.5)
 
     def training_setup(self, module: lightning.LightningModule):
         appearance_embedding_optimizer, appearance_embedding_scheduler = [], []
@@ -132,9 +141,13 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         output_pkg = self(viewpoint_camera, pc, bg_color, render_types=render_types, **kwargs)
 
         render_type_bits = self.parse_render_types(render_types)
-        if self.is_type_required(render_type_bits, self._PSEUDO_VIEW_REQUIRED) and step + 1 >= self.multiview_from_iter:
-            render_pkg = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"])
-            output_pkg.update({"pseudo_result": {"view": render_pkg, "render": render_pkg}})
+        if self.is_type_required(render_type_bits, self._PSEUDO_VIEW_REQUIRED) and step + 1 >= getattr(
+            self, "multiview_from_iter", 1 << 30
+        ):
+            viewpoint_camera = GridRendererUtils.batch_cameras(viewpoint_camera)
+            pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], self.disturb)
+            pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
+            output_pkg.update({"pseudo_results": {"view": pseudo_view, "render": pseudo_render}})
         return output_pkg
 
     def forward(
@@ -147,9 +160,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         **kwargs,
     ):
         render_type_bits = self.parse_render_types(render_types)
-
         viewpoint_camera = GridRendererUtils.batch_cameras(viewpoint_camera)
-
         # iterate camera to calculate primitives' properties and project to plane
         primitives = GridRendererUtils.prepare_primitives_loop(
             viewpoint_camera, pc, getattr(self, "appearance_embedding", None), **kwargs
@@ -209,17 +220,17 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         rgb = render[..., :3].permute(0, 3, 1, 2).squeeze(0)  # [C, 3, H, W] or [3, H, W]
         alpha = alpha.permute(0, 3, 1, 2).squeeze(0)  # [C, 1, H, W] or [1, H, W]
 
-        normal, inv_depth, acc_depth, normal_from_depth, normal_local, plane_dist, pointmap = [None] * 7
+        normal, inv_depth, acc_depth, normal_from_depth, normal_local, plane_dist = [None] * 6
         if self.is_type_required(render_type_bits, self._ACC_DEPTH_REQUIRED):
             c2w = viewmats.inverse()
             pgsr_maps = render[..., 3:]  # [C, H, W, 5]
-            normal_local = F.normalize(pgsr_maps[..., :3], dim=-1)
+            normal = F.normalize(pgsr_maps[..., :3], dim=-1)
+            inv_depth = pgsr_maps[..., 3:4]
             plane_dist = pgsr_maps[..., 4:5]
 
-            inv_depth = pgsr_maps[..., 3:4]  # [C, H, W, 1]
-            acc_depth = GridRendererUtils.calc_acc_depth(normal_local, plane_dist, Ks=Ks)  # [C, H, W, 1]
-            normal = torch.einsum("...hwd, ...md -> ...hwm", normal_local, c2w[..., :3, :3])  # [C, H, W, 3]
-            pointmap, normal_from_depth = GridRendererUtils.depth_to_normal(depth=acc_depth, c2w=c2w, Ks=Ks)
+            normal_local = torch.einsum("...md, ...hwd -> ...hwm", viewmats[..., :3, :3], normal)
+            acc_depth = GridRendererUtils.compute_acc_depth(normal_local, plane_dist, Ks=Ks)  # [C, H, W, 1]
+            normal_from_depth = depth_to_normal(depths=acc_depth, camtoworlds=c2w, Ks=Ks)
 
             # change to CDHW mode, and maybe squeeze dim0
             inv_depth = inv_depth.permute(0, 3, 1, 2).squeeze(0)
@@ -599,19 +610,19 @@ class GridRendererUtils:
 
         normal_global = cls.get_normals(xyz, scales, rotations, viewpoint_cam, **kwargs)
 
-        local_normal = normal_global @ viewpoint_cam.world_to_camera[:3, :3]
+        normal_local = normal_global @ viewpoint_cam.world_to_camera[:3, :3]
         pts_in_cam = xyz @ viewpoint_cam.world_to_camera[:3, :3] + viewpoint_cam.world_to_camera[-1, :3]
         depth_z = pts_in_cam[:, 2]
-        local_dist = (local_normal * pts_in_cam).sum(-1).abs()
+        local_dist = (normal_local * pts_in_cam).sum(-1).abs()
         depth_feats = xyz.new_zeros((xyz.shape[0], 5))
-        depth_feats[:, :3] = local_normal
+        depth_feats[:, :3] = normal_global
         depth_feats[:, 3] = 1.0 / (depth_z.clamp_min(0.0) + 1e-8)
         depth_feats[:, 4] = local_dist
 
         return depth_feats
 
     @classmethod
-    def calc_acc_depth(cls, normal_local: torch.Tensor, plane_dist: torch.Tensor, Ks: torch.Tensor):
+    def compute_acc_depth(cls, normal_local: torch.Tensor, plane_dist: torch.Tensor, Ks: torch.Tensor):
         """
         :Args:
         - **normal_local**: [C, H, W, 3]
@@ -649,25 +660,6 @@ class GridRendererUtils:
         neg_mask = (normals * gaussian_to_cam_global).sum(-1) < 0.0
         normals[neg_mask] = -normals[neg_mask]
         return normals
-
-    @classmethod
-    def depth_to_normal(cls, depth: torch.Tensor, c2w: torch.Tensor, Ks: torch.Tensor):
-        """
-        :Args:
-        - **depth**: [..., H, W, 1]
-        - **c2w**: [..., 4, 4]
-        - **Ks**: [..., 3, 3]
-
-        :Returns:
-        - **points**: [..., H, W, 3]
-        - **normal**: [..., H, W, 3]
-        """
-        points = depth_to_points(depth, c2w, Ks, True)  # [..., H, W, 3]
-        dx = torch.cat([points[..., 2:, 1:-1, :] - points[..., :-2, 1:-1, :]], dim=-3)  # [..., H-2, W-2, 3]
-        dy = torch.cat([points[..., 1:-1, 2:, :] - points[..., 1:-1, :-2, :]], dim=-2)  # [..., H-2, W-2, 3]
-        normals = F.normalize(torch.cross(dx, dy, dim=-1), dim=-1)  # [..., H-2, W-2, 3]
-        normals = F.pad(normals, (0, 0, 1, 1, 1, 1), value=0.0)  # [..., H, W, 3]
-        return points, normals
 
     @classmethod
     def get_implicit_properties(cls, properties_list: list):
