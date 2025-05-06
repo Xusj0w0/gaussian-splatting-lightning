@@ -188,7 +188,9 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             if pseudo_results is not None:
                 n_cam = len(cameras)
                 rgb, depth, inv_depth = outputs["render"], outputs["acc_depth"], outputs["inverse_depth"]
-                rgb, depth, inv_depth = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb, depth, inv_depth]))
+                rgb, depth, inv_depth = tuple(
+                    map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb, depth, inv_depth])
+                )
                 outputs_ps, cameras_ps = outputs["pseudo_results"]["render"], outputs["pseudo_results"]["view"]
                 rgb_ps, depth_ps = outputs_ps["render"], outputs_ps["acc_depth"] # fmt: skip
                 rgb_ps, depth_ps = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb_ps, depth_ps]))
@@ -202,13 +204,14 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 mask = mask & (inv_depth.squeeze(1) > 1e-2)
                 warp_rgb = F.grid_sample(rgb_ps, points2d, align_corners=True)
 
-                loss_multiview = ((warp_rgb - gt_image).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / (mask.sum(dim=[-1, -2]) + 1e-8)
+                loss_multiview = ((warp_rgb - rgb.clone().detach()).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / (
+                    mask.sum(dim=[-1, -2]) + 1e-8
+                )
                 loss_multiview = loss_multiview.mean(dim=0)
 
                 metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
                 metrics["loss_multiview"] = loss_multiview
                 pbar["loss_multiview"] = False
-                
 
         return metrics, pbar
 
@@ -248,7 +251,9 @@ class DepthLossFunction:
 
     mean_normalized: bool = False
 
-    def __call__(self, gt_depth: List[torch.Tensor], pred_depth: torch.Tensor, mask: Optional[List[torch.Tensor]] = None):
+    def __call__(
+        self, gt_depth: List[torch.Tensor], pred_depth: torch.Tensor, mask: Optional[List[torch.Tensor]] = None
+    ):
         loss = torch.tensor(0.0, device=pred_depth.device)
         cnt = 0
         for i in range(len(gt_depth)):
@@ -260,7 +265,9 @@ class DepthLossFunction:
                 cnt += 1
         return loss / cnt
 
-    def loss_iter(self, gt_depth: torch.Tensor, pred_depth: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def loss_iter(
+        self, gt_depth: torch.Tensor, pred_depth: torch.Tensor, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
 
         gt_depth = gt_depth.to(pred_depth)
         if self.normalized:

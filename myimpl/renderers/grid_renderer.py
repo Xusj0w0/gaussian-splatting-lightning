@@ -108,7 +108,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
 
                 cam_centers = lightning_module.trainer.datamodule.dataparser_outputs.train_set.cameras.camera_center
                 dist2 = torch.clamp_min(distCUDA2(cam_centers.cuda()), 0.0000001)
-                self.disturb = torch.median(torch.sqrt(dist2)) * 0.3 * math.sqrt(0.5)
+                self.disturb = torch.median(torch.sqrt(dist2)) * 0.5 * math.sqrt(0.5)
 
     def training_setup(self, module: lightning.LightningModule):
         appearance_embedding_optimizer, appearance_embedding_scheduler = [], []
@@ -146,6 +146,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         ):
             viewpoint_camera = GridRendererUtils.batch_cameras(viewpoint_camera)
             pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], self.disturb)
+            # pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], 0.0)
             pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
             output_pkg.update({"pseudo_results": {"view": pseudo_view, "render": pseudo_render}})
         return output_pkg
