@@ -21,6 +21,8 @@ from internal.renderers.gsplat_v1_renderer import (GSplatV1, GSplatV1Renderer,
                                                    GSplatV1RendererModule,
                                                    RuntimeOptions)
 from internal.schedulers import ExponentialDecayScheduler
+from myimpl.model_components.decoupled_appearance_model import \
+    DecoupledAppearanceModelConfig
 from myimpl.models.grid_gaussians import (GridGaussianModel,
                                           LoDGridGaussianModel,
                                           ScaffoldGaussianModelMixin)
@@ -30,11 +32,6 @@ from myimpl.utils.cameras import InstantiatedCameras
 from myimpl.utils.multiview_loss import MultiViewLossUtils
 
 __all__ = ["GridGaussianRenderer", "GridGaussianRendererModule"]
-
-
-@dataclass
-class AppearanceModelConfig:
-    n_appearances: int = -1
 
 
 @dataclass
@@ -49,6 +46,13 @@ class OptimizationConfig:
 
 
 @dataclass
+class AppearanceModelConfig:
+    n_appearances: int = -1
+
+    optimization: OptimizationConfig = field(default_factory=lambda: OptimizationConfig())
+
+
+@dataclass
 class GridGaussianRenderer(GSplatV1Renderer):
     anti_aliased: bool = False
 
@@ -57,7 +61,11 @@ class GridGaussianRenderer(GSplatV1Renderer):
 
     appearance_model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
 
-    optimization: OptimizationConfig = field(default_factory=lambda: OptimizationConfig())
+    use_decoupled_appearance: bool = True
+
+    decoupled_appearance_model: DecoupledAppearanceModelConfig = field(
+        default_factory=lambda: DecoupledAppearanceModelConfig()
+    )
 
     def instantiate(self, *args, **kwargs):
         return GridGaussianRendererModule(self)
@@ -78,8 +86,8 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
     config: GridGaussianRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
-        if self.config.optimization.max_steps is None:
-            self.config.optimization.max_steps = lightning_module.trainer.max_steps
+        if self.config.appearance_model.optimization.max_steps is None:
+            self.config.appearance_model.optimization.max_steps = lightning_module.trainer.max_steps
 
         self.n_appearance_embedding_dims = 0
         if lightning_module is not None:
@@ -100,6 +108,10 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 embedding_dim=self.n_appearance_embedding_dims,
             )
 
+        if stage == "fit" and self.config.use_decoupled_appearance:
+            self.decoupled_appearance_model = self.config.decoupled_appearance_model.instantiate()
+            self.decoupled_appearance_model.setup(stage, lightning_module)
+
         if lightning_module is not None:
             if "pseudo_view" in lightning_module.hparams["renderer_output_types"]:
                 self.multiview_from_iter = lightning_module.metric.config.multiview_from_iter
@@ -117,24 +129,30 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             appearance_embedding_optimizer = Adam().instantiate(
                 [{
                     "params": self.appearance_embedding.parameters(),
-                    "lr": self.config.optimization.appearance_embedding_lr_init,
+                    "lr": self.config.appearance_model.optimization.appearance_embedding_lr_init,
                     "name": "appearance_embedding",
                 }],
                 lr=0.0,
-                eps=self.config.optimization.eps,
+                eps=self.config.appearance_model.optimization.eps,
             )
             # fmt: on
             appearance_embedding_scheduler = (
                 ExponentialDecayScheduler(
-                    lr_final=self.config.optimization.appearance_embedding_lr_final,
-                    max_steps=self.config.optimization.max_steps,
+                    lr_final=self.config.appearance_model.optimization.appearance_embedding_lr_final,
+                    max_steps=self.config.appearance_model.optimization.max_steps,
                 )
                 .instantiate()
                 .get_scheduler(
                     optimizer=appearance_embedding_optimizer,
-                    lr_init=self.config.optimization.appearance_embedding_lr_init,
+                    lr_init=self.config.appearance_model.optimization.appearance_embedding_lr_init,
                 )
             )
+
+        if hasattr(self, "decoupled_appearance_model"):
+            optimizer, scheduler = self.decoupled_appearance_model.training_setup(module)
+            appearance_embedding_optimizer.append(optimizer)
+            appearance_embedding_scheduler.append(scheduler)
+
         return appearance_embedding_optimizer, appearance_embedding_scheduler
 
     def training_forward(self, step, module, viewpoint_camera, pc, bg_color, render_types=None, **kwargs):
@@ -145,9 +163,12 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             self, "multiview_from_iter", 1 << 30
         ):
             viewpoint_camera = GridRendererUtils.batch_cameras(viewpoint_camera)
-            pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], self.disturb)
-            # pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], 0.0)
-            pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
+            with torch.no_grad():
+                pseudo_view = MultiViewLossUtils.get_pseudo_view(
+                    viewpoint_camera, output_pkg["acc_depth"], self.disturb
+                )
+                # pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], 0.0)
+                pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
             output_pkg.update({"pseudo_results": {"view": pseudo_view, "render": pseudo_render}})
         return output_pkg
 
@@ -218,8 +239,13 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         )
 
         # gather render results
-        rgb = render[..., :3].permute(0, 3, 1, 2).squeeze(0)  # [C, 3, H, W] or [3, H, W]
-        alpha = alpha.permute(0, 3, 1, 2).squeeze(0)  # [C, 1, H, W] or [1, H, W]
+        rgb = render[..., :3].permute(0, 3, 1, 2)  # [C, 3, H, W]
+        alpha = alpha.permute(0, 3, 1, 2)  # [C, 1, H, W]
+        rgb_aug = None
+        if hasattr(self, "decoupled_appearance_model"):
+            rgb_aug = self.decoupled_appearance_model(rgb, viewpoint_camera.appearance_id)
+            rgb_aug = rgb_aug.squeeze(0)
+        rgb, alpha = rgb.squeeze(0), alpha.squeeze(0)
 
         normal, inv_depth, acc_depth, normal_from_depth, normal_local, plane_dist = [None] * 6
         if self.is_type_required(render_type_bits, self._ACC_DEPTH_REQUIRED):
@@ -269,6 +295,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         # implicit primitives
         output_pkg.update(GridRendererUtils.get_implicit_properties(properties_list))
         # viewspace grad
+        radii, *_ = zip(*projections_list)
         grad_scale = (
             torch.tensor([[image_width[0], image_height[0]]])
             .to(means2d)
@@ -278,6 +305,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             {
                 **GridRendererUtils.get_projections(projections),
                 "viewspace_points_grad_scale": grad_scale,
+                "radii": torch.cat(radii, dim=0),
             }
         )
 

@@ -31,8 +31,8 @@ class ScaffoldMetrics(VanillaMetrics):
 
     lambda_multiview: "WeightScheduler" = field(
         default_factory=lambda: {
-            "init": 0.1,
-            "final_factor": 10,
+            "init": 0.01,
+            "final_factor": 1.0,
             "mode": "linear",
         }
     )
@@ -88,7 +88,6 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         batch: Tuple[Camera, Tuple[str, torch.Tensor, Optional[torch.Tensor]], ExtraDataProcessorOutputs],
         outputs,
     ):
-        metrics, prog_bar = super()._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
         global_step = pl_module.trainer.global_step + 1
         _, image_info, extra_data = batch
         image_name, gt_image, mask = image_info
@@ -98,6 +97,23 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             gt_image = gt_image.unsqueeze(0)
             extra_data = {k: [v] for k, v in extra_data.items()}
 
+        # basic metrics
+        render = outputs["render"]
+        render_aug = outputs.get("render_aug", None)
+        if mask is not None:
+            _mask = mask.to(torch.uint8)
+            gt_image = gt_image * _mask
+            render = render * _mask
+            if render_aug is not None:
+                render_aug = render_aug * _mask
+        rgb_diff_loss = self.rgb_diff_loss_fn(render_aug or render, gt_image)
+        ssim_metric = self.ssim(render, gt_image)
+
+        loss = (1.0 - self.lambda_dssim) * rgb_diff_loss + self.lambda_dssim * (1.0 - ssim_metric)
+        metrics = {"loss": loss, "rgb_diff": rgb_diff_loss, "ssim": ssim_metric}
+        prog_bar = {"loss": True, "rgb_diff": True, "ssim": True}
+
+        # auxiliary losses
         if self.config.lambda_dreg > 0:
             scales = outputs["scales"]
             if scales.shape[0] > 0:
@@ -138,9 +154,11 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 grad = (grad - grad.min()) / (grad.max() - grad.min())
                 rgb_grad[..., 1:-1, 1:-1] = grad
                 conf = (1.0 - rgb_grad) ** 2
-                loss_normal = ((normal - normal_from_depth).abs().sum(1) * conf).mean()
+                # loss_normal = ((normal - normal_from_depth).abs().sum(1) * conf).mean()
+                loss_normal = ((1.0 - F.cosine_similarity(normal, normal_from_depth, dim=1)) * conf).mean()
             else:
-                loss_normal = ((normal - normal_from_depth).abs().sum(1)).mean()
+                # loss_normal = ((normal - normal_from_depth).abs().sum(1)).mean()
+                loss_normal = (1.0 - F.cosine_similarity(normal, normal_from_depth, dim=1)).mean()
 
             metrics["loss"] += self.config.lambda_normal * loss_normal
             metrics["loss_normal"] = loss_normal
@@ -158,6 +176,11 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         return metrics, prog_bar
 
     def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
+        metrics, pbar = self._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
+        if pl_module.trainer.datamodule.hparams["multiview"] is False:
+            setattr(pl_module, "_current_metrics", metrics)
+            return metrics, pbar
+
         cameras, (_, gt_image, _), extra_data = batch
         if len(cameras.camera_center.shape) == 1:  # Camera
             params = {}
@@ -168,7 +191,25 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 params[field] = val
             cameras = InstantiatedCameras(**params)
 
-        metrics, pbar = self._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
+        # if step >= self.config.multiview_from_iter:
+        #     rgb, depth = outputs["render"], outputs["acc_depth"]
+
+        #     gt_l, gt_r = gt_image[0::2, ...], gt_image[1::2, ...]
+        #     cam_l, cam_r = cameras[0::2], cameras[1::2]
+        #     rgb_l, rgb_r = rgb[0::2, ...], rgb[1::2, ...]
+        #     depth_l, depth_r = depth[0::2, ...], depth[1::2, ...]
+
+        #     view_l = (cam_l, gt_l, rgb_l, depth_l)
+        #     view_r = (cam_r, gt_r, rgb_r, depth_r)
+
+        #     loss_multiview_l = self.multiview_loss(view_l, view_r)
+        #     loss_multiview_r = self.multiview_loss(view_r, view_l)
+        #     loss_multiview = (loss_multiview_l + loss_multiview_r) / 2.0
+
+        #     metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
+        #     metrics["loss_multiview"] = loss_multiview
+        #     pbar["loss_multiview"] = False
+
         # patch based multiview loss
         # if step >= self.config.multiview_from_iter:
         #     pseudo_results = outputs.get("pseudo_results", None)
@@ -194,26 +235,45 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 outputs_ps, cameras_ps = outputs["pseudo_results"]["render"], outputs["pseudo_results"]["view"]
                 rgb_ps, depth_ps = outputs_ps["render"], outputs_ps["acc_depth"] # fmt: skip
                 rgb_ps, depth_ps = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb_ps, depth_ps]))
-                points3d = depth_to_points(
-                    depth.permute(0, 2, 3, 1),
-                    cameras.world_to_camera.transpose(-1, -2).inverse(),
-                    MultiViewLossUtils.get_Ks(cameras),
-                    True,
-                )
-                points2d, mask = MultiViewLossUtils.reproject(points3d, cameras_ps)
-                mask = mask & (inv_depth.squeeze(1) > 1e-2)
-                warp_rgb = F.grid_sample(rgb_ps, points2d, align_corners=True)
+                with torch.no_grad():
+                    points3d = depth_to_points(
+                        depth.permute(0, 2, 3, 1),
+                        cameras.world_to_camera.transpose(-1, -2).inverse(),
+                        MultiViewLossUtils.get_Ks(cameras),
+                        True,
+                    )
+                    points2d, mask = MultiViewLossUtils.reproject(points3d, cameras_ps)
+                    # mask = mask & (inv_depth.squeeze(1) > 1e-2)
+                    warp_rgb = F.grid_sample(rgb_ps, points2d, align_corners=True)
 
-                loss_multiview = ((warp_rgb - rgb.clone().detach()).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / (
-                    mask.sum(dim=[-1, -2]) + 1e-8
-                )
-                loss_multiview = loss_multiview.mean(dim=0)
+                rgb = rgb * mask
+                warp_rgb = warp_rgb * mask
+                loss_multiview = self.rgb_diff_loss_fn(rgb, warp_rgb)
+                # loss_multiview = ((rgb - warp_rgb).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / (
+                #     mask.sum(dim=[-1, -2]) + 1e-8
+                # )
+                # loss_multiview = loss_multiview.mean(dim=0)
 
                 metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
                 metrics["loss_multiview"] = loss_multiview
                 pbar["loss_multiview"] = False
 
+        setattr(pl_module, "_current_metrics", metrics)
         return metrics, pbar
+
+    def multiview_loss(self, view_l, view_r):
+        cam_l, gt_l, rgb_l, depth_l = view_l
+        cam_r, gt_r, rgb_r, depth_r = view_r
+        points3d = depth_to_points(
+            depth_l.permute(0, 2, 3, 1),
+            cam_l.world_to_camera.transpose(-1, -2).inverse(),
+            MultiViewLossUtils.get_Ks(cam_l),
+            True,
+        )
+        points2d, mask = MultiViewLossUtils.reproject(points3d, cam_r)
+        warp_rgb = F.grid_sample(gt_r, points2d, align_corners=True)
+        loss_multiview = (((warp_rgb - rgb_l)).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / mask.sum(dim=[-1, -2])
+        return loss_multiview.mean()
 
 
 @dataclass

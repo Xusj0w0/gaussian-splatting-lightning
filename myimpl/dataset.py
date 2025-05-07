@@ -155,9 +155,8 @@ class Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index) -> Tuple[Camera, Tuple, Any]:
         return self.image_cameras[index], self.get_image(index), self.get_extra_data(index)
-# fmt: on
 
-# fmt: off
+
 class CacheDataLoader(torch.utils.data.DataLoader):
     def __init__(
             self,
@@ -314,94 +313,8 @@ class CacheDataLoader(torch.utils.data.DataLoader):
 
                         for i in cached:
                             yield i
-# fmt: on
 
 
-class BatchedCacheDataLoader(CacheDataLoader):
-    def __init__(
-        self,
-        dataset: torch.utils.data.Dataset,
-        max_cache_num: int,
-        shuffle: bool,
-        seed: int = -1,
-        distributed: bool = False,
-        world_size: int = -1,
-        global_rank: int = -1,
-        async_caching: bool = False,
-        **kwargs,
-    ):
-        if "batch_size" in kwargs:
-            # image shape of cameras should be same
-            first_camera = dataset.image_cameras[0]
-            for camera in dataset.image_cameras:
-                if camera.width != first_camera.width or camera.height != first_camera.height:
-                    raise ValueError(
-                        f"Image shape of cameras should be same, but got {first_camera.width}x{first_camera.height} and {camera.width}x{camera.height}"
-                    )
-
-        super().__init__(
-            dataset, max_cache_num, shuffle, seed, distributed, world_size, global_rank, async_caching, **kwargs
-        )
-
-    def _cache_data(self, indices: list, pbar_leave: bool = True):
-        cached = super()._cache_data(indices, pbar_leave)
-        if self.batch_size <= 1:
-            return cached
-
-        batched = []
-        for st in range(0, len(cached), self.batch_size):
-            ed = min(st + self.batch_size, len(cached))
-            batch = cached[st:ed]
-
-            # ============= collate camera as cameras =============
-            cameras_params = {}
-            for field in InstantiatedCameras.__dataclass_fields__:
-                param_ls = [getattr(d[0], field) for d in batch]
-                if all([isinstance(param, torch.Tensor) for param in param_ls]):
-                    param = torch.stack(param_ls, dim=0)
-                else:
-                    param = None
-                cameras_params[field] = param
-            cameras = InstantiatedCameras(**cameras_params)
-            cameras.idx = cameras_params["idx"]
-
-            # ============= collate images =============
-            # collate image names as list
-            image_names = [d[1][0] for d in batch]
-            # collate images as torch.Tensor, same image shape ensured
-            images = torch.stack([d[1][1] for d in batch], dim=0)
-            # collate masks as torch.Tensor. if some Nones, use torch.ones; if all Nones, return None
-            first_mask, masks = None, []
-            for d in batch:
-                mask = d[1][2]
-                if mask is not None:
-                    first_mask = mask
-                masks.append(mask)
-            if first_mask is not None:
-                masks = torch.stack([mask or first_mask.new_zeros(first_mask.shape) for mask in masks])
-            else:
-                masks = None
-
-            image_info = (image_names, images, masks)
-
-            # ============= collate extra data as list =============
-            extra_data_list = [d[2] for d in batch]
-            extra_data = {}
-            for k in extra_data_list[0].keys():
-                _ls = [extra_data.get(k, None) for extra_data in extra_data_list]
-                extra_data[k] = _ls
-
-            batched.append((cameras, image_info, extra_data))
-
-        return batched
-
-    def __iter__(self):
-        for _ in range(self.batch_size):
-            for item in super().__iter__():
-                yield item
-
-
-# fmt: off
 class DataModule(LightningDataModule):
     def __init__(
             self,
@@ -427,6 +340,7 @@ class DataModule(LightningDataModule):
             async_caching: bool = False,
             allow_mask_interpolation: bool = False,
             batch_size: int = 1,  # add batch_size for training
+            multiview: bool = False,
     ) -> None:
         r"""Load dataset
 
@@ -606,6 +520,7 @@ class DataModule(LightningDataModule):
             global_rank=self.trainer.global_rank,
             async_caching=self.hparams["async_caching"],
             batch_size=self.hparams["batch_size"],
+            multiview=self.hparams["multiview"],
         )
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
@@ -659,3 +574,170 @@ class DataModule(LightningDataModule):
 
         return camera, (image_name, gt_image, masked_pixels), extra_data
 # fmt: on
+
+
+class BatchedCacheDataLoader(CacheDataLoader):
+    def __init__(
+        self,
+        dataset: Dataset,
+        max_cache_num: int,
+        shuffle: bool,
+        seed: int = -1,
+        distributed: bool = False,
+        world_size: int = -1,
+        global_rank: int = -1,
+        async_caching: bool = False,
+        **kwargs,
+    ):
+        if "batch_size" in kwargs or "multiview" in kwargs:
+            # image shape of cameras should be same
+            first_camera = dataset.image_cameras[0]
+            for camera in dataset.image_cameras:
+                if camera.width != first_camera.width or camera.height != first_camera.height:
+                    raise ValueError(
+                        f"Image shape of cameras should be same, but got {first_camera.width}x{first_camera.height} and {camera.width}x{camera.height}"
+                    )
+        if "multiview" in kwargs:
+            self.multiview: bool = kwargs.pop("multiview")
+            if self.multiview:
+                self.neighbor_indices = MultiviewUtils.get_valid_neighbors(dataset.image_set.cameras)
+
+        super().__init__(
+            dataset, max_cache_num, shuffle, seed, distributed, world_size, global_rank, async_caching, **kwargs
+        )
+
+    def _cache_data(self, indices: list, pbar_leave: bool = True):
+        if self.multiview:
+            _indices = []
+            for idx in indices:
+                _indices.append(idx)
+
+                neighbor_indices = self.neighbor_indices[idx]
+                if len(neighbor_indices) > 0:
+                    neighbor_idx = neighbor_indices[np.random.randint(0, len(neighbor_indices))]
+                else:
+                    neighbor_idx = idx
+                _indices.append(neighbor_idx)
+            indices = _indices
+
+        cached = super()._cache_data(indices, pbar_leave)
+        batch_size = self.batch_size * (2 if self.multiview else 1)
+        if batch_size <= 1:
+            return cached
+
+        batched = []
+        for st in range(0, len(cached), batch_size):
+            ed = min(st + batch_size, len(cached))
+            batch = cached[st:ed]
+
+            # ============= collate camera as cameras =============
+            cameras_params = {}
+            for field in InstantiatedCameras.__dataclass_fields__:
+                param_ls = [getattr(d[0], field) for d in batch]
+                if all([isinstance(param, torch.Tensor) for param in param_ls]):
+                    param = torch.stack(param_ls, dim=0)
+                else:
+                    param = None
+                cameras_params[field] = param
+            cameras = InstantiatedCameras(**cameras_params)
+            cameras.idx = cameras_params["idx"]
+
+            # ============= collate images =============
+            # collate image names as list
+            image_names = [d[1][0] for d in batch]
+            # collate images as torch.Tensor, same image shape ensured
+            images = torch.stack([d[1][1] for d in batch], dim=0)
+            # collate masks as torch.Tensor. if some Nones, use torch.ones; if all Nones, return None
+            first_mask, masks = None, []
+            for d in batch:
+                mask = d[1][2]
+                if mask is not None:
+                    first_mask = mask
+                masks.append(mask)
+            if first_mask is not None:
+                masks = torch.stack([mask or first_mask.new_zeros(first_mask.shape) for mask in masks])
+            else:
+                masks = None
+
+            image_info = (image_names, images, masks)
+
+            # ============= collate extra data as list =============
+            extra_data_list = [d[2] for d in batch]
+            extra_data = {}
+            for k in extra_data_list[0].keys():
+                _ls = [extra_data.get(k, None) for extra_data in extra_data_list]
+                extra_data[k] = _ls
+
+            batched.append((cameras, image_info, extra_data))
+
+        return batched
+
+    def __iter__(self):
+        for _ in range(self.batch_size):
+            for item in super().__iter__():
+                yield item
+
+
+class MultiviewUtils:
+    max_neighbor_num: int = 8
+    min_angle: float = math.pi / 6.0
+    min_relative_transition: float = 0.5
+    max_relative_transition: float = 8.0
+
+    @classmethod
+    def compute_relative_pose(cls, cameras: Cameras):
+        centers = cameras.camera_center
+        rel_dist = torch.norm(centers.unsqueeze(1) - centers.unsqueeze(0), dim=-1)
+
+        optical_axes = cameras.R[:, 2, :]
+        optical_axes = torch.clamp(optical_axes / optical_axes.norm(dim=-1, keepdim=True), -1.0, 1.0)
+        axes_dot = torch.einsum("ik, jk -> ij", optical_axes, optical_axes)
+        rel_angle = torch.acos(axes_dot)
+        return rel_dist, rel_angle
+
+    @classmethod
+    def top_k_cameras(
+        cls,
+        rel_dist: torch.Tensor,
+        rel_angle: torch.Tensor,
+        valid_indices: torch.Tensor,
+        max_neighbor_num: int,
+    ):
+        if len(valid_indices) == 0:
+            return []
+        else:
+            valid_dist = rel_dist[valid_indices]
+            valid_angle = rel_angle[valid_indices]
+            dist_rank = torch.argsort(valid_dist)
+            angle_rank = torch.argsort(valid_angle)
+            rank_score = torch.argsort(dist_rank + angle_rank)
+
+            top_k_indices = valid_indices[rank_score[:max_neighbor_num]]
+            neighbors = top_k_indices.tolist()
+        return neighbors
+
+    @classmethod
+    def get_valid_neighbors(cls, cameras: Cameras):
+        from simple_knn._C import distCUDA2
+
+        cam_centers = cameras.camera_center
+        dist2 = torch.clamp_min(distCUDA2(cam_centers.cuda()), 0.0000001)
+        median_cam_dist = torch.median(torch.sqrt(dist2)).item()
+        min_transition, max_transition = (
+            cls.min_relative_transition * median_cam_dist,
+            cls.max_relative_transition * median_cam_dist,
+        )
+
+        rel_dist, rel_angle = cls.compute_relative_pose(cameras)
+        n_cams = cameras.camera_center.shape[0]
+
+        keep_mask = ~torch.eye(n_cams, dtype=torch.bool).to(rel_dist.device)
+        keep_mask = keep_mask & (rel_angle < cls.min_angle) & (rel_dist > min_transition) & (rel_dist < max_transition)
+
+        valid_indices = []
+        for cam_id in range(n_cams):
+            idx = torch.where(keep_mask[cam_id])[0]
+            val_idx = cls.top_k_cameras(rel_dist[cam_id], rel_angle[cam_id], idx, cls.max_neighbor_num)
+            valid_indices.append(val_idx)
+
+        return valid_indices

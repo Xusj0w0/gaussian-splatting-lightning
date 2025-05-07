@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from functools import reduce
 from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
+import numpy as np
 import torch
 from einops import repeat
 from lightning import LightningModule
@@ -47,6 +48,8 @@ class GridGaussianDensityController(VanillaDensityController):
 
     scatter_mode: Literal["max", "mean"] = "max"
 
+    ssim_grad: bool = False
+
     def instantiate(self, *args, **kwargs):
         return GridGaussianDensityControllerImpl(self)
 
@@ -78,7 +81,10 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)
             self.register_buffer("_camera_infos", camera_infos)
 
-            self.batch_size = pl_module.trainer.datamodule.hparams["batch_size"]
+            bs = pl_module.trainer.datamodule.hparams.get("batch_size", 1)
+            mv = pl_module.trainer.datamodule.hparams.get("multiview", False)
+            # self.batch_size = bs * (2 if mv else 1)
+            self.batch_size = bs
 
     def _init_state(self, n_gaussians: int, device):
         pass
@@ -96,6 +102,16 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             return
 
         outputs["viewspace_points"].retain_grad()
+        if self.config.ssim_grad:
+            metric = getattr(pl_module, "_current_metrics", None)
+            if metric is not None:
+                grad = torch.autograd.grad(1.0 - metric["ssim"], outputs["viewspace_points"], retain_graph=True)[0]
+                scale = metric["loss"].item() / (1.0 - metric["ssim"].item() + 1e-8)
+                scale = np.clip(scale, 0.5, 2.0)
+                self._means2d_grad_ssim = grad * scale
+                # self._means2d_grad_ssim = grad
+            else:
+                self._means2d_grad_ssim = None
 
     def after_backward(
         self,
@@ -158,7 +174,22 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             torch.bincount(anchor_mask.clamp(0, n_anchors - 1), minlength=n_anchors).float() / self.batch_size
         )
 
-        xys_grad = viewspace_point_tensor.absgrad if self.config.absgrad else viewspace_point_tensor.grad
+        if self.config.absgrad:
+            xys_grad = viewspace_point_tensor.absgrad
+        elif self.config.ssim_grad and self._means2d_grad_ssim is not None:
+            # scale = (
+            #     torch.norm(viewspace_point_tensor.grad, dim=-1).mean() / (torch.norm(self._means2d_grad_ssim, dim=-1) + 1e-8).mean()
+            # ).item()
+            # scale = np.clip(scale, 0.5, 2.0)
+            scale = 1.0
+            xys_grad = self._means2d_grad_ssim * scale
+            top2_scales = torch.topk(outputs["scales"], k=2, dim=1).values
+            axis_ratio_filter = top2_scales[..., 0] < 10 * top2_scales[..., 1]
+            # xys_grad = xys_grad[axis_ratio_filter[visibility_filter]]
+            # visibility_filter = visibility_filter & axis_ratio_filter
+            xys_grad[~axis_ratio_filter[visibility_filter]] = 0.0
+        else:
+            xys_grad = viewspace_point_tensor.grad
         xys_grad = xys_grad[..., :2]
         if viewspace_points_grad_scale is not None:
             xys_grad = xys_grad * viewspace_points_grad_scale
