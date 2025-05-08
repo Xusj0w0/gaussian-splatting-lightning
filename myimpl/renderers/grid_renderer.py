@@ -29,7 +29,7 @@ from myimpl.models.grid_gaussians import (GridGaussianModel,
 from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
                                                   ImplicitLoDGridGaussianModel)
 from myimpl.utils.cameras import InstantiatedCameras
-from myimpl.utils.multiview_loss import MultiViewLossUtils
+from myimpl.utils.loss_utils import MultiView
 
 __all__ = ["GridGaussianRenderer", "GridGaussianRendererModule"]
 
@@ -120,7 +120,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
 
                 cam_centers = lightning_module.trainer.datamodule.dataparser_outputs.train_set.cameras.camera_center
                 dist2 = torch.clamp_min(distCUDA2(cam_centers.cuda()), 0.0000001)
-                self.disturb = torch.median(torch.sqrt(dist2)) * 0.5 * math.sqrt(0.5)
+                self.disturb = torch.median(torch.sqrt(dist2)) * 3.0  # * 0.5 * math.sqrt(0.5)
 
     def training_setup(self, module: lightning.LightningModule):
         appearance_embedding_optimizer, appearance_embedding_scheduler = [], []
@@ -163,12 +163,10 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             self, "multiview_from_iter", 1 << 30
         ):
             viewpoint_camera = GridRendererUtils.batch_cameras(viewpoint_camera)
-            with torch.no_grad():
-                pseudo_view = MultiViewLossUtils.get_pseudo_view(
-                    viewpoint_camera, output_pkg["acc_depth"], self.disturb
-                )
-                # pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], 0.0)
-                pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
+            # with torch.no_grad():
+            pseudo_view = MultiView.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], self.disturb)
+            # pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], 0.0)
+            pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
             output_pkg.update({"pseudo_results": {"view": pseudo_view, "render": pseudo_render}})
         return output_pkg
 

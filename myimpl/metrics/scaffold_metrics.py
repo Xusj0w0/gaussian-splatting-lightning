@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchvision
 from gsplat.utils import depth_to_points
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
@@ -12,7 +13,8 @@ from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
 from myimpl.utils.cameras import InstantiatedCameras
 from myimpl.utils.dataset_utils import (DepthData, ExtraDataProcessorOutputs,
                                         MaskData, SemanticData)
-from myimpl.utils.multiview_loss import MultiViewLoss, MultiViewLossUtils
+from myimpl.utils.loss_utils import (DepthRegularization, MultiView,
+                                     WeightScheduler)
 
 __all__ = ["ScaffoldMetrics", "ScaffoldMetricsImpl"]
 
@@ -27,7 +29,9 @@ class ScaffoldMetrics(VanillaMetrics):
 
     normal_from_iter: int = 7_000
 
-    grad_weighted_normal: bool = True
+    grad_weighted_normal: bool = False
+
+    multiview_from_iter: int = 7_000
 
     lambda_multiview: "WeightScheduler" = field(
         default_factory=lambda: {
@@ -37,9 +41,9 @@ class ScaffoldMetrics(VanillaMetrics):
         }
     )
 
-    multiview_from_iter: int = 7_000
+    lambda_pixshift: float = 0.03
 
-    multiview_loss_func: MultiViewLoss = field(default_factory=lambda: MultiViewLoss())
+    # multiview_loss_func: PatchMultiviewLoss = field(default_factory=lambda: PatchMultiviewLoss())
 
     # depth regularization
     lambda_depth: "WeightScheduler" = field(
@@ -50,7 +54,7 @@ class ScaffoldMetrics(VanillaMetrics):
         }
     )
 
-    depth_loss_func: "DepthLossFunction" = field(default_factory=lambda: DepthLossFunction())
+    depth_loss_func: "DepthRegularization" = field(default_factory=lambda: DepthRegularization())
 
     fused_ssim: bool = True
 
@@ -177,11 +181,16 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
 
     def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
         metrics, pbar = self._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
-        if pl_module.trainer.datamodule.hparams["multiview"] is False:
+        if (
+            pl_module.trainer.datamodule.hparams["multiview"] is False
+            and "pseudo_view" not in pl_module.hparams["renderer_output_types"]
+        ):
             setattr(pl_module, "_current_metrics", metrics)
             return metrics, pbar
 
-        cameras, (_, gt_image, _), extra_data = batch
+        cameras, (image_name, gt_image, _), extra_data = batch
+        if isinstance(image_name, str):
+            gt_image = gt_image.unsqueeze(0)
         if len(cameras.camera_center.shape) == 1:  # Camera
             params = {}
             for field in InstantiatedCameras.__dataclass_fields__:
@@ -233,30 +242,33 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                     map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb, depth, inv_depth])
                 )
                 outputs_ps, cameras_ps = outputs["pseudo_results"]["render"], outputs["pseudo_results"]["view"]
-                rgb_ps, depth_ps = outputs_ps["render"], outputs_ps["acc_depth"] # fmt: skip
+                rgb_ps, depth_ps = outputs_ps["render"], outputs_ps["acc_depth"]
                 rgb_ps, depth_ps = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb_ps, depth_ps]))
-                with torch.no_grad():
-                    points3d = depth_to_points(
-                        depth.permute(0, 2, 3, 1),
-                        cameras.world_to_camera.transpose(-1, -2).inverse(),
-                        MultiViewLossUtils.get_Ks(cameras),
-                        True,
-                    )
-                    points2d, mask = MultiViewLossUtils.reproject(points3d, cameras_ps)
-                    # mask = mask & (inv_depth.squeeze(1) > 1e-2)
-                    warp_rgb = F.grid_sample(rgb_ps, points2d, align_corners=True)
 
-                rgb = rgb * mask
-                warp_rgb = warp_rgb * mask
-                loss_multiview = self.rgb_diff_loss_fn(rgb, warp_rgb)
-                # loss_multiview = ((rgb - warp_rgb).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / (
-                #     mask.sum(dim=[-1, -2]) + 1e-8
-                # )
-                # loss_multiview = loss_multiview.mean(dim=0)
+                points2d_ndc, mask, pixel_shift = MultiView.symmetric_transformation(
+                    cameras, cameras_ps, depth, depth_ps
+                )
+                mask = mask & (pixel_shift < 1.0).clone().detach().bool()
+                # mask = mask.unsqueeze(1)
+                warp_rgb = F.grid_sample(rgb_ps, points2d_ndc, align_corners=True)
 
-                metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
+                num_pixels = mask.sum(dim=[-1, -2])
+                # loss_pixshift = (pixel_shift * mask).sum(dim=[-1, -2])
+                # loss_pixshift = (loss_pixshift / (num_pixels + 1e-8)).mean()
+                # loss_multiview = self.rgb_diff_loss_fn(gt_image * mask, warp_rgb)
+                loss_multiview = ((rgb - warp_rgb).abs().mean(dim=1) * mask).sum(dim=[-1, -2])
+                loss_multiview = (loss_multiview / (num_pixels + 1e-8)).mean()
+
+                # metrics["loss_pixshift"] = loss_pixshift
+                # pbar["loss_pixshift"] = False
                 metrics["loss_multiview"] = loss_multiview
                 pbar["loss_multiview"] = False
+                metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
+
+                if step % 2000 == 0:
+                    image_tensor = torch.stack([rgb_ps, warp_rgb, rgb], dim=1).reshape(-1, *rgb.shape[1:])
+                    grid = torchvision.utils.make_grid(image_tensor, 3)
+                    pl_module.log_image(tag="pseudo_view", image_tensor=grid)
 
         setattr(pl_module, "_current_metrics", metrics)
         return metrics, pbar
@@ -267,111 +279,10 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         points3d = depth_to_points(
             depth_l.permute(0, 2, 3, 1),
             cam_l.world_to_camera.transpose(-1, -2).inverse(),
-            MultiViewLossUtils.get_Ks(cam_l),
+            MultiView.get_Ks(cam_l),
             True,
         )
-        points2d, mask = MultiViewLossUtils.reproject(points3d, cam_r)
+        points2d, mask = MultiView.reproject(points3d, cam_r)
         warp_rgb = F.grid_sample(gt_r, points2d, align_corners=True)
         loss_multiview = (((warp_rgb - rgb_l)).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / mask.sum(dim=[-1, -2])
         return loss_multiview.mean()
-
-
-@dataclass
-class WeightScheduler:
-    init: float = 1.0
-
-    final_factor: float = 0.01
-
-    mode: Literal["log", "exp", "linear"] = "linear"
-
-    max_steps: Optional[int] = None
-
-    def __call__(self, step: int) -> float:
-        t = np.clip(step / self.max_steps, 0.0, 1.0)
-        if self.mode == "linear":
-            return self.init * (1.0 - t) + self.init * self.final_factor * t
-        elif self.mode == "exp":
-            return self.init * (self.final_factor**t)
-        elif self.mode == "log":
-            return np.exp(np.log(self.init) * (1.0 - t) + np.log(self.init * self.final_factor) * t)
-        else:
-            raise ValueError(f"unsupported mode")
-
-
-@dataclass
-class DepthLossFunction:
-    type: Literal["l1", "l2", "kl"] = "l1"
-    """Type of depth loss function."""
-
-    ssim_weight: float = 0.2
-
-    normalized: bool = False
-
-    median_normalized: bool = False
-
-    mean_normalized: bool = False
-
-    def __call__(
-        self, gt_depth: List[torch.Tensor], pred_depth: torch.Tensor, mask: Optional[List[torch.Tensor]] = None
-    ):
-        loss = torch.tensor(0.0, device=pred_depth.device)
-        cnt = 0
-        for i in range(len(gt_depth)):
-            gt = gt_depth[i]
-
-            if gt is not None:
-                msk = mask[i] if mask is not None else None
-                loss += self.loss_iter(gt, pred_depth[i], msk)
-                cnt += 1
-        return loss / cnt
-
-    def loss_iter(
-        self, gt_depth: torch.Tensor, pred_depth: torch.Tensor, mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-
-        gt_depth = gt_depth.to(pred_depth)
-        if self.normalized:
-            with torch.no_grad():
-                max_depth = pred_depth.max()
-                min_depth = pred_depth.min()
-            pred_depth = (pred_depth - min_depth) / (max_depth - min_depth + 1e-8)
-        elif self.median_normalized:
-            median = torch.median(gt_depth)
-            gt_depth = gt_depth / median
-            pred_depth = pred_depth / median
-        elif self.mean_normalized:
-            mean = torch.mean(gt_depth)
-            gt_depth = gt_depth / mean
-            pred_depth = pred_depth / mean
-
-        if mask is not None:
-            mask = mask.to(pred_depth)
-            gt_depth = gt_depth * mask
-            pred_depth = pred_depth * mask
-
-        return self.calc_loss(gt_depth, pred_depth)
-
-    def calc_loss(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if self.type == "l1":
-            return torch.abs(a - b).mean()
-        elif self.type == "l2":
-            return ((a - b) ** 2).mean()
-        elif self.type == "kl":
-            raise NotImplementedError("KL divergence loss is not implemented.")
-        else:
-            raise ValueError(f"Unknown depth loss type: {self.type}")
-
-    def _depth_l1_loss(self, a, b):
-        return torch.abs(a - b).mean()
-
-    def _depth_l1_and_ssim_loss(self, a, b):
-        l1_loss = self._depth_l1_loss(a, b)
-        ssim_metric = self.depth_ssim(a[None, None, ...], b[None, None, ...])
-
-        return (1 - self.ssim_weight) * l1_loss + self.ssim_weight * (1 - ssim_metric)
-
-    def _depth_l2_loss(self, a, b):
-        return ((a - b) ** 2).mean()
-
-    def _depth_kl_loss(self, a, b):
-        pass
