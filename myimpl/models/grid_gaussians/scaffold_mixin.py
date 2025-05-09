@@ -190,8 +190,8 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
                 output_activation="None",
             )
 
-        # for mlp in self.gaussian_mlps.values():
-        #     mlp.apply(init_weight)
+        for mlp in self.gaussian_mlps.values():
+            mlp.apply(init_weight)
 
     def get_extra_properties(
         self,

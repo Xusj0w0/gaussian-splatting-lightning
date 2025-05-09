@@ -14,9 +14,11 @@ __all__ = ["init_weight", "knn", "GridFactory"]
 
 def init_weight(module: nn.Module):
     if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d):
-        nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02, a=-0.04, b=0.04)
+        nn.init.kaiming_uniform_(module.weight, mode="fan_in", nonlinearity="relu")
         if module.bias is not None:
-            nn.init.trunc_normal_(module.bias, 0, 0.01, a=-0.04, b=0.04)
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(module.weight)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(module.bias, -bound, bound)
 
 
 def knn(x, K):
