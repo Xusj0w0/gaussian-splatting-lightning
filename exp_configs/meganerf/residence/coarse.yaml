@@ -16,13 +16,8 @@ model:
   - rgb
   - acc_depth
   gaussian:
-    class_path: myimpl.models.grid_adapter_gaussian.LoDGridAdapterGaussian
+    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
     init_args:
-      feature_adapter:
-        dim_out: 32
-        optimization:
-          lr_init: 2e-3
-          lr_final: 2e-5
       base_layer: 11
       max_level: 4
       start_level: 1
