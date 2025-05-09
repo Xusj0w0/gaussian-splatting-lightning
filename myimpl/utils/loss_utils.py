@@ -128,11 +128,11 @@ class MultiView:
         - **pseudo_cameras**: Cameras
         """
         n_cam = len(cameras)
-        # rel_pos = torch.normal(0.0, 1.0, (n_cam, 3)).to(cameras.R) * disturb
-        alpha = torch.rand((n_cam,)).to(cameras.R) * 2 * torch.pi
-        rel_pos = torch.zeros((n_cam, 3)).to(cameras.R)
-        rel_pos[:, 0] = disturb * torch.cos(alpha)
-        rel_pos[:, 2] = disturb * torch.sin(alpha)
+        rel_pos = torch.normal(0.0, 1.0, (n_cam, 3)).to(cameras.R) * disturb
+        # alpha = torch.rand((n_cam,)).to(cameras.R) * 2 * torch.pi
+        # rel_pos = torch.zeros((n_cam, 3)).to(cameras.R)
+        # rel_pos[:, 0] = disturb * torch.cos(alpha)
+        # rel_pos[:, 2] = disturb * torch.sin(alpha)
         rel_pos[:, 1] = 0.0  # don't disturb in y-axis
 
         median_depth = torch.median(depth.flatten(1), dim=-1, keepdim=True).values

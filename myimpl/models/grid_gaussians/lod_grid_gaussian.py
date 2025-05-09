@@ -149,9 +149,7 @@ class LoDGridGaussianModel(GridGaussianModelBase):
         pass
 
     def setup_from_pcd(self, xyz, rgb, cameras: Cameras, *args, **kwargs):
-        if int(GridFactory.chunk_size_max / xyz.shape[0]) < 64:
-            xyz = xyz[::16]
-            rgb = rgb[::16]
+        xyz, rgb = xyz[::16], rgb[::16]
         points = torch.from_numpy(xyz).to(cameras[0].device).float()
         cam_centers = cameras.camera_center
         camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)

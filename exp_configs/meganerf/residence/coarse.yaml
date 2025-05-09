@@ -2,21 +2,29 @@ max_steps: 60_000
 data:
   path: datasets/MegaNeRF/residence
   parser:
-    class_path: internal.dataparsers.Colmap
+    class_path: myimpl.dataparsers.regularization_dataparser.Regularization
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
       eval_list: datasets/MegaNeRF/residence/splits/val_images.txt
       down_sample_factor: 4
   train_max_num_images_to_cache: 64
-  num_workers: 2
+  num_workers: 4
   async_caching: true
 model:
+  renderer_output_types:
+  - rgb
+  - acc_depth
   gaussian:
-    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
+    class_path: myimpl.models.grid_adapter_gaussian.LoDGridAdapterGaussian
     init_args:
+      feature_adapter:
+        dim_out: 32
+        optimization:
+          lr_init: 2e-3
+          lr_final: 2e-5
       base_layer: 11
-      max_level: 3
+      max_level: 4
       optimization:
         means_lr_init: 0.0
         scales_lr: 5e-3
@@ -38,14 +46,15 @@ model:
     class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
   metric:
     class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
+    init_args:
+      normal_from_iter: 7_000
+      multiview_from_iter: 7_000
   density:
     class_path: myimpl.density_controllers.grid_density_controller.GridGaussianDensityController
     init_args:
       densify_until_iter: 40_000
 save_iterations:
-- 10_000
+- 7_000
 - 20_000
-- 30_000
 - 40_000
-- 50_000
 - 60_000

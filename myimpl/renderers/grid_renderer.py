@@ -61,7 +61,7 @@ class GridGaussianRenderer(GSplatV1Renderer):
 
     appearance_model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
 
-    use_decoupled_appearance: bool = True
+    use_decoupled_appearance: bool = False
 
     decoupled_appearance_model: DecoupledAppearanceModelConfig = field(
         default_factory=lambda: DecoupledAppearanceModelConfig()
@@ -120,7 +120,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
 
                 cam_centers = lightning_module.trainer.datamodule.dataparser_outputs.train_set.cameras.camera_center
                 dist2 = torch.clamp_min(distCUDA2(cam_centers.cuda()), 0.0000001)
-                self.disturb = torch.median(torch.sqrt(dist2)) * 3.0  # * 0.5 * math.sqrt(0.5)
+                self.disturb = torch.median(torch.sqrt(dist2)) * math.sqrt(0.5)  # * 0.5 * math.sqrt(0.5)
 
     def training_setup(self, module: lightning.LightningModule):
         appearance_embedding_optimizer, appearance_embedding_scheduler = [], []
@@ -371,6 +371,18 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             "normal_from_depth": RendererOutputInfo("normal_from_depth"),
             "feature": RendererOutputInfo("render_feature", type=RendererOutputTypes.FEATURE_MAP),
         }
+
+    def load_state_dict(self, state_dict, strict=True):
+        if "decoupled_appearance_model.embedding.weight" in state_dict:
+            if not hasattr(self, "decoupled_appearance_model"):
+                keys_removed = []
+                for k in state_dict:
+                    if k.startswith("decoupled_appearance_model"):
+                        keys_removed.append(k)
+                for k in keys_removed:
+                    del state_dict[k]
+
+        return super().load_state_dict(state_dict, strict)
 
 
 class GridRendererUtils:

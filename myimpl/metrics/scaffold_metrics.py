@@ -256,7 +256,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 # loss_pixshift = (pixel_shift * mask).sum(dim=[-1, -2])
                 # loss_pixshift = (loss_pixshift / (num_pixels + 1e-8)).mean()
                 # loss_multiview = self.rgb_diff_loss_fn(gt_image * mask, warp_rgb)
-                loss_multiview = ((rgb - warp_rgb).abs().mean(dim=1) * mask).sum(dim=[-1, -2])
+                loss_multiview = ((warp_rgb - rgb).abs().mean(dim=1) * mask).sum(dim=[-1, -2])
                 loss_multiview = (loss_multiview / (num_pixels + 1e-8)).mean()
 
                 # metrics["loss_pixshift"] = loss_pixshift
@@ -266,8 +266,8 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
 
                 if step % 2000 == 0:
-                    image_tensor = torch.stack([rgb_ps, warp_rgb, rgb], dim=1).reshape(-1, *rgb.shape[1:])
-                    grid = torchvision.utils.make_grid(image_tensor, 3)
+                    image_tensor = torch.stack([rgb_ps, warp_rgb, warp_rgb * mask.unsqueeze(1), gt_image], dim=1)
+                    grid = torchvision.utils.make_grid(image_tensor.reshape(-1, *rgb.shape[1:]), 4)
                     pl_module.log_image(tag="pseudo_view", image_tensor=grid)
 
         setattr(pl_module, "_current_metrics", metrics)

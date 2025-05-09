@@ -47,25 +47,29 @@ class GridFactory:
         fork: int = 2,
         use_chunk=True,
     ):
+        if not camera_infos.is_cuda:
+            _camera_infos = camera_infos.clone().cuda()
+        else:
+            _camera_infos = camera_infos
+
         num_points = len(points)
-        points = points.to(camera_infos).unsqueeze(0)
+        points = points.to(_camera_infos).unsqueeze(0)
 
         if use_chunk:
             # chunk cameras, since quantile is applied on points
             chunk_size = cls.max_power_of_2(cls.chunk_size_max // num_points)
-            dists_min = camera_infos.new_zeros((camera_infos.shape[0],))
-            dists_max = camera_infos.new_zeros((camera_infos.shape[0],))
-            for st in range(0, camera_infos.shape[0], chunk_size):
-                ed = min(st + chunk_size, camera_infos.shape[0])
-                _camera_infos = camera_infos[st:ed]
-                ds = (
-                    torch.sqrt(torch.sum((points - _camera_infos[:, :3].unsqueeze(1)) ** 2, dim=-1))
-                    * _camera_infos[:, -1:]
-                )
+            dists_min = _camera_infos.new_zeros((_camera_infos.shape[0],))
+            dists_max = _camera_infos.new_zeros((_camera_infos.shape[0],))
+            for st in range(0, _camera_infos.shape[0], chunk_size):
+                ed = min(st + chunk_size, _camera_infos.shape[0])
+                _cam = _camera_infos[st:ed]
+                ds = torch.sqrt(torch.sum((points - _cam[:, :3].unsqueeze(1)) ** 2, dim=-1)) * _cam[:, -1:]
                 dists_min[st:ed].copy_(torch.quantile(ds, dist_ratio, dim=-1))
                 dists_max[st:ed].copy_(torch.quantile(ds, 1 - dist_ratio, dim=-1))
         else:
-            ds = torch.sqrt(torch.sum((points - camera_infos[:, :3].unsqueeze(1)) ** 2, dim=-1)) * camera_infos[:, -1:]
+            ds = (
+                torch.sqrt(torch.sum((points - _camera_infos[:, :3].unsqueeze(1)) ** 2, dim=-1)) * _camera_infos[:, -1:]
+            )
             dists_min = torch.quantile(ds, dist_ratio, dim=-1)
             dists_max = torch.quantile(ds, 1 - dist_ratio, dim=-1)
 
@@ -73,7 +77,7 @@ class GridFactory:
         dist_max = torch.quantile(dists_max, 1 - dist_ratio)
 
         max_level = torch.round(torch.log2(dist_max / dist_min) / math.log2(float(fork))).int() + 1
-        return dist_max, max_level
+        return dist_max.to(camera_infos.device), max_level.to(camera_infos.device)
 
     @staticmethod
     def get_coarse_intervals(num_level: int, coarse_iter: int, coarse_factor: float):
@@ -152,27 +156,36 @@ class GridFactory:
         int_level_fn: Callable,
         use_chunk: bool = True,
     ) -> torch.Tensor:
+        if not anchors.is_cuda:
+            _anchors = anchors.clone().cuda()
+            _levels = levels.clone().cuda()
+            _cam_infos = cam_infos.clone().cuda()
+        else:
+            _anchors = anchors
+            _levels = levels
+            _cam_infos = cam_infos
+
         if use_chunk:
-            chunk_size = cls.max_power_of_2(cls.chunk_size_max // cam_infos.shape[0])
-            count = anchors.new_zeros((anchors.shape[0],))
-            for st in range(0, anchors.shape[0], chunk_size):
-                ed = min(st + chunk_size, anchors.shape[0])
-                _anchor, _level = anchors[st:ed].reshape(-1, 1, 3), levels[st:ed].reshape(-1, 1)
-                dists = torch.sqrt(torch.sum((_anchor - cam_infos[:, :3].reshape(-1, 3)) ** 2, dim=-1))
+            chunk_size = cls.max_power_of_2(cls.chunk_size_max // _cam_infos.shape[0])
+            count = _anchors.new_zeros((_anchors.shape[0],))
+            for st in range(0, _anchors.shape[0], chunk_size):
+                ed = min(st + chunk_size, _anchors.shape[0])
+                _anchor, _level = _anchors[st:ed].reshape(-1, 1, 3), _levels[st:ed].reshape(-1, 1)
+                dists = torch.sqrt(torch.sum((_anchor - _cam_infos[:, :3].reshape(-1, 3)) ** 2, dim=-1))
                 pred_level = predict_level_fn(dists)
                 int_level = int_level_fn(pred_level)
                 # if anchor level is lower than level pred by camera
                 # then the anchor is coarse and visible
                 count[st:ed].copy_((_level <= int_level).sum(dim=1).float())
-            count /= len(cam_infos)
+            count /= len(_cam_infos)
         else:
-            dists = torch.sqrt(torch.sum((_anchor - cam_infos[:, :3].reshape(-1, 3)) ** 2, dim=-1))
+            dists = torch.sqrt(torch.sum((_anchor - _cam_infos[:, :3].reshape(-1, 3)) ** 2, dim=-1))
             pred_level = predict_level_fn(dists)
             int_level = int_level_fn(pred_level)
-            count = (levels.reshape(-1, 1) <= int_level).sum(dim=-1).float()
+            count = (_levels.reshape(-1, 1) <= int_level).sum(dim=-1).float()
 
         mask = count > vis_thresh
-        return mask
+        return mask.to(cam_infos.device)
 
     @staticmethod
     def point_to_grid(
@@ -200,14 +213,20 @@ class GridFactory:
         grid2xyz: Callable,
         fork: int = 2,
     ) -> Tuple[torch.Tensor]:
-        positions = points.new_empty((0, 3))
+        if not points.is_cuda:
+            _points = points.clone().cuda()
+        else:
+            _points = points
+
+        positions = _points.new_empty((0, 3))
         levels = torch.empty(0).int()
+
         for cur_level in range(max_level):
             cur_size = voxel_size / (float(fork) ** cur_level)
 
-            _positions = cls.voxelize(points, cur_size, xyz2grid, grid2xyz)
+            _positions = cls.voxelize(_points, cur_size, xyz2grid, grid2xyz)
             _levels = levels.new_ones((_positions.shape[0],)) * cur_level
 
             positions = torch.cat((positions, _positions), dim=0)
             levels = torch.cat((levels, _levels), dim=0)
-        return positions, levels
+        return positions.to(points.device), levels
