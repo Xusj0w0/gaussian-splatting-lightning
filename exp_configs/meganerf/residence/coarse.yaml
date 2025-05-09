@@ -25,6 +25,7 @@ model:
           lr_final: 2e-5
       base_layer: 11
       max_level: 4
+      start_level: 1
       optimization:
         means_lr_init: 0.0
         scales_lr: 5e-3

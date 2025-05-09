@@ -695,19 +695,35 @@ class CandidateAnchors:
     def get_scaffold_properties(
         self, gaussian_model: ScaffoldGaussianModelMixin, scatter_mode: Literal["max", "mean"] = "max"
     ):
-        anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
-        # if anchors are added, shape of anchor_features may dismatch grad_mask
-        anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
+        # original implementation
+        # TODO: CUDA OOM!
+        # anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
+        # # if anchors are added, shape of anchor_features may dismatch grad_mask
+        # anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
 
-        # select value of anchor features among primitives that convert to same grid
+        # # select value of anchor features among primitives that convert to same grid
+        # if scatter_mode == "max":
+        #     anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
+        # elif scatter_mode == "mean":
+        #     anchor_features = scatter_mean(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)  # fmt: skip
+        # else:
+        #     raise ValueError(f"scatter_mode {scatter_mode} not supported")
+        # anchor_features = anchor_features[self.keep_mask]
+
+        keep_indices = torch.nonzero(self.keep_mask, as_tuple=True)[0]
+        is_keep = self.unique_indices.unsqueeze(1) == keep_indices.unsqueeze(0)
+        keep_mask, keep_idx_mapping = torch.nonzero(is_keep, as_tuple=True)
+
+        indices = (torch.nonzero(self.grad_mask, as_tuple=True)[0] / gaussian_model.n_offsets).long()[keep_mask]
+        anchor_features = gaussian_model.get_anchor_features[indices]
+        feat_dim = anchor_features.shape[-1]
+
         if scatter_mode == "max":
-            anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
+            anchor_features = scatter_max(anchor_features, keep_idx_mapping.unsqueeze(1).expand(-1, feat_dim), dim=0)[0]
         elif scatter_mode == "mean":
-            anchor_features = scatter_mean(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)  # fmt: skip
+            anchor_features = scatter_mean(anchor_features, keep_idx_mapping.unsqueeze(1).expand(-1, feat_dim), dim=0)
         else:
             raise ValueError(f"scatter_mode {scatter_mode} not supported")
-        anchor_features = anchor_features[self.keep_mask]
-
         return {"anchor_features": anchor_features}  # , "opacities": opacities}
 
     def get_all_properties(
