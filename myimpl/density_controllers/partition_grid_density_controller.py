@@ -1,12 +1,12 @@
 import os.path as osp
 from dataclasses import dataclass
 from functools import reduce
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import torch
 from einops import repeat
 from lightning import LightningModule
-from torch_scatter import scatter_max
+from torch_scatter import scatter_max, scatter_mean
 
 from internal.cameras.cameras import Cameras
 from internal.density_controllers.density_controller import \
@@ -123,11 +123,11 @@ class PartitionGridGaussianDensityControllerImpl(GridGaussianDensityControllerIm
     def _densify_and_prune(self, gaussian_model: GridGaussianModel, optimizers: List):
         n_offsets = gaussian_model.n_offsets
 
-        grads = self._primitive_gradient_accum / self._primitive_denom
-        grads[grads.isnan()] = 0.0
-        grads_norm = torch.norm(grads, dim=-1)
+        grads_norm = self._primitive_gradient_accum / self._primitive_denom
+        grads_norm[grads_norm.isnan()] = 0.0
+        # grads_norm = torch.norm(grads, dim=-1)
         denom_thresh = self.config.densification_interval * self.config.success_threshold * 0.5
-        primitive_mask = (self._primitive_denom > denom_thresh).squeeze(dim=1)
+        primitive_mask = self._primitive_denom > denom_thresh
 
         # densify anchors
         if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
@@ -144,8 +144,8 @@ class PartitionGridGaussianDensityControllerImpl(GridGaussianDensityControllerIm
 
         # prune anchors
         anchor_denom_thresh = self.config.densification_interval * self.config.success_threshold
-        opacity_mask = (self._anchor_opacity_accum < self.config.cull_opacity_threshold).squeeze(1)
-        denom_mask = (self._anchor_denom > anchor_denom_thresh).squeeze(1)
+        opacity_mask = self._anchor_opacity_accum < self.config.cull_opacity_threshold * self._anchor_denom
+        denom_mask = self._anchor_denom > anchor_denom_thresh
         remove_mask = torch.logical_and(denom_mask, opacity_mask)
         if hasattr(self, "partition_info") and self.config.prune_in_partition:
             is_in_partition = self.partition_info.is_in_partition(gaussian_model.get_xyz)
@@ -194,7 +194,8 @@ class GridDensityController:
             property_dict = filtered_res.get_all_properties(
                 gaussian_model,
                 gaussian_model.voxel_size,
-                partition_info if controller.config.densify_in_partition else None,
+                scatter_mode=controller.config.scatter_mode,
+                partition_info=partition_info if controller.config.densify_in_partition else None,
             )
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
@@ -245,7 +246,10 @@ class GridDensityController:
             if filtered_res.n_anchors > 0:
                 partition_info = getattr(controller, "partition_info", None)
                 property_dict = filtered_res.get_all_properties(
-                    gaussian_model, cur_size, partition_info if controller.config.densify_in_partition else None
+                    gaussian_model,
+                    cur_size,
+                    scatter_mode=controller.config.scatter_mode,
+                    partition_info=partition_info if controller.config.densify_in_partition else None,
                 )
                 new_properties = OptimizerManipulator.cat_tensors_to_properties(
                     property_dict, gaussian_model, optimizers
@@ -360,14 +364,20 @@ class LoDGridDensityController:
         partition_info = getattr(controller, "partition_info", None)
         if filtered_res.n_anchors > 0:
             property_dict = filtered_res.get_all_properties(
-                gaussian_model, cur_size, partition_info if controller.config.densify_in_partition else None
+                gaussian_model,
+                cur_size,
+                scatter_mode=controller.config.scatter_mode,
+                partition_info=partition_info if controller.config.densify_in_partition else None,
             )
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
 
         if filtered_res_ds.n_anchors > 0:
             property_dict = filtered_res_ds.get_all_properties(
-                gaussian_model, ds_size, partition_info if controller.config.densify_in_partition else None
+                gaussian_model,
+                ds_size,
+                scatter_mode=controller.config.scatter_mode,
+                partition_info=partition_info if controller.config.densify_in_partition else None,
             )
             new_properties = OptimizerManipulator.cat_tensors_to_properties(property_dict, gaussian_model, optimizers)
             gaussian_model.properties = new_properties
@@ -566,26 +576,48 @@ class CandidateAnchors:
         rotations[..., 0] = 1.0
         return {"means": self.anchors, "scales": scales, "offsets": offsets, "rotations": rotations}
 
-    def get_lod_grid_properties(self, gaussian_model: LoDGridGaussianModel, voxel_size: float):
+    def get_lod_grid_properties(self, gaussian_model: LoDGridGaussianModel):
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
         return {"levels": self.levels, "extra_levels": extra_levels}
 
-    def get_scaffold_properties(self, gaussian_model: ScaffoldGaussianModelMixin, voxel_size: float):
-        anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
-        # if anchors are added, shape of anchor_features may dismatch grad_mask
-        anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
-        # select max value of anchor features among primitives that convert to same grid
-        anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
-        anchor_features = anchor_features[self.keep_mask]
+    def get_scaffold_properties(
+        self, gaussian_model: ScaffoldGaussianModelMixin, scatter_mode: Literal["max", "mean"] = "max"
+    ):
+        # anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
+        # # if anchors are added, shape of anchor_features may dismatch grad_mask
+        # anchor_features = anchor_features[: len(self.grad_mask)][self.grad_mask]
+        # # select max value of anchor features among primitives that convert to same grid
+        # anchor_features = scatter_max(anchor_features, self.unique_indices.unsqueeze(1).expand(-1, anchor_features.shape[-1]), dim=0)[0]  # fmt: skip
+        # anchor_features = anchor_features[self.keep_mask]
 
+        keep_indices = torch.nonzero(self.keep_mask, as_tuple=True)[0]
+        is_keep = self.unique_indices.unsqueeze(1) == keep_indices.unsqueeze(0)
+        keep_mask, keep_idx_mapping = torch.nonzero(is_keep, as_tuple=True)
+
+        indices = (torch.nonzero(self.grad_mask, as_tuple=True)[0] / gaussian_model.n_offsets).long()[keep_mask]
+        anchor_features = gaussian_model.get_anchor_features[indices]
+        feat_dim = anchor_features.shape[-1]
+
+        if scatter_mode == "max":
+            anchor_features = scatter_max(anchor_features, keep_idx_mapping.unsqueeze(1).expand(-1, feat_dim), dim=0)[0]
+        elif scatter_mode == "mean":
+            anchor_features = scatter_mean(anchor_features, keep_idx_mapping.unsqueeze(1).expand(-1, feat_dim), dim=0)
+        else:
+            raise ValueError(f"scatter_mode {scatter_mode} not supported")
         return {"anchor_features": anchor_features}  # , "opacities": opacities}
 
-    def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size: float, partition_info: PartitionInfo):
+    def get_all_properties(
+        self,
+        gaussian_model: GridGaussianModel,
+        voxel_size: float,
+        scatter_mode: Literal["max", "mean"] = "max",
+        partition_info: PartitionInfo = None,
+    ):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)
         if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
-            property_dict.update(self.get_lod_grid_properties(gaussian_model, voxel_size))
+            property_dict.update(self.get_lod_grid_properties(gaussian_model))
         if getattr(gaussian_model, "gaussian_mlps", None) is not None:
-            property_dict.update(self.get_scaffold_properties(gaussian_model, voxel_size))
+            property_dict.update(self.get_scaffold_properties(gaussian_model, scatter_mode))
         # TODO: explicit model
 
         if partition_info is not None:

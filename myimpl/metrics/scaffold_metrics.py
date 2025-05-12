@@ -33,7 +33,7 @@ class ScaffoldMetrics(VanillaMetrics):
 
     multiview_from_iter: int = 7_000
 
-    lambda_multiview: "WeightScheduler" = field(
+    lambda_multiview: WeightScheduler = field(
         default_factory=lambda: {
             "init": 0.01,
             "final_factor": 1.0,
@@ -45,8 +45,17 @@ class ScaffoldMetrics(VanillaMetrics):
 
     # multiview_loss_func: PatchMultiviewLoss = field(default_factory=lambda: PatchMultiviewLoss())
 
+    # feature regularization
+    lambda_feature: WeightScheduler = field(
+        default_factory=lambda: {
+            "init": 0.5,
+            "final_factor": 0.01,
+            "mode": "linear",
+        }
+    )
+
     # depth regularization
-    lambda_depth: "WeightScheduler" = field(
+    lambda_depth: WeightScheduler = field(
         default_factory=lambda: {
             "init": 1.0,
             "final_factor": 0.01,
@@ -54,7 +63,7 @@ class ScaffoldMetrics(VanillaMetrics):
         }
     )
 
-    depth_loss_func: "DepthRegularization" = field(default_factory=lambda: DepthRegularization())
+    depth_loss_func: DepthRegularization = field(default_factory=lambda: DepthRegularization())
 
     fused_ssim: bool = True
 
@@ -167,6 +176,23 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             metrics["loss"] += self.config.lambda_normal * loss_normal
             metrics["loss_normal"] = loss_normal
             prog_bar["loss_normal"] = False
+
+        gt_feature = extra_data.get(SemanticData.KEY, None)
+        if gt_feature is not None and outputs.get("aligned_feature", None) is not None:
+            aligned_feature = outputs["aligned_feature"]
+            if len(aligned_feature.shape) == 3:
+                aligned_feature = aligned_feature.unsqueeze(0)
+
+            gt_feature = torch.stack(gt_feature, dim=0)
+            resized = F.interpolate(
+                gt_feature.permute(0, 3, 1, 2), size=aligned_feature.shape[-2:], mode="bilinear", align_corners=True
+            )
+            # loss_feature = 1.0 - F.cosine_similarity(aligned_feature, resized, dim=1).mean()
+            loss_feature = F.l1_loss(aligned_feature, resized)
+
+            metrics["loss"] += self.config.lambda_feature(global_step) * loss_feature
+            metrics["loss_feature"] = loss_feature
+            prog_bar["loss_feature"] = False
 
         gt_depth = extra_data.get(DepthData.KEY, None)
         if self.render_depth and gt_depth is not None:

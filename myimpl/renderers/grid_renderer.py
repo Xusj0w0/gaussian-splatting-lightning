@@ -263,16 +263,19 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             normal = normal.permute(0, 3, 1, 2).squeeze(0)
             normal_from_depth = normal_from_depth.permute(0, 3, 1, 2).squeeze(0)
 
-        render_feature = None
+        render_feature, aligned_feature = None, None
         if self.is_type_required(render_type_bits, self._FEATURE_REQUIRED):
             render_feature, _ = self.render_feature(
                 properties_list,
                 viewpoint_camera,
                 pc,
                 scaling_modifier=scaling_modifier,
+                short_length=self.config.render_feature_size,
                 **kwargs,
             )
+            aligned_feature = pc.get_feature_adapter(render_feature)
             render_feature = render_feature.permute(0, 3, 1, 2).squeeze(0)
+            aligned_feature = aligned_feature.permute(0, 3, 1, 2).squeeze(0)
 
         output_pkg = {}
         # render output
@@ -288,7 +291,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 "plane_dist": plane_dist,
             }
         )
-        output_pkg.update({"render_feature": render_feature})
+        output_pkg.update({"render_feature": render_feature, "aligned_feature": aligned_feature})
 
         # implicit primitives
         output_pkg.update(GridRendererUtils.get_implicit_properties(properties_list))
@@ -333,12 +336,19 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         input_features = means2d.new_zeros((0, pc.config.feature_dim))
         input_opacities = means2d.new_zeros((0,))
         for cam_id in range(len(viewpoint_camera)):
-            _, _, _, _, _opacities, anchor_mask, primitive_mask, _visibility_filter = properties_list[cam_id]
-            features = repeat(pc.get_anchor_features[anchor_mask], "n d -> (n o) d", o=pc.n_offsets)
-            features = features[primitive_mask]
-            features = features[visibility_filter]
+            _, _, _, _, _opacities, _anchor_mask, _primitive_mask, *_ = properties_list[cam_id]
+            _visibility_filter = visibility_filter[cam_id]
+            indices = torch.nonzero(_anchor_mask, as_tuple=True)[0]
+            indices = indices.reshape(-1, 1).expand(-1, pc.n_offsets).reshape(-1)
+            indices = indices[_primitive_mask]
+            indices = indices[_visibility_filter]
+            features = pc.get_anchor_features[indices]
 
-            input_opacities = torch.cat([input_opacities, _opacities[visibility_filter]], dim=0)
+            # features = repeat(pc.get_anchor_features[_anchor_mask], "n d -> (n o) d", o=pc.n_offsets)
+            # features = features[_primitive_mask]
+            # features = features[_visibility_filter]
+
+            input_opacities = torch.cat([input_opacities, _opacities[_visibility_filter]], dim=0)
             input_features = torch.cat([input_features, features], dim=0)
 
         render_feature, alpha = GridRendererUtils.rasterize_cat_projections(

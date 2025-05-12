@@ -8,16 +8,22 @@ data:
       eval_image_select_mode: list
       eval_list: datasets/MegaNeRF/residence/splits/val_images.txt
       down_sample_factor: 4
+      semantic_dir: extra/sam2_feature_dim32
   train_max_num_images_to_cache: 64
-  num_workers: 4
+  num_workers: 8
   async_caching: true
 model:
   renderer_output_types:
   - rgb
   - acc_depth
   gaussian:
-    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
+    class_path: myimpl.models.grid_adapter_gaussian.LoDGridAdapterGaussian
     init_args:
+      feature_adapter:
+        dim_out: 32
+        optimization:
+          lr_init: 2e-3
+          lr_final: 2e-5
       base_layer: 11
       max_level: 4
       start_level: 1

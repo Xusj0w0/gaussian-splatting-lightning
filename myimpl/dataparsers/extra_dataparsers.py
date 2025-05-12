@@ -35,7 +35,7 @@ class SemanticMixin:
         for image_set in [dataparser_outputs.train_set, dataparser_outputs.val_set]:
             for idx, image_name in enumerate(image_set.image_names):
                 semantic_file_path = osp.join(self.path, self.params.semantic_dir, f"{image_name}.npy")
-                if osp.exists(semantic_file_path) is False:
+                if osp.exists(semantic_file_path):
                     extra_data = SemanticData(semantic_file_path)
                 else:
                     extra_data = SemanticData(None)
@@ -129,7 +129,7 @@ class MaskMixin:
         for image_set in [dataparser_outputs.train_set, dataparser_outputs.val_set]:
             for idx, image_name in enumerate(image_set.image_names):
                 mask_file_path = osp.join(self.path, self.params.mask_dir, f"{image_name}.npy")
-                if osp.exists(mask_file_path) is False:
+                if osp.exists(mask_file_path):
                     extra_data = MaskData(
                         mask_file_path, (image_set.cameras[idx].height.item(), image_set.cameras[idx].width.item())
                     )

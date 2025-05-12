@@ -222,7 +222,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
 
         # prune anchors
         anchor_denom_thresh = self.config.densification_interval * self.config.success_threshold
-        opacity_mask = self._anchor_opacity_accum < self.config.cull_opacity_threshold
+        opacity_mask = self._anchor_opacity_accum < self.config.cull_opacity_threshold * self._anchor_denom
         denom_mask = self._anchor_denom > anchor_denom_thresh
         keep_mask = ~torch.logical_and(denom_mask, opacity_mask)
 

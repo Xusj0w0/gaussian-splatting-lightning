@@ -55,7 +55,7 @@ class Adapter(nn.Module):
         """
         x: [H, W, C]
         """
-        out = torch.einsum("h w c, c d -> h w d", x, self.weight)
+        out = torch.einsum("...hwc, cd -> ...hwd", x, self.weight)
         return out
 
     def training_setup(self):

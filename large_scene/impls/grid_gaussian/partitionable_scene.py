@@ -18,6 +18,7 @@ from gsplat.rasterize_to_weights import rasterize_to_weights
 from jsonargparse import ArgumentParser
 from matplotlib import pyplot as plt
 from shapely.geometry import Polygon, box
+from torch_scatter import scatter_sum
 from tqdm import tqdm
 
 import internal.utils.colmap as colmap_utils
@@ -98,6 +99,7 @@ class GridScene(PartitionableScene):
         self.partition_coordinates = partition_coordinates
 
         bg_color = ckpt["hyper_parameters"]["background_color"]
+        bg_color = torch.tensor(bg_color, dtype=torch.float32).to(device)
         self.gaussians_in_partitions = Partitioning.is_in_bounding_boxes(
             self.partition_coordinates.get_bounding_boxes(
                 self.scene_config.partition_bbox_enlarge_by_gaussian_assignment
@@ -245,23 +247,25 @@ class GridScene(PartitionableScene):
             (len(self.partition_coordinates), len(cameras)),
             dtype=torch.float32,
         )
+        n_anchors, n_offsets = self.gaussians_in_partitions.shape[1], coarse_model.n_offsets
         for camera_idx, camera in enumerate(tqdm(cameras)):
             camera.to_device(device)
             output_pkg = renderer(camera, coarse_model, bg_color, render_types=[])
-            means2d, conics, opacities, isects, anchor_mask, primitive_mask = (
+            means2d, conics, opacities, isects, anchor_mask, primitive_mask, visibility_filter = (
                 output_pkg["viewspace_points"],
                 output_pkg["conics"],
                 output_pkg["opacities"],
                 output_pkg["isects"],
                 output_pkg["anchor_mask"],
                 output_pkg["primitive_mask"],
+                output_pkg["visibility_filter"],
             )
-            _, _, flatten_ids, isect_offsets = isects
+            isect_offsets, flatten_ids = isects
             image_width, image_height = int(camera.width.item()), int(camera.height.item())
             _, _, blend_weights, _ = rasterize_to_weights(
                 means2d=means2d.unsqueeze(0),
-                conics=conics,
-                opacities=opacities.unsqueeze(0).contiguous(),
+                conics=conics.unsqueeze(0),
+                opacities=opacities[visibility_filter].unsqueeze(0).contiguous(),
                 image_width=image_width,
                 image_height=image_height,
                 tile_size=renderer.config.block_size,
@@ -270,14 +274,26 @@ class GridScene(PartitionableScene):
                 pixel_weights=means2d.new_zeros((1, image_height, image_width)),
             )
 
+            blend_weights = blend_weights.squeeze(0)
+            # indices = torch.arange(n_anchors, device=device)
+            indices = anchor_mask.reshape(-1, 1).expand(-1, coarse_model.n_offsets).reshape(-1)
+            indices = indices[primitive_mask][visibility_filter]
+            anchor_weights = scatter_sum(blend_weights, indices, dim=0, dim_size=self.gaussians_in_partitions.shape[1])
+
+            # primitive_weights = blend_weights.new_zeros((n_anchors * n_offsets,))
+            # _primitive_weights = blend_weights.new_zeros((visibility_filter.shape[0],))
+            # _primitive_weights[visibility_filter] = blend_weights
+            # primitive_weights[primitive_mask] = _primitive_weights
+            # anchor_weights = blend_weights.new_zeros((self.gaussians_in_partitions.shape[1],))
+
             for partition_idx in range(len(self.partition_coordinates)):
                 is_in_partition = self.gaussians_in_partitions[partition_idx].to(device)
 
-                primitive_weights = blend_weights.new_zeros((anchor_mask.sum() * coarse_model.n_offsets,))
-                primitive_weights[primitive_mask] = blend_weights
-                anchor_primitive_weights = blend_weights.new_zeros((anchor_mask.shape[0], coarse_model.n_offsets))
-                anchor_primitive_weights[anchor_mask] = primitive_weights.reshape(-1, coarse_model.n_offsets)
-                anchor_weights = anchor_primitive_weights.sum(-1)
+                # primitive_weights = blend_weights.new_zeros((anchor_mask.shape[0] * coarse_model.n_offsets,))
+                # primitive_weights[primitive_mask] = blend_weights
+                # anchor_primitive_weights = blend_weights.new_zeros((anchor_mask.shape[0], coarse_model.n_offsets))
+                # anchor_primitive_weights[anchor_mask] = primitive_weights.reshape(-1, coarse_model.n_offsets)
+                # anchor_weights = anchor_primitive_weights.sum(-1)
 
                 weights_in_partition = anchor_weights[is_in_partition].sum()
                 weights_total = blend_weights.sum()

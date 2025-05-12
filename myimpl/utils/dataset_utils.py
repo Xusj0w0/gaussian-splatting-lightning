@@ -112,7 +112,7 @@ class SemanticDataProcessor(NumpyDataProcessor):
     KEY: str = "semantic"
 
     def __call__(self, extra_data: SemanticData, *args, **kwargs):
-        super().__call__(extra_data)
+        return super().__call__(extra_data)
 
 
 class DepthData(NumpyData):
