@@ -18,6 +18,7 @@ from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.renderers import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
+from internal.utils.visualizers import Visualizers
 from utils.common import AsyncImageSaver
 
 
@@ -44,6 +45,7 @@ def validate(dataloader, gaussian_model, renderer, metric_calculator, image_save
                 camera,
                 gaussian_model,
                 bg_color,
+                render_types=["rgb", "feature"],
             )
 
             all_metrics[name], (predicted, gt) = metric_calculator(outputs, (camera, (name, image, mask), extra_data))
@@ -182,13 +184,21 @@ def main():
         montage = torch.cat([render, gt], dim=1)
         diff = torch.abs(render.float() - gt.float())
 
-        for d in ["render", "gt", "montage", "diff"]:
+        # feature
+        feature = predicts.get("aligned_feature", None)
+        if feature is None:
+            feature = predicts.get("render_feature", None)
+        feature_im = Visualizers.pca_colormap(feature.contiguous()) * 255.0
+        feature_im = feature_im.permute(1, 2, 0).to(torch.uint8).cpu()
+
+        for d in ["render", "gt", "montage", "diff", "feature"]:
             os.makedirs(os.path.join(output_dir, d), exist_ok=True)
 
         async_image_saver.save(render.numpy(), os.path.join(output_dir, "render", "{}.png".format(batch[1][0])))
         async_image_saver.save(gt.numpy(), os.path.join(output_dir, "gt", "{}.png".format(batch[1][0])))
         async_image_saver.save(montage.numpy(), os.path.join(output_dir, "montage", "{}.png".format(batch[1][0])))
         async_image_saver.save(diff.numpy(), os.path.join(output_dir, "diff", "{}.png".format(batch[1][0])))
+        async_image_saver.save(feature_im.numpy(), os.path.join(output_dir, "feature", "{}.png".format(batch[1][0])))
 
     try:
         metrics = validate(dataloader, gaussian_model, renderer, get_metric_calculator(device), image_saver)

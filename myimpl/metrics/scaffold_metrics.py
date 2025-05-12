@@ -10,6 +10,7 @@ from torchmetrics.image import StructuralSimilarityIndexMeasure
 
 from internal.cameras.cameras import Camera
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
+from internal.utils.visualizers import Visualizers
 from myimpl.utils.cameras import InstantiatedCameras
 from myimpl.utils.dataset_utils import (DepthData, ExtraDataProcessorOutputs,
                                         MaskData, SemanticData)
@@ -40,6 +41,8 @@ class ScaffoldMetrics(VanillaMetrics):
             "mode": "linear",
         }
     )
+
+    lambda_multiview_feature: float = 0.0
 
     lambda_pixshift: float = 0.03
 
@@ -226,75 +229,73 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 params[field] = val
             cameras = InstantiatedCameras(**params)
 
-        # if step >= self.config.multiview_from_iter:
-        #     rgb, depth = outputs["render"], outputs["acc_depth"]
-
-        #     gt_l, gt_r = gt_image[0::2, ...], gt_image[1::2, ...]
-        #     cam_l, cam_r = cameras[0::2], cameras[1::2]
-        #     rgb_l, rgb_r = rgb[0::2, ...], rgb[1::2, ...]
-        #     depth_l, depth_r = depth[0::2, ...], depth[1::2, ...]
-
-        #     view_l = (cam_l, gt_l, rgb_l, depth_l)
-        #     view_r = (cam_r, gt_r, rgb_r, depth_r)
-
-        #     loss_multiview_l = self.multiview_loss(view_l, view_r)
-        #     loss_multiview_r = self.multiview_loss(view_r, view_l)
-        #     loss_multiview = (loss_multiview_l + loss_multiview_r) / 2.0
-
-        #     metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
-        #     metrics["loss_multiview"] = loss_multiview
-        #     pbar["loss_multiview"] = False
-
-        # patch based multiview loss
-        # if step >= self.config.multiview_from_iter:
-        #     pseudo_results = outputs.get("pseudo_results", None)
-        #     if pseudo_results is not None:
-        #         render_ps = pseudo_results["render"]
-        #         cameras_ps = pseudo_results["view"]
-        #         loss_multiview_dict = self.config.multiview_loss_func.patch_loss(outputs, render_ps, cameras, cameras_ps, gt_image)
-        #         loss_multiview = loss_multiview_dict.pop("loss_multiview", 0.0)
-        #         metrics["loss"] += loss_multiview
-
-        #         for k, v in loss_multiview_dict:
-        #             metrics[k] = v
-        #             pbar[k] = False
-
         if step >= self.config.multiview_from_iter:
             pseudo_results = outputs.get("pseudo_results", None)
             if pseudo_results is not None:
                 n_cam = len(cameras)
                 rgb, depth, inv_depth = outputs["render"], outputs["acc_depth"], outputs["inverse_depth"]
-                rgb, depth, inv_depth = tuple(
-                    map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb, depth, inv_depth])
-                )
+                rgb, depth, inv_depth = tuple(map(lambda x: self.preprocess_image(x, n_cam), [rgb, depth, inv_depth]))
+
                 outputs_ps, cameras_ps = outputs["pseudo_results"]["render"], outputs["pseudo_results"]["view"]
                 rgb_ps, depth_ps = outputs_ps["render"], outputs_ps["acc_depth"]
-                rgb_ps, depth_ps = tuple(map(lambda x: x.unsqueeze(0) if n_cam == 1 else x, [rgb_ps, depth_ps]))
+                rgb_ps, depth_ps = tuple(map(lambda x: self.preprocess_image(x, n_cam), [rgb_ps, depth_ps]))
 
+                # calculate pixel shift
                 points2d_ndc, mask, pixel_shift = MultiView.symmetric_transformation(
                     cameras, cameras_ps, depth, depth_ps
                 )
                 mask = mask & (pixel_shift < 1.0).clone().detach().bool()
-                # mask = mask.unsqueeze(1)
                 warp_rgb = F.grid_sample(rgb_ps, points2d_ndc, align_corners=True)
 
                 num_pixels = mask.sum(dim=[-1, -2])
-                # loss_pixshift = (pixel_shift * mask).sum(dim=[-1, -2])
-                # loss_pixshift = (loss_pixshift / (num_pixels + 1e-8)).mean()
-                # loss_multiview = self.rgb_diff_loss_fn(gt_image * mask, warp_rgb)
                 loss_multiview = ((warp_rgb - rgb).abs().mean(dim=1) * mask).sum(dim=[-1, -2])
                 loss_multiview = (loss_multiview / (num_pixels + 1e-8)).mean()
 
-                # metrics["loss_pixshift"] = loss_pixshift
-                # pbar["loss_pixshift"] = False
                 metrics["loss_multiview"] = loss_multiview
                 pbar["loss_multiview"] = False
                 metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
+
+                feature = outputs.get("render_feature", None)
+                if self.config.lambda_multiview_feature > 0 and feature is not None:
+                    featcam = outputs["feature_view"]
+                    feature_ps, featcam_ps = outputs_ps["render_feature"], outputs_ps["feature_view"]
+                    feature, feature_ps = tuple(map(lambda x: self.preprocess_image(x, n_cam), [feature, feature_ps]))
+                    _depth = F.interpolate(depth, size=feature.shape[-2:], mode="bilinear", align_corners=True)
+                    points3d = depth_to_points(
+                        _depth.permute(0, 2, 3, 1),
+                        featcam.world_to_camera.transpose(-1, -2).inverse(),
+                        MultiView.get_Ks(featcam),
+                        True,
+                    )
+                    _, points2d_ndc, feature_mask = MultiView.reproject(points3d, featcam_ps)
+                    warp_feature = F.grid_sample(feature_ps, points2d_ndc, align_corners=True)
+                    loss_multiview_feat = ((1 - F.cosine_similarity(warp_feature, feature, dim=1)) * feature_mask).sum(dim=[-1, -2]) # fmt: skip
+                    loss_multiview_feat = (loss_multiview_feat / (feature_mask.sum(dim=[-1, -2]) + 1e-8)).mean()
+
+                    metrics["loss_multiview_feature"] = loss_multiview_feat
+                    pbar["loss_multiview_feature"] = False
+                    metrics["loss"] += self.config.lambda_multiview_feature * loss_multiview_feat
 
                 if step % 2000 == 0:
                     image_tensor = torch.stack([rgb_ps, warp_rgb, warp_rgb * mask.unsqueeze(1), gt_image], dim=1)
                     grid = torchvision.utils.make_grid(image_tensor.reshape(-1, *rgb.shape[1:]), 4)
                     pl_module.log_image(tag="pseudo_view", image_tensor=grid)
+
+                    if self.config.lambda_multiview_feature > 0:
+                        feature_ps_im = torch.stack(
+                            [Visualizers.pca_colormap(feature_ps[i].contiguous()) for i in range(n_cam)], dim=0
+                        )
+                        warp_feature_im = torch.stack(
+                            [Visualizers.pca_colormap(warp_feature[i].contiguous()) for i in range(n_cam)], dim=0
+                        )
+                        feature_im = torch.stack(
+                            [Visualizers.pca_colormap(feature[i].contiguous()) for i in range(n_cam)], dim=0
+                        )
+                        image_tensor = torch.stack(
+                            [feature_ps_im, warp_feature_im * feature_mask.unsqueeze(1), feature_im], dim=1
+                        )
+                        grid = torchvision.utils.make_grid(image_tensor.reshape(-1, *feature_im.shape[1:]), 3)
+                        pl_module.log_image(tag="pseudo_view_feature", image_tensor=grid)
 
         setattr(pl_module, "_current_metrics", metrics)
         return metrics, pbar
@@ -312,3 +313,6 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         warp_rgb = F.grid_sample(gt_r, points2d, align_corners=True)
         loss_multiview = (((warp_rgb - rgb_l)).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / mask.sum(dim=[-1, -2])
         return loss_multiview.mean()
+
+    def preprocess_image(self, x: torch.Tensor, n_cam: int = 1) -> torch.Tensor:
+        return x.unsqueeze(0) if n_cam == 1 else x

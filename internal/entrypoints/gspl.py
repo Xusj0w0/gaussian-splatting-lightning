@@ -17,7 +17,7 @@ def cli(args: ArgsType = None):
         trainer_defaults={
             "accelerator": "gpu",
             "strategy": "auto",
-            "deterministic": True,
+            # "deterministic": True,
             "devices": 1,
             # "logger": "TensorBoardLogger",
             "num_sanity_val_steps": 1,

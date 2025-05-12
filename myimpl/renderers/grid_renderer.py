@@ -263,19 +263,20 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             normal = normal.permute(0, 3, 1, 2).squeeze(0)
             normal_from_depth = normal_from_depth.permute(0, 3, 1, 2).squeeze(0)
 
-        render_feature, aligned_feature = None, None
+        render_feature, aligned_feature, feature_camera = None, None, None
         if self.is_type_required(render_type_bits, self._FEATURE_REQUIRED):
+            feature_camera = GridRendererUtils.get_feature_cameras(viewpoint_camera, self.config.render_feature_size)
             render_feature, _ = self.render_feature(
                 properties_list,
-                viewpoint_camera,
+                feature_camera,
                 pc,
                 scaling_modifier=scaling_modifier,
-                short_length=self.config.render_feature_size,
                 **kwargs,
             )
-            aligned_feature = pc.get_feature_adapter(render_feature)
+            if hasattr(pc, "get_feature_adapter"):
+                aligned_feature = pc.get_feature_adapter(render_feature)
+                aligned_feature = aligned_feature.permute(0, 3, 1, 2).squeeze(0)
             render_feature = render_feature.permute(0, 3, 1, 2).squeeze(0)
-            aligned_feature = aligned_feature.permute(0, 3, 1, 2).squeeze(0)
 
         output_pkg = {}
         # render output
@@ -291,7 +292,9 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 "plane_dist": plane_dist,
             }
         )
-        output_pkg.update({"render_feature": render_feature, "aligned_feature": aligned_feature})
+        output_pkg.update(
+            {"render_feature": render_feature, "aligned_feature": aligned_feature, "feature_view": feature_camera}
+        )
 
         # implicit primitives
         output_pkg.update(GridRendererUtils.get_implicit_properties(properties_list))
@@ -434,6 +437,27 @@ class GridRendererUtils:
         Ks[..., 1, 2] = viewpoint_cameras.cy * scale_y
 
         return viewmats, Ks, (width.tolist(), height.tolist())
+
+    @classmethod
+    def get_feature_cameras(cls, viewpoint_cameras: Cameras, short_length: int):
+        scale = float(short_length) / torch.minimum(viewpoint_cameras.width, viewpoint_cameras.height)
+        width = (viewpoint_cameras.width * scale).int()
+        height = (viewpoint_cameras.height * scale).int()
+        scale_x = width.float() / viewpoint_cameras.width
+        scale_y = height.float() / viewpoint_cameras.height
+
+        _params = {k: getattr(viewpoint_cameras, k) for k, v in Cameras.__dataclass_fields__.items() if v.init}
+        _params.update(
+            {
+                "fx": viewpoint_cameras.fx * scale_x,
+                "fy": viewpoint_cameras.fy * scale_y,
+                "cx": viewpoint_cameras.cx * scale_x,
+                "cy": viewpoint_cameras.cy * scale_y,
+                "width": viewpoint_cameras.width * scale_x,
+                "height": viewpoint_cameras.height * scale_y,
+            }
+        )
+        return Cameras(**_params)
 
     @classmethod
     def prepare_primitives(
