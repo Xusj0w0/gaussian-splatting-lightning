@@ -106,10 +106,10 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             metric = getattr(pl_module, "_current_metrics", None)
             if metric is not None:
                 grad = torch.autograd.grad(1.0 - metric["ssim"], outputs["viewspace_points"], retain_graph=True)[0]
-                scale = metric["loss"].item() / (1.0 - metric["ssim"].item() + 1e-8)
-                scale = np.clip(scale, 0.5, 2.0)
-                self._means2d_grad_ssim = grad * scale
-                # self._means2d_grad_ssim = grad
+                # scale = metric["loss"].item() / (1.0 - metric["ssim"].item() + 1e-8)
+                # scale = np.clip(scale, 0.5, 2.0)
+                # self._means2d_grad_ssim = grad * scale
+                self._means2d_grad_ssim = grad
             else:
                 self._means2d_grad_ssim = None
 
@@ -177,17 +177,16 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         if self.config.absgrad:
             xys_grad = viewspace_point_tensor.absgrad
         elif self.config.ssim_grad and self._means2d_grad_ssim is not None:
-            # scale = (
-            #     torch.norm(viewspace_point_tensor.grad, dim=-1).mean() / (torch.norm(self._means2d_grad_ssim, dim=-1) + 1e-8).mean()
-            # ).item()
-            # scale = np.clip(scale, 0.5, 2.0)
-            scale = 1.0
+            scale = (
+                torch.norm(viewspace_point_tensor.grad, dim=-1).mean() / (torch.norm(self._means2d_grad_ssim, dim=-1) + 1e-8).mean()
+            ).item()
+            scale = np.clip(scale, 0.5, 2.0)
             xys_grad = self._means2d_grad_ssim * scale
-            top2_scales = torch.topk(outputs["scales"], k=2, dim=1).values
-            axis_ratio_filter = top2_scales[..., 0] < 10 * top2_scales[..., 1]
+            # top2_scales = torch.topk(outputs["scales"], k=2, dim=1).values
+            # axis_ratio_filter = top2_scales[..., 0] < 10 * top2_scales[..., 1]
             # xys_grad = xys_grad[axis_ratio_filter[visibility_filter]]
             # visibility_filter = visibility_filter & axis_ratio_filter
-            xys_grad[~axis_ratio_filter[visibility_filter]] = 0.0
+            # xys_grad[~axis_ratio_filter[visibility_filter]] = 0.0
         else:
             xys_grad = viewspace_point_tensor.grad
         xys_grad = xys_grad[..., :2]
