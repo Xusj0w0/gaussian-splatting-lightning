@@ -84,7 +84,9 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             v = getattr(self.config, k)
             if isinstance(v, WeightScheduler) and v.max_steps is None:
                 v.max_steps = pl_module.trainer.max_steps
-        self.render_depth = "acc_depth" in pl_module.renderer_output_types
+        self.render_depth = (
+            pl_module.renderer_output_types is not None and "acc_depth" in pl_module.renderer_output_types
+        )
 
     @staticmethod
     def _create_fused_ssim_adapter():
@@ -111,7 +113,8 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         # if single batch
         if isinstance(image_name, str):
             gt_image = gt_image.unsqueeze(0)
-            extra_data = {k: [v] for k, v in extra_data.items()}
+            if extra_data is not None:
+                extra_data = {k: [v] for k, v in extra_data.items()}
 
         # basic metrics
         render = outputs["render"]

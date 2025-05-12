@@ -300,7 +300,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         output_pkg.update(GridRendererUtils.get_implicit_properties(properties_list))
         # viewspace grad
         radii, *_ = zip(*projections_list)
-        grad_scale = (
+        grad_scale = 0.5 * (
             torch.tensor([[image_width[0], image_height[0]]])
             .to(means2d)
             .clamp_(max=self.config.max_viewspace_grad_scale)
