@@ -206,8 +206,8 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         if mode == "pcd":
             assert fused_point_cloud is not None
             n_anchors = fused_point_cloud.shape[0]
-            anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
-            # anchor_features = torch.normal(0.0, 0.02, (n_anchors, self.config.feature_dim), dtype=torch.float)
+            # anchor_features = torch.zeros((n_anchors, self.config.feature_dim), dtype=torch.float)
+            anchor_features = torch.normal(0.0, 0.05, (n_anchors, self.config.feature_dim), dtype=torch.float)
 
         elif mode == "number":
             assert n is not None
