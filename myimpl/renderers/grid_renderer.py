@@ -308,6 +308,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         output_pkg.update(
             {
                 **GridRendererUtils.get_projections(projections),
+                **GridRendererUtils.get_isects(projections, isects_list),
                 "viewspace_points_grad_scale": grad_scale,
                 "radii": torch.cat(radii, dim=0),
             }
@@ -758,12 +759,17 @@ class GridRendererUtils:
 
     @classmethod
     def get_projections(cls, projections: tuple):
-        means2d, conics, isects_offsets, flatten_ids = projections
+        means2d, conics, *_ = projections
         return {
             "viewspace_points": means2d,
             "conics": conics,
-            "isects": (isects_offsets, flatten_ids),
         }
+
+    @classmethod
+    def get_isects(cls, projections: tuple, isects_list: list):
+        *_, isects_offsets, flatten_ids = projections
+        tiles_per_gaussian, isect_ids, *_ = tuple(zip(*isects_list))
+        return {"isects": (torch.cat(tiles_per_gaussian, dim=0), isect_ids, flatten_ids, isects_offsets)}
 
 
 from viser import ViserServer

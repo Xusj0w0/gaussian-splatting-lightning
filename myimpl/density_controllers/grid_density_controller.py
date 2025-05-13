@@ -178,7 +178,8 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             xys_grad = viewspace_point_tensor.absgrad
         elif self.config.ssim_grad and self._means2d_grad_ssim is not None:
             scale = (
-                torch.norm(viewspace_point_tensor.grad, dim=-1).mean() / (torch.norm(self._means2d_grad_ssim, dim=-1) + 1e-8).mean()
+                torch.norm(viewspace_point_tensor.grad, dim=-1).mean()
+                / (torch.norm(self._means2d_grad_ssim, dim=-1) + 1e-8).mean()
             ).item()
             scale = np.clip(scale, 0.5, 2.0)
             xys_grad = self._means2d_grad_ssim * scale

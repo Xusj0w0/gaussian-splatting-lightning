@@ -34,6 +34,8 @@ class ScaffoldMetrics(VanillaMetrics):
 
     multiview_from_iter: int = 7_000
 
+    lambda_pixshift: float = 0.0
+
     lambda_multiview: WeightScheduler = field(
         default_factory=lambda: {
             "init": 0.01,
@@ -43,8 +45,6 @@ class ScaffoldMetrics(VanillaMetrics):
     )
 
     lambda_multiview_feature: float = 0.0
-
-    lambda_pixshift: float = 0.03
 
     # multiview_loss_func: PatchMultiviewLoss = field(default_factory=lambda: PatchMultiviewLoss())
 
@@ -251,12 +251,19 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 warp_rgb = F.grid_sample(rgb_ps, points2d_ndc, align_corners=True)
 
                 num_pixels = mask.sum(dim=[-1, -2])
+
                 loss_multiview = ((warp_rgb - rgb).abs().mean(dim=1) * mask).sum(dim=[-1, -2])
                 loss_multiview = (loss_multiview / (num_pixels + 1e-8)).mean()
-
                 metrics["loss_multiview"] = loss_multiview
                 pbar["loss_multiview"] = False
                 metrics["loss"] += self.config.lambda_multiview(step) * loss_multiview
+
+                if self.config.lambda_pixshift > 0:
+                    loss_pixshift = (pixel_shift * torch.exp(-pixel_shift).detach() * mask).sum(dim=[-1, -2])
+                    loss_pixshift = (loss_pixshift / (num_pixels + 1e-8)).mean()
+                    metrics["loss_pixshift"] = loss_pixshift
+                    pbar["loss_pixshift"] = False
+                    metrics["loss"] += self.config.lambda_pixshift * loss_pixshift
 
                 feature = outputs.get("render_feature", None)
                 if self.config.lambda_multiview_feature > 0 and feature is not None:

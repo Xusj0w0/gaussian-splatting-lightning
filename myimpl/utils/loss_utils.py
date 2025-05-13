@@ -241,7 +241,7 @@ class MultiView:
         :Returns:
         - **points2d_ndc**: [C, H, W, 2], in [-1, 1] x [-1, 1]. pointmap of reference view projected to query view
         - **mask**: [C, H, W]
-        - **pixel_shift**: [C, H, W, 2]
+        - **pixel_shift**: [C, H, W]
         """
         n_cam = len(ref_cams)
         height, width = ref_depth.shape[-2:]

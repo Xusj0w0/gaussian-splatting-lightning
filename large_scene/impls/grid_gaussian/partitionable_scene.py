@@ -260,7 +260,7 @@ class GridScene(PartitionableScene):
                 output_pkg["primitive_mask"],
                 output_pkg["visibility_filter"],
             )
-            isect_offsets, flatten_ids = isects
+            _, _, flatten_ids, isect_offsets = isects
             image_width, image_height = int(camera.width.item()), int(camera.height.item())
             _, _, blend_weights, _ = rasterize_to_weights(
                 means2d=means2d.unsqueeze(0),

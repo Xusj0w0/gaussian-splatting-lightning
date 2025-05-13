@@ -69,13 +69,16 @@ class GSplatMeans2dTrackRendererWrapper(Renderer):
 
         means2d_track = None
         if self.is_type_required(render_type_bits, self._MEANS2D_TRACK_REQUIRED):
-            means2d, isects, opacities = (
+            means2d, isects, opacities, visibility_filter = (
                 output_pkg["viewspace_points"],
                 output_pkg["isects"],
-                output_pkg["opacities"].unsqueeze(0),
+                output_pkg["opacities"],
+                output_pkg["visibility_filter"],
             )
+
             conics = torch.tensor([[[16.0, 0.0, 16.0]]]).to(means2d).repeat(1, means2d.shape[0], 1)
             projections = None, means2d, None, conics, None
+            opacities = opacities[visibility_filter].unsqueeze(0)
             rgb = torch.zeros((means2d.shape[0], 1)).to(means2d)
             bg = torch.zeros((1,)).to(means2d)
             with torch.no_grad():
