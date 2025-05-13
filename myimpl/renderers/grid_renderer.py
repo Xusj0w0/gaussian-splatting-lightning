@@ -348,10 +348,6 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             indices = indices[_visibility_filter]
             features = pc.get_anchor_features[indices]
 
-            # features = repeat(pc.get_anchor_features[_anchor_mask], "n d -> (n o) d", o=pc.n_offsets)
-            # features = features[_primitive_mask]
-            # features = features[_visibility_filter]
-
             input_opacities = torch.cat([input_opacities, _opacities[_visibility_filter]], dim=0)
             input_features = torch.cat([input_features, features], dim=0)
 

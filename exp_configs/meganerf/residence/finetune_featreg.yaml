@@ -55,15 +55,16 @@ model:
       normal_from_iter: 0
       multiview_from_iter: 0
       lambda_multiview_feature: 0.1
-      lambda_feature.init: 0.005
+      lambda_feature.init: 0.01
       lambda_feature.final_factor: 1.0
   density:
     class_path: myimpl.density_controllers.partition_grid_density_controller.PartitionGridGaussianDensityController
     init_args:
-      densify_until_iter: 15_000
-      densify_in_partition: false
-      prune_in_partition: false
-      densify_grad_threshold: 1e-4
+      densification: false
+      # densify_until_iter: 15_000
+      # densify_in_partition: false
+      # prune_in_partition: false
+      # densify_grad_threshold: 2e-4
 save_iterations:
 - 10_000
 - 20_000

@@ -52,8 +52,8 @@ class ScaffoldMetrics(VanillaMetrics):
     lambda_feature: WeightScheduler = field(
         default_factory=lambda: {
             "init": 0.5,
-            "final_factor": 0.01,
-            "mode": "linear",
+            "final_factor": 0.1,
+            "mode": "exp",
         }
     )
 
