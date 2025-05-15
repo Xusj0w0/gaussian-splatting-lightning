@@ -38,6 +38,7 @@ class ScaffoldMetrics(VanillaMetrics):
 
     lambda_multiview: WeightScheduler = field(
         default_factory=lambda: {
+            "enabled": False,
             "init": 0.01,
             "final_factor": 1.0,
             "mode": "linear",
@@ -51,15 +52,17 @@ class ScaffoldMetrics(VanillaMetrics):
     # feature regularization
     lambda_feature: WeightScheduler = field(
         default_factory=lambda: {
+            "enabled": False,
             "init": 0.5,
             "final_factor": 0.1,
-            "mode": "exp",
+            "mode": "linear",
         }
     )
 
     # depth regularization
     lambda_depth: WeightScheduler = field(
         default_factory=lambda: {
+            "enabled": False,
             "init": 1.0,
             "final_factor": 0.01,
             "mode": "exp",
@@ -84,9 +87,6 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             v = getattr(self.config, k)
             if isinstance(v, WeightScheduler) and v.max_steps is None:
                 v.max_steps = pl_module.trainer.max_steps
-        self.render_depth = (
-            pl_module.renderer_output_types is not None and "acc_depth" in pl_module.renderer_output_types
-        )
 
     @staticmethod
     def _create_fused_ssim_adapter():
@@ -98,6 +98,16 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             return fused_ssim(pred, gt)
         # fmt: on
         return adapter
+
+    def get_rendered_types(self, outputs: dict):
+        rendered_types = []
+        if outputs.get("acc_depth", None) is not None:
+            rendered_types.append("depth")
+        if outputs.get("render_feature", None) is not None:
+            rendered_types.append("feature")
+        if outputs.get("pseudo_view", None) is not None:
+            rendered_types.append("pseudo_view")
+        return rendered_types
 
     def _get_basic_metrics(
         self,
@@ -132,6 +142,8 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         metrics = {"loss": loss, "rgb_diff": rgb_diff_loss, "ssim": ssim_metric}
         prog_bar = {"loss": True, "rgb_diff": True, "ssim": True}
 
+        rendered_types = self.get_rendered_types(outputs)
+
         # auxiliary losses
         if self.config.lambda_dreg > 0:
             scales = outputs["scales"]
@@ -145,7 +157,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             prog_bar["loss_dreg"] = False
 
         # pgsr flatten loss (lambda_normal > 0 means using pgsr depth rendering)
-        if self.render_depth and self.config.lambda_flatten > 0:
+        if self.config.lambda_flatten > 0 and "depth" in rendered_types:
             scales = outputs["scales"]
             if scales.shape[0] > 0:
                 flatten_reg = torch.min(scales, dim=-1).values.mean()
@@ -156,7 +168,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             metrics["loss_flatten"] = flatten_reg
             prog_bar["loss_flatten"] = False
 
-        if self.render_depth and self.config.lambda_normal > 0 and global_step >= self.config.normal_from_iter:
+        if self.config.lambda_normal > 0 and global_step >= self.config.normal_from_iter and "depth" in rendered_types:
             normal = outputs["normal"]
             normal_from_depth = outputs["normal_from_depth"]
 
@@ -183,42 +195,46 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             metrics["loss_normal"] = loss_normal
             prog_bar["loss_normal"] = False
 
-        gt_feature = extra_data.get(SemanticData.KEY, None)
-        if gt_feature is not None and outputs.get("aligned_feature", None) is not None:
-            aligned_feature = outputs["aligned_feature"]
-            if len(aligned_feature.shape) == 3:
-                aligned_feature = aligned_feature.unsqueeze(0)
+        if self.config.lambda_feature.enabled and "feature" in rendered_types:
+            gt_feature = extra_data.get(SemanticData.KEY, None)
+            aligned_feature = outputs.get("aligned_feature", None)
 
-            gt_feature = torch.stack(gt_feature, dim=0)
-            resized = F.interpolate(
-                gt_feature.permute(0, 3, 1, 2), size=aligned_feature.shape[-2:], mode="bilinear", align_corners=True
-            )
-            # loss_feature = 1.0 - F.cosine_similarity(aligned_feature, resized, dim=1).mean()
-            loss_feature = F.l1_loss(aligned_feature, resized)
+            if gt_feature is not None and aligned_feature is not None:
+                if len(aligned_feature.shape) == 3:
+                    aligned_feature = aligned_feature.unsqueeze(0)
 
-            metrics["loss"] += self.config.lambda_feature(global_step) * loss_feature
-            metrics["loss_feature"] = loss_feature
-            prog_bar["loss_feature"] = False
+                gt_feature = torch.stack(gt_feature, dim=0)
+                resized = F.interpolate(
+                    gt_feature.permute(0, 3, 1, 2), size=aligned_feature.shape[-2:], mode="bilinear", align_corners=True
+                )
+                # loss_feature = 1.0 - F.cosine_similarity(aligned_feature, resized, dim=1).mean()
+                loss_feature = F.l1_loss(aligned_feature, resized)
 
-        gt_depth = extra_data.get(DepthData.KEY, None)
-        if self.render_depth and gt_depth is not None:
-            pred_depth = outputs["inverse_depth"]
-            loss_depth = self.config.depth_loss_func(gt_depth, pred_depth, mask)
+                metrics["loss"] += self.config.lambda_feature(global_step) * loss_feature
+                metrics["loss_feature"] = loss_feature
+                prog_bar["loss_feature"] = False
 
-            metrics["loss"] += self.config.lambda_depth(global_step) * loss_depth
-            metrics["loss_depth"] = loss_depth
-            prog_bar["loss_depth"] = False
+        if self.config.lambda_depth.enabled and "depth" in rendered_types:
+            gt_depth = extra_data.get(DepthData.KEY, None)
+            pred_depth = outputs.get("inverse_depth", None)
+
+            if gt_depth is not None and pred_depth is not None:
+                pred_depth = outputs["inverse_depth"]
+                loss_depth = self.config.depth_loss_func(gt_depth, pred_depth, mask)
+
+                metrics["loss"] += self.config.lambda_depth(global_step) * loss_depth
+                metrics["loss_depth"] = loss_depth
+                prog_bar["loss_depth"] = False
 
         return metrics, prog_bar
 
     def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
         metrics, pbar = self._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
-        if (
+
+        multiview_rendered = (
             pl_module.trainer.datamodule.hparams["multiview"] is False
             and "pseudo_view" not in pl_module.hparams["renderer_output_types"]
-        ):
-            setattr(pl_module, "_current_metrics", metrics)
-            return metrics, pbar
+        )
 
         cameras, (image_name, gt_image, _), extra_data = batch
         if isinstance(image_name, str):
@@ -232,7 +248,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 params[field] = val
             cameras = InstantiatedCameras(**params)
 
-        if step >= self.config.multiview_from_iter:
+        if self.config.lambda_multiview.enabled and step >= self.config.multiview_from_iter and multiview_rendered:
             pseudo_results = outputs.get("pseudo_results", None)
             if pseudo_results is not None:
                 n_cam = len(cameras)
@@ -306,6 +322,33 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                         )
                         grid = torchvision.utils.make_grid(image_tensor.reshape(-1, *feature_im.shape[1:]), 3)
                         pl_module.log_image(tag="pseudo_view_feature", image_tensor=grid)
+
+        if step % 2000 == 0:
+            n_cam = len(cameras)
+
+            # log feature image
+            feature = outputs.get("render_feature", None)
+            feature_aligned = outputs.get("aligned_feature", None)
+            images = []
+            if feature is not None:
+                feature = self.preprocess_image(feature, n_cam)
+                feature_im = torch.stack(
+                    [Visualizers.pca_colormap(feature[i].contiguous()) for i in range(n_cam)], dim=0
+                )
+                images.append(feature_im)
+            if feature_aligned is not None:
+                feature_aligned = self.preprocess_image(feature_aligned, n_cam)
+                feature_aligned_im = torch.stack(
+                    [Visualizers.pca_colormap(feature_aligned[i].contiguous()) for i in range(n_cam)], dim=0
+                )
+                images.append(feature_aligned_im)
+            if len(images) > 0:
+                images.insert(
+                    0, F.interpolate(gt_image, size=images[0].shape[-2:], mode="bilinear", align_corners=True)
+                )
+                image_tensor = torch.stack(images, dim=1).reshape(-1, *images[0].shape[1:])
+                grid = torchvision.utils.make_grid(image_tensor, len(images))
+                pl_module.log_image(tag="feature", image_tensor=grid)
 
         setattr(pl_module, "_current_metrics", metrics)
         return metrics, pbar

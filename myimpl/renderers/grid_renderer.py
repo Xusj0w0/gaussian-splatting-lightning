@@ -67,6 +67,10 @@ class GridGaussianRenderer(GSplatV1Renderer):
         default_factory=lambda: DecoupledAppearanceModelConfig()
     )
 
+    filter_by_ws_size: bool = False
+
+    filter_by_vs_size: bool = False
+
     def instantiate(self, *args, **kwargs):
         return GridGaussianRendererModule(self)
 
@@ -90,6 +94,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             self.config.appearance_model.optimization.max_steps = lightning_module.trainer.max_steps
 
         self.n_appearance_embedding_dims = 0
+        self.ws_size_thresh, self.vs_size_thresh = -1.0, -1.0
         if lightning_module is not None:
             if self.config.appearance_model.n_appearances <= 0:
                 max_input_id = 0
@@ -101,6 +106,11 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 n_appearances = max_input_id + 1
                 self.config.appearance_model.n_appearances = n_appearances
             self.n_appearance_embedding_dims = lightning_module.gaussian_model.config.n_appearance_embedding_dims
+
+            if self.config.filter_by_ws_size:
+                self.ws_size_thresh = lightning_module.trainer.datamodule.dataparser_outputs.camera_extent * 0.1
+            if self.config.filter_by_vs_size:
+                self.vs_size_thresh = 0.02
 
         if self.n_appearance_embedding_dims > 0:
             self.appearance_embedding = nn.Embedding(
@@ -167,7 +177,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             pseudo_view = MultiView.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], self.disturb)
             # pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], 0.0)
             pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
-            output_pkg.update({"pseudo_results": {"view": pseudo_view, "render": pseudo_render}})
+            output_pkg.update({"pseudo_view": {"view": pseudo_view, "render": pseudo_render}})
         return output_pkg
 
     def forward(
@@ -183,7 +193,11 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         viewpoint_camera = GridRendererUtils.batch_cameras(viewpoint_camera)
         # iterate camera to calculate primitives' properties and project to plane
         primitives = GridRendererUtils.prepare_primitives_loop(
-            viewpoint_camera, pc, getattr(self, "appearance_embedding", None), **kwargs
+            viewpoint_camera,
+            pc,
+            appearance_embedding=getattr(self, "appearance_embedding", None),
+            ws_size_thresh=self.ws_size_thresh,
+            **kwargs,
         )
         projections_list, isects_list, visibility_filter, preprocessed_camera = (
             GridRendererUtils.project_to_pixels_loop(
@@ -192,6 +206,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 viewpoint_camera,
                 scaling_modifier=scaling_modifier,
                 return_preprocessed_cam=True,
+                vs_size_thresh=self.vs_size_thresh,
                 **kwargs,
             )
         )
@@ -273,8 +288,9 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 scaling_modifier=scaling_modifier,
                 **kwargs,
             )
-            if hasattr(pc, "get_feature_adapter"):
-                aligned_feature = pc.get_feature_adapter(render_feature)
+            feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
+            if feature_adapter is not None:
+                aligned_feature = feature_adapter(render_feature)
                 aligned_feature = aligned_feature.permute(0, 3, 1, 2).squeeze(0)
             render_feature = render_feature.permute(0, 3, 1, 2).squeeze(0)
 
@@ -462,6 +478,7 @@ class GridRendererUtils:
         pc: GridGaussianModel,
         viewpoint_camera: Camera,
         appearance_embedding: Optional[nn.Embedding] = None,
+        ws_size_thresh: float = -1.0,
         **kwargs,
     ):
         # filter by level
@@ -476,13 +493,13 @@ class GridRendererUtils:
 
         # scaffold model
         # if isinstance(pc, ScaffoldGaussianModelMixin):
-        if getattr(pc, "gaussian_mlps", None) is not None and getattr(pc, "get_anchor_features", None) is not None:
+        if getattr(pc, "gaussian_mlps", None) is not None and hasattr(pc, "get_color_mlp"):
             pc: ScaffoldGaussianModelMixin
             if appearance_embedding is not None:
                 appearance_code = appearance_embedding(viewpoint_camera.appearance_id)
             else:
                 appearance_code = None
-            return pc.calculate_implicit_properties(
+            xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask = pc.calculate_implicit_properties(
                 viewpoint_camera,
                 appearance_code=appearance_code,
                 anchor_mask=anchor_mask,
@@ -493,6 +510,17 @@ class GridRendererUtils:
         # TODO elif explicit model
         else:
             raise ValueError("Unsupported gaussian model type")
+
+        # filter by worldspace size
+        if ws_size_thresh > 0:
+            size_mask = scales.max(dim=-1).values < ws_size_thresh
+            xyz, scales, rots, colors, opacities = tuple(
+                map(lambda x: x[size_mask], [xyz, scales, rots, colors, opacities])
+            )
+            _primitive_mask = primitive_mask.clone()
+            _primitive_mask[primitive_mask] = size_mask
+            primitive_mask = _primitive_mask
+        return xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask
 
     @classmethod
     def prepare_primitives_loop(
@@ -505,7 +533,7 @@ class GridRendererUtils:
         primitives = []
         for cam in viewpoint_camera:
             xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask = cls.prepare_primitives(
-                pc, cam, appearance_embedding, **kwargs
+                pc, cam, appearance_embedding=appearance_embedding, **kwargs
             )
             primitives.append((xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask))
 
@@ -520,6 +548,7 @@ class GridRendererUtils:
         rotations: torch.Tensor,
         preprocessed_camera: tuple,
         scaling_modifier: float = 1.0,
+        vs_size_thresh: float = -1.0,
         **kwargs,
     ):
         viewmat, intrinsics, (image_width, image_height) = preprocessed_camera
@@ -542,6 +571,15 @@ class GridRendererUtils:
             packed=True,
             **kwargs,
         )
+
+        # filter by viewspace size
+        if vs_size_thresh > 0:
+            size_mask = radii < max(image_width, image_height) * vs_size_thresh
+            cids, gids, radii, means2d, depths, conics = tuple(
+                map(lambda x: x[size_mask], [cids, gids, radii, means2d, depths, conics])
+            )
+            if compensations is not None:
+                compensations = compensations[size_mask]
 
         # only id in gids are valid, create visibility filter
         visibility_filter = xyz.new_zeros((xyz.shape[0],), dtype=torch.bool)

@@ -4,6 +4,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 import lightning
 import torch
 import torch.nn as nn
+from pytorch3d.transforms import matrix_to_quaternion, quaternion_to_matrix
 
 from internal.cameras.cameras import Camera
 from internal.models.gaussian import Gaussian, GaussianModel
@@ -52,6 +53,12 @@ class GridGaussianBase(Gaussian):
 
     default_voxel_size: float = -1.0
 
+    outlier_ratio: float = 0.001
+    """Outlier ratio of origin point cloud"""
+
+    extend_ratio: float = 0.1
+    """Extend ratio of the grid relative to original point cloud"""
+
     view_dim: int = 3
 
     n_appearance_embedding_dims: int = 0
@@ -68,7 +75,7 @@ class GridGaussianModelBase(GaussianModel):
     _extra_buffer_names: List[str] = []
     """
     Parameters: means (anchors), offsets, scales
-    Buffers: _voxel_size, _grid_origin
+    Buffers: _voxel_size, _transforms
     """
 
     def __init__(self, config: GridGaussianBase):
@@ -78,7 +85,7 @@ class GridGaussianModelBase(GaussianModel):
         names = ["means", "offsets", "scales", "rotations"]
         self._names = tuple(names + self._extra_property_names)
 
-        buffer_names = ["_voxel_size", "_grid_origin", "_activate_sh_degree"]
+        buffer_names = ["_voxel_size", "_transforms", "_grid_bbox", "_activate_sh_degree"]
         self._buffer_names = tuple(buffer_names + self._extra_buffer_names)
 
         if self.config.color_mode == "SHs":
@@ -113,17 +120,24 @@ class GridGaussianModelBase(GaussianModel):
     ):
         pass
 
-    def setup_grid(self, points: torch.Tensor):
-        voxel_size, grid_origin = GridFactory.build_grid(points, default_voxel_size=self.config.default_voxel_size)
+    def setup_grid(self, points: torch.Tensor, transforms: str = ""):
+        voxel_size, transforms, grid_bbox = GridFactory.build_grid(
+            points,
+            default_voxel_size=self.config.default_voxel_size,
+            transforms=transforms,
+            outlier_ratio=self.config.outlier_ratio,
+            extend_ratio=self.config.extend_ratio,
+        )
         self.register_buffer("_voxel_size", voxel_size)
-        self.register_buffer("_grid_origin", grid_origin)
+        self.register_buffer("_transforms", transforms)
+        self.register_buffer("_grid_bbox", grid_bbox)
 
-    def setup_from_pcd(self, xyz, rgb, *args, **kwargs):
+    def setup_from_pcd(self, xyz, rgb, transforms, *args, **kwargs):
         points = torch.from_numpy(xyz).float()
-        self.setup_grid(points)
+        self.setup_grid(points, transforms)
 
         fused_point_cloud = GridFactory.voxelize(points, self.voxel_size, self.xyz2grid, self.grid2xyz)
-        property_dict = self.get_init_properties(fused_point_cloud=fused_point_cloud, mode="pcd")
+        property_dict = self.get_init_properties(fused_point_cloud=fused_point_cloud, mode="pcd", *args, **kwargs)
         self.before_setup_properties_from_pcd(xyz, rgb, property_dict, *args, **kwargs)
         for name, value in property_dict.items():
             self.set_property(name, value)
@@ -133,9 +147,12 @@ class GridGaussianModelBase(GaussianModel):
 
     def setup_from_number(self, n, *args, **kwargs):
         self.register_buffer("_voxel_size", torch.tensor(0, dtype=torch.float))
-        self.register_buffer("_grid_origin", torch.zeros((3,), dtype=torch.float))
+        transforms = torch.zeros((7,), dtype=torch.float)
+        transforms[0] = 1.0
+        self.register_buffer("_transforms", transforms)
+        self.register_buffer("_grid_bbox", torch.zeros((6,), dtype=torch.float))
 
-        property_dict = self.get_init_properties(n=n, mode="number")
+        property_dict = self.get_init_properties(n=n, mode="number", *args, **kwargs)
         self.before_setup_set_properties_from_number(n, property_dict, *args, **kwargs)
         for name, value in property_dict.items():
             self.set_property(name, value)
@@ -149,7 +166,7 @@ class GridGaussianModelBase(GaussianModel):
             if n in buffer_names:
                 self.register_buffer(n, tensors[n])
 
-        property_dict = self.get_init_properties(tensors=tensors, mode="tensors")
+        property_dict = self.get_init_properties(tensors=tensors, mode="tensors", *args, **kwargs)
         for name, value in property_dict.items():
             self.set_property(name, value)
 
@@ -306,10 +323,17 @@ class GridGaussianModelBase(GaussianModel):
         return [], []
 
     def grid2xyz(self, grids: torch.Tensor, voxel_size: float):
-        return GridFactory.grid_to_point(grids, voxel_size, grid_origin=self.grid_origin, padding=self.config.padding)
+        return GridFactory.grid_to_point(grids, voxel_size, transforms=self.transforms, padding=self.config.padding)
 
     def xyz2grid(self, points: torch.Tensor, voxel_size: float):
-        return GridFactory.point_to_grid(points, voxel_size, grid_origin=self.grid_origin, padding=self.config.padding)
+        return GridFactory.point_to_grid(points, voxel_size, transforms=self.transforms, padding=self.config.padding)
+
+    def normalize_xyz(self, points: torch.Tensor):
+        transforms = self.transforms.to(points.device)
+        transformed = points @ transforms[:3, :3].T + transforms[:3, 3]
+        bbox_min, bbox_max = self.grid_bbox
+        bbox_min, bbox_max = bbox_min.to(points.device), bbox_max.to(points.device)
+        return (transformed - bbox_min) / (bbox_max - bbox_min)
 
     def get_property_names(self):
         return self._names
@@ -323,9 +347,20 @@ class GridGaussianModelBase(GaussianModel):
         return self._voxel_size.item()
 
     @property
-    def grid_origin(self) -> torch.Tensor:
-        self._grid_origin: torch.Tensor
-        return self._grid_origin
+    def transforms(self) -> torch.Tensor:
+        """transposed transform matrix"""
+        self._transform_matrix: torch.Tensor
+        if not hasattr(self, "_transform_matrix"):
+            self._transform_matrix = torch.eye(4).to(self._transforms)
+            self._transform_matrix[:3, :3] = quaternion_to_matrix(self._transforms[:4])
+            self._transform_matrix[:3, 3] = self._transforms[4:]
+        return self._transform_matrix
+
+    @property
+    def grid_bbox(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """(min, max), ([3,], [3,])"""
+        self._grid_bbox: torch.Tensor
+        return (self._grid_bbox[:3], self._grid_bbox[3:])
 
     @property
     def n_anchors(self) -> int:

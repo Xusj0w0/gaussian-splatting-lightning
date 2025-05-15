@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from plyfile import PlyData, PlyElement
+from pytorch3d.transforms import matrix_to_quaternion
 from sklearn.neighbors import NearestNeighbors
 
 __all__ = ["init_weight", "knn", "GridFactory"]
@@ -94,8 +95,23 @@ class GridFactory:
                 coarse_intervals.append(interval)
         return coarse_intervals
 
-    def build_grid(points: torch.Tensor, default_voxel_size: float):
-        grid_origin = points.mean(dim=0)
+    @classmethod
+    def build_grid(
+        cls,
+        points: torch.Tensor,
+        default_voxel_size: float,
+        transforms: str = "",
+        outlier_ratio: float = 0.001,
+        extend_ratio: float = 0.1,
+    ):
+        parsed = cls.parse_transforms(transforms)
+        if parsed is not None:
+            transforms = parsed.to(points)
+        else:
+            transforms = torch.eye(4).to(points)
+            grid_origin = points.mean(dim=0)
+            transforms[:3, 3] = -grid_origin
+
         voxel_size = torch.tensor(default_voxel_size)
         if voxel_size <= 0:
             from simple_knn._C import distCUDA2
@@ -104,27 +120,58 @@ class GridFactory:
             _dist = distCUDA2(_points)
             median_dist, _ = torch.kthvalue(_dist, int(len(_points) * 0.5))
             voxel_size = median_dist.to(points.device)
-        return voxel_size, grid_origin
 
-    @staticmethod
+        transformed = points @ transforms[:3, :3].T + transforms[:3, 3]
+        bbox_min = torch.quantile(transformed, outlier_ratio, dim=0)
+        bbox_max = torch.quantile(transformed, 1 - outlier_ratio, dim=0)
+        extend_min = bbox_min - (bbox_max - bbox_min) * extend_ratio
+        extend_max = bbox_max + (bbox_max - bbox_min) * extend_ratio
+        grid_bbox = torch.cat((extend_min, extend_max), dim=0)
+
+        qvec = matrix_to_quaternion(transforms[:3, :3])
+        tvec = transforms[:3, 3]
+        transforms = torch.cat((qvec, tvec), dim=0)
+
+        return voxel_size, transforms, grid_bbox
+
+    @classmethod
     def build_multi_level_grid(
+        cls,
         points: torch.Tensor,
-        extend_ratio: float,
         base_layer: int,
         fork: int = 2,
+        transforms: str = "",
         default_voxel_size: Optional[float] = None,
         max_level: Optional[int] = None,
+        outlier_ratio: float = 0.001,
+        extend_ratio: float = 0.1,
     ):
-        box_min, box_max = torch.min(points, dim=0).values, torch.max(points, dim=0).values
-        extend_min = box_min - (box_max - box_min) * extend_ratio
-        extend_max = box_max + (box_max - box_min) * extend_ratio
-        box_d = torch.max(extend_max - extend_min)
+        parsed = cls.parse_transforms(transforms)
+        if parsed is not None:
+            transforms = parsed.to(points)
+        else:
+            transforms = torch.eye(4).to(points)
+            grid_origin = points.mean(dim=0)
+            transforms[:3, 3] = -grid_origin
 
+        transformed = points @ transforms[:3, :3].T + transforms[:3, 3]
+        bbox_min = torch.quantile(transformed, outlier_ratio, dim=0)
+        bbox_max = torch.quantile(transformed, 1 - outlier_ratio, dim=0)
+        extend_min = bbox_min - (bbox_max - bbox_min) * extend_ratio
+        extend_max = bbox_max + (bbox_max - bbox_min) * extend_ratio
+        grid_bbox = torch.cat((extend_min, extend_max), dim=0)
+
+        box_d = (extend_max - extend_min).max()
         if base_layer < 0:
             assert default_voxel_size is not None and max_level is not None
             base_layer = torch.round(torch.log2(box_d / default_voxel_size)).int().item() - (max_level // 2) + 1
         voxel_size = box_d / (float(fork) ** base_layer)
-        return voxel_size, points.mean(dim=0)
+
+        qvec = matrix_to_quaternion(transforms[:3, :3])
+        tvec = transforms[:3, 3]
+        transforms = torch.cat((qvec, tvec), dim=0)
+
+        return voxel_size, transforms, grid_bbox
 
     @staticmethod
     def map_to_int_level(pred_level: torch.Tensor, cur_level: int, dist2level: str = "floor"):
@@ -191,15 +238,15 @@ class GridFactory:
 
     @staticmethod
     def point_to_grid(
-        points: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0
+        points: torch.Tensor, voxel_size: float, transforms: torch.Tensor, *args, **kwargs
     ) -> torch.Tensor:
-        return torch.round((points - grid_origin.to(points)) / voxel_size + padding).long()
+        transforms = transforms.to(points.device)
+        return torch.round((points @ transforms[:3, :3].T + transforms[:3, 3]) / voxel_size).long()
 
     @staticmethod
-    def grid_to_point(
-        grid: torch.Tensor, voxel_size: float, grid_origin: torch.Tensor, padding: float = 0.0
-    ) -> torch.Tensor:
-        return (grid.float() - padding) * voxel_size + grid_origin.to(grid.device)
+    def grid_to_point(grid: torch.Tensor, voxel_size: float, transforms: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        transforms = transforms.to(grid.device)
+        return (grid.float() * voxel_size - transforms[:3, 3]) @ transforms[:3, :3]
 
     @staticmethod
     def voxelize(points: torch.Tensor, voxel_size: float, xyz2grid: Callable, grid2xyz: Callable) -> torch.Tensor:
@@ -232,3 +279,29 @@ class GridFactory:
             positions = torch.cat((positions, _positions), dim=0)
             levels = torch.cat((levels, _levels), dim=0)
         return positions.to(points.device), levels
+
+    @classmethod
+    def parse_transforms(cls, transforms_path: str = ""):
+        if transforms_path is None or len(transforms_path) == 0:
+            return None
+        if not osp.exists(transforms_path):
+            return None
+
+        transforms = []
+        with open(transforms_path, "r") as f:
+            for line in f.readlines():
+                transforms += map(float, line.strip().split())
+
+        try:
+            transforms = np.array(transforms).reshape(4, 4)
+            rot = transforms[:3, :3]
+            vec = np.zeros((4,), dtype=rot.dtype)
+            vec[-1] = 1.0
+            assert np.allclose(rot @ rot.T, np.eye(3, dtype=rot.dtype), atol=1e-6) and np.isclose(
+                np.linalg.det(rot), 1.0, atol=1e-6
+            )
+            assert np.allclose(transforms[-1, :], vec, atol=1e-6)
+        except:
+            return None
+
+        return torch.from_numpy(transforms).float()

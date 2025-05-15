@@ -32,9 +32,6 @@ class LoDGridGaussian(GridGaussianBase):
 
     dist2level: Literal["floor", "round", "progressive"] = "floor"
 
-    extend_ratio: float = 0.1
-    """Extend ratio of the octree grid relative to original point cloud"""
-
     dist_ratio: float = 0.001
     """Filter distances between camera centers and points within (0, dist_ratio) and (1-dist_ratio, 1)"""
 
@@ -98,7 +95,9 @@ class LoDGridGaussianModel(GridGaussianModelBase):
             transition_mask = self.get_levels == int_level
         return anchor_mask, prog_ratio, transition_mask
 
-    def setup_multi_level_grid(self, points: torch.Tensor, camera_infos: torch.Tensor, *args, **kwargs):
+    def setup_multi_level_grid(
+        self, points: torch.Tensor, camera_infos: torch.Tensor, transforms: str = "", *args, **kwargs
+    ):
         # calculate levels and register
         standard_dist, max_level = GridFactory.get_levels_by_distances(
             points, camera_infos, self.config.dist_ratio, self.config.fork
@@ -110,16 +109,19 @@ class LoDGridGaussianModel(GridGaussianModelBase):
         self.register_buffer("_standard_dist", standard_dist)
 
         # calculate voxel grid and register
-        voxel_size, grid_origin = GridFactory.build_multi_level_grid(
+        voxel_size, transforms, grid_bbox = GridFactory.build_multi_level_grid(
             points,
-            extend_ratio=self.config.extend_ratio,
             base_layer=self.config.base_layer,
             fork=self.config.fork,
             default_voxel_size=self.config.default_voxel_size,
+            transforms=transforms,
             max_level=self.max_level,
+            outlier_ratio=self.config.outlier_ratio,
+            extend_ratio=self.config.extend_ratio,
         )
         self.register_buffer("_voxel_size", voxel_size)
-        self.register_buffer("_grid_origin", grid_origin)
+        self.register_buffer("_transforms", transforms)
+        self.register_buffer("_grid_bbox", grid_bbox)
 
         # get visibility_threshold
         vis_thresh = torch.tensor(self.config.visibility_threshold)
@@ -148,12 +150,12 @@ class LoDGridGaussianModel(GridGaussianModelBase):
     ):
         pass
 
-    def setup_from_pcd(self, xyz, rgb, cameras: Cameras, *args, **kwargs):
+    def setup_from_pcd(self, xyz, rgb, transforms, cameras: Cameras, *args, **kwargs):
         xyz, rgb = xyz[::16], rgb[::16]
         points = torch.from_numpy(xyz).to(cameras[0].device).float()
         cam_centers = cameras.camera_center
         camera_infos = torch.cat([cam_centers, cam_centers.new_ones((cam_centers.shape[0], 1))], dim=-1)
-        self.setup_multi_level_grid(points, camera_infos)
+        self.setup_multi_level_grid(points, camera_infos, transforms)
 
         positions, levels = GridFactory.multi_level_voxelize(
             points,
@@ -178,6 +180,8 @@ class LoDGridGaussianModel(GridGaussianModelBase):
             levels=levels,
             extra_levels=levels.new_zeros((levels.shape[0],), dtype=torch.float),
             mode="pcd",
+            *args,
+            **kwargs,
         )
         self.before_setup_properties_from_pcd(xyz, rgb, property_dict, *args, **kwargs)
         for name, value in property_dict.items():
@@ -188,13 +192,16 @@ class LoDGridGaussianModel(GridGaussianModelBase):
 
     def setup_from_number(self, n, *args, **kwargs):
         self.register_buffer("_voxel_size", torch.tensor(0, dtype=torch.float))
-        self.register_buffer("_grid_origin", torch.zeros((3,), dtype=torch.float))
+        transforms = torch.zeros((7,), dtype=torch.float)
+        transforms[0] = 1.0
+        self.register_buffer("_transforms", transforms)
+        self.register_buffer("_grid_bbox", torch.zeros((6,), dtype=torch.float))
         self.register_buffer("_max_level", torch.tensor(0, dtype=torch.int))
         self.register_buffer("_start_level", torch.tensor(0, dtype=torch.int))
         self.register_buffer("_standard_dist", torch.tensor(0, dtype=torch.float))
         self.register_buffer("_visibility_threshold", torch.tensor(0, dtype=torch.float))
 
-        property_dict = self.get_init_properties(n=n, mode="number")
+        property_dict = self.get_init_properties(n=n, mode="number", *args, **kwargs)
         self.before_setup_set_properties_from_number(n, property_dict, *args, **kwargs)
         for name, value in property_dict.items():
             self.set_property(name, value)
@@ -205,7 +212,7 @@ class LoDGridGaussianModel(GridGaussianModelBase):
             if n in buffer_names:
                 self.register_buffer(n, tensors[n])
 
-        property_dict = self.get_init_properties(tensors=tensors, mode="tensors")
+        property_dict = self.get_init_properties(tensors=tensors, mode="tensors", *args, **kwargs)
         for name, value in property_dict.items():
             self.set_property(name, value)
 

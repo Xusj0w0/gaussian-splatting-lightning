@@ -15,6 +15,8 @@ from myimpl.utils.cameras import InstantiatedCameras
 
 @dataclass
 class WeightScheduler:
+    enabled: bool = False
+
     init: float = 1.0
 
     final_factor: float = 0.01

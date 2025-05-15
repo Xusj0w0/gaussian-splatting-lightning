@@ -14,6 +14,8 @@ from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
+from myimpl.model_components.feature_adapter import AdapterConfig
+from myimpl.utils.dataset_utils import SemanticData
 
 from .base import GridGaussianModelBase
 from .utils import init_weight
@@ -58,6 +60,8 @@ class ScaffoldGaussianMixin:
     tcnn: bool = False
 
     stop_feature_grad: bool = False
+
+    feature_adapter: AdapterConfig = field(default_factory=lambda: AdapterConfig())
 
 
 class ScaffoldGaussianModelMixin:  # GridGaussianModel,
@@ -190,6 +194,10 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
                 output_activation="None",
             )
 
+        if self.config.feature_adapter.dim_out > 0:
+            self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
+
+    def reset_parameters(self):
         for mlp in self.gaussian_mlps.values():
             mlp.apply(init_weight)
 
@@ -199,10 +207,25 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         n: Optional[int] = None,
         tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
+        pl_module: lightning.LightningModule = None,
         *args,
         **kwargs,
     ):
+        if "feature" in getattr(pl_module, "renderer_output_types", []):
+            gt_dim = -1
+            try:
+                enable_adapter = pl_module.metric.config.lambda_feature.enabled
+                if enable_adapter:
+                    extra_data_sample = pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0].get(SemanticData.KEY) # fmt: skip
+                    shape = extra_data_sample.parse_numpy_shape_from_header()
+                    gt_dim = shape[-1]
+            except:
+                pass
+            if gt_dim > 0:
+                self.config.feature_adapter.dim_out = gt_dim
+
         self.create_mlps()
+        self.reset_parameters()
         if mode == "pcd":
             assert fused_point_cloud is not None
             n_anchors = fused_point_cloud.shape[0]
@@ -277,8 +300,17 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
                     "name": "feature_bank_mlp",
                 }
             )
+        if self.config.feature_adapter.dim_out > 0:
+            mlp_l.append(
+                {
+                    "params": self.gaussian_mlps["feature_adapter"].parameters(),
+                    "lr": self.config.feature_adapter.optimization.lr_init,
+                    "name": "feature_adapter_mlp",
+                }
+            )
         mlp_optimizer = mlp_optimizer_factory.instantiate(mlp_l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(mlp_optimizer, module)
+
         scheduler_lr_finals = [
             optimization_config.opacity_mlp_lr_final,
             optimization_config.cov_mlp_lr_final,
@@ -286,6 +318,9 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         ]
         if self.config.use_feature_bank:
             scheduler_lr_finals.append(optimization_config.feature_bank_mlp_lr_final)
+        if self.config.feature_adapter.dim_out > 0:
+            scheduler_lr_finals.append(self.config.feature_adapter.optimization.lr_final)
+
         mlp_scheduler = mlp_scheduler_factory.instantiate().get_schedulers(mlp_optimizer, scheduler_lr_finals)
 
         return [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler]
@@ -308,7 +343,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     @property
     def get_features(self):
         """save_gaussians() will call `get_features`"""
-        return self.get_anchor_features.new_zeros((self.n_anchors, 1, 3))
+        return self.get_xyz.new_zeros((self.get_n_gaussians(), 1, 3))
 
     @property
     def get_opacity_mlp(self):
@@ -324,7 +359,12 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
 
     @property
     def get_feature_bank_mlp(self):
-        if self.config.use_feature_bank:
-            return self.gaussian_mlps["feature_bank"]
-        else:
-            raise ValueError("Feature bank not available")
+        if "feature_bank" not in self.gaussian_mlps:
+            return None
+        return self.gaussian_mlps["feature_bank"]
+
+    @property
+    def get_feature_adapter_mlp(self):
+        if "feature_adapter" not in self.gaussian_mlps:
+            return None
+        return self.gaussian_mlps["feature_adapter"]

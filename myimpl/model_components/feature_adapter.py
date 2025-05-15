@@ -35,7 +35,7 @@ class AdapterOptimizationConfig:
 
 @dataclass
 class AdapterConfig:
-    dim_out: int = 32
+    dim_out: int = field(default=-1, init=False)
 
     optimization: AdapterOptimizationConfig = field(default_factory=lambda: AdapterOptimizationConfig())
 
@@ -57,25 +57,3 @@ class Adapter(nn.Module):
         """
         out = torch.einsum("...hwc, cd -> ...hwd", x, self.weight)
         return out
-
-    def training_setup(self):
-        # fmt: off
-        net_optimizer = Adam().instantiate(
-            [{
-                "params": self.weight,
-                "lr": self.config.optimization.lr_init,
-                "name": "feature_adapter_mlp",
-            }],
-            lr=0.0,
-        )
-        # fmt: on
-        net_scheduler = (
-            ExponentialDecayScheduler(
-                lr_final=self.config.optimization.lr_final,
-                max_steps=self.config.optimization.max_steps,
-            )
-            .instantiate()
-            .get_scheduler(optimizer=net_optimizer, lr_init=self.config.optimization.lr_init)
-        )
-
-        return [net_optimizer], [net_scheduler]
