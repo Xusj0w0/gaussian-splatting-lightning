@@ -166,6 +166,13 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         return appearance_embedding_optimizer, appearance_embedding_scheduler
 
     def training_forward(self, step, module, viewpoint_camera, pc, bg_color, render_types=None, **kwargs):
+        try:
+            feature_until_iter = module.metric.feature_until_iter
+            if step > feature_until_iter and "feature" in render_types:
+                render_types.remove("feature")
+        except:
+            pass
+
         output_pkg = self(viewpoint_camera, pc, bg_color, render_types=render_types, **kwargs)
 
         render_type_bits = self.parse_render_types(render_types)

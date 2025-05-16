@@ -70,7 +70,7 @@ class ScaffoldGaussianMixin:
 
     use_feature_bank: bool = False
 
-    tcnn: bool = True
+    tcnn: bool = False
 
     stop_feature_grad: bool = False
 
@@ -106,7 +106,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
 
         viewdirs = anchors - viewpoint_camera.camera_center
         viewdirs_norm = torch.norm(viewdirs, dim=1, keepdim=True)
-        viewdirs = (viewdirs / viewdirs_norm).detach()
+        viewdirs = viewdirs / viewdirs_norm
 
         if self.config.use_feature_bank:
             bank_weight = F.softmax(self.get_feature_bank_mlp(viewdirs), dim=-1).unsqueeze(dim=1)

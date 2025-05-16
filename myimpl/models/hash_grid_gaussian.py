@@ -136,15 +136,26 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
     def compute_anchor_features(self, anchors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         hash_feature = self.compute_hash_features(anchors)
         anchor_features = self.get_anchor_features[mask]
+        feature_adapter = self.get_feature_adapter_mlp
+        if feature_adapter is not None:
+            hash_feature = feature_adapter(hash_feature.clone().detach())
+
         return hash_feature + anchor_features
 
     def create_mlps(self):
         self.gaussian_mlps = nn.ModuleDict()
         # create mlps
 
-        self.config.hash_grid_feature.out_dim = self.config.feature_dim
-        self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
+        # self.config.hash_grid_feature.out_dim = self.config.feature_dim
+        # self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
+        # self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
+
+        self.config.hash_grid_feature.out_dim = self.config.feature_adapter.out_dim
+        self.config.feature_adapter.out_dim = self.config.feature_dim
         self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
+        self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(
+            self.config.hash_grid_feature.out_dim
+        )
 
         feature_dim = self.config.feature_dim  #  + self.config.feature_adapter.dim_out
 

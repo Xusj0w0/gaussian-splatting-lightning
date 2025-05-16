@@ -59,6 +59,8 @@ class ScaffoldMetrics(VanillaMetrics):
         }
     )
 
+    feature_until_iter: Optional[int] = None
+
     # depth regularization
     lambda_depth: WeightScheduler = field(
         default_factory=lambda: {
@@ -207,8 +209,8 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 resized = F.interpolate(
                     gt_feature.permute(0, 3, 1, 2), size=aligned_feature.shape[-2:], mode="bilinear", align_corners=True
                 )
-                # loss_feature = 1.0 - F.cosine_similarity(aligned_feature, resized, dim=1).mean()
-                loss_feature = F.l1_loss(aligned_feature, resized)
+                loss_feature = 1.0 - F.cosine_similarity(aligned_feature, resized, dim=1).mean()
+                # loss_feature = F.l1_loss(aligned_feature, resized)
 
                 metrics["loss"] += self.config.lambda_feature(global_step) * loss_feature
                 metrics["loss_feature"] = loss_feature

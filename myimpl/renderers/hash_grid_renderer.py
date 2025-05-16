@@ -77,5 +77,6 @@ class HashGridGaussianRendererModule(GridGaussianRendererModule):
         feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
         if feature_adapter is not None:
             aligned_feature = feature_adapter(render_feature)
+            render_feature, aligned_feature = aligned_feature, render_feature
 
         return render_feature, aligned_feature, alpha
