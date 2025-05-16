@@ -14,6 +14,8 @@ from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
+from myimpl.model_components.embeddings import (MLP, MLPWithSHEncoding,
+                                                MLPWithSHEncodingIdentity)
 from myimpl.model_components.feature_adapter import AdapterConfig
 from myimpl.utils.dataset_utils import SemanticData
 
@@ -26,6 +28,15 @@ __all__ = ["ScaffoldGaussianMixin", "ScaffoldGaussianModelMixin", "ScaffoldOptim
 @dataclass
 class ScaffoldOptimizationConfigMixin:
     anchor_features_lr: float = 0.0075
+    anchor_features_lr_scheduler: Scheduler = field(
+        default_factory=lambda: {
+            "class_path": "ExponentialDecayScheduler",
+            "init_args": {
+                "max_steps": None,
+                "warmup_steps": 0,
+            },
+        }
+    )
 
     opacity_mlp_lr_init: float = 0.002
     opacity_mlp_lr_final: float = 0.00002
@@ -55,9 +66,11 @@ class ScaffoldGaussianMixin:
 
     mlp_n_layers: int = 2
 
+    hidden_dim: int = 32
+
     use_feature_bank: bool = False
 
-    tcnn: bool = False
+    tcnn: bool = True
 
     stop_feature_grad: bool = False
 
@@ -81,10 +94,10 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         if anchor_mask is None:
             anchor_mask = self.get_anchors.new_ones((self.n_anchors,), dtype=torch.bool)
         anchors = self.get_anchors[anchor_mask]
-        features = self.get_anchor_features[anchor_mask]
         offsets = self.get_offsets[anchor_mask]
         scalings = self.get_scalings[anchor_mask]
         rotations = self.get_rotations[anchor_mask]
+        features = self.compute_anchor_features(anchors, anchor_mask)
 
         if kwargs.get("stop_feature_grad", False):
             features = features.clone().detach()
@@ -93,7 +106,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
 
         viewdirs = anchors - viewpoint_camera.camera_center
         viewdirs_norm = torch.norm(viewdirs, dim=1, keepdim=True)
-        viewdirs = viewdirs / viewdirs_norm
+        viewdirs = (viewdirs / viewdirs_norm).detach()
 
         if self.config.use_feature_bank:
             bank_weight = F.softmax(self.get_feature_bank_mlp(viewdirs), dim=-1).unsqueeze(dim=1)
@@ -104,7 +117,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
                 + features[:, ::1, :1] * bank_weight[:, :, 2:3]
             )
             features = features.squeeze(dim=-1)
-        cat_local_view = torch.cat([features, viewdirs], dim=1)
+        cat_local_view = torch.cat([viewdirs, features], dim=1)
 
         opacities = self.get_opacity_mlp(features).reshape(-1, n_offsets, 1).clamp(max=1.0)
         if prog_ratio is not None and transition_mask is not None:
@@ -123,12 +136,14 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             color_input = cat_local_view
         colors = self.get_color_mlp(color_input).reshape(-1, 3)
 
-        scale_rots = self.get_cov_mlp(cat_local_view).reshape(-1, n_offsets, 7)
-        scale_rots[..., -4:] = quaternion_multiply(
-            rotations.unsqueeze(1),
-            self.rotation_activation(scale_rots[..., -4:].clone()),
-        )
-        scale_rots = scale_rots.reshape(-1, 7)
+        _scale_rots = self.get_cov_mlp(cat_local_view).reshape(-1, n_offsets, 7)
+        scale_rots = torch.cat(
+            [
+                _scale_rots[..., :3],
+                quaternion_multiply(rotations.unsqueeze(1), self.rotation_activation(_scale_rots[..., -4:])),
+            ],
+            dim=-1,
+        ).reshape(-1, 7)
 
         concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
         concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
@@ -148,53 +163,102 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         scales = F.sigmoid(_scales) * _scalings_scales
         rots = self.rotation_activation(_rots)
         colors = _colors
-        opacities = _opacities.squeeze()
+        if len(_opacities.shape) >= 2:
+            opacities = _opacities.squeeze(-1)
 
         return xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask
+
+    def compute_anchor_features(self, anchors: torch.Tensor, anchor_mask: torch.Tensor):
+        return self.get_anchor_features[anchor_mask]
 
     def create_mlps(self):
         self.gaussian_mlps = nn.ModuleDict()
         # create mlps
         # opacity: return 1*n_offsets
-        self.gaussian_mlps["opacity"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-            n_input_dims=self.config.feature_dim,  # try: remove viewdirs + self.config.view_dim,
-            n_output_dims=self.n_offsets,
-            n_layers=self.config.mlp_n_layers,
-            n_neurons=self.config.feature_dim,
-            activation="ReLU",
-            output_activation="Tanh",
+        self.gaussian_mlps["opacity"] = MLP(
+            in_dim=self.config.feature_dim,
+            out_dim=self.n_offsets,
+            num_layers=self.config.mlp_n_layers,
+            layer_width=self.config.hidden_dim,
+            activation=nn.ReLU(),
+            out_activation=nn.Tanh(),
+            implementation="tcnn" if self.config.tcnn else "torch",
         )
+
         # cov: return 7*n_offsets
         # 3 for scales, multiply with anchor-level scales to get gaussian scales
         # 4 for rotations
-        self.gaussian_mlps["cov"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-            n_input_dims=self.config.feature_dim + self.config.view_dim,
-            n_output_dims=7 * self.n_offsets,
-            n_layers=self.config.mlp_n_layers,
-            n_neurons=self.config.feature_dim,
-            activation="ReLU",
-            output_activation="None",
-        )
-        # color: return 3*n_offsets
-        self.gaussian_mlps["color"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-            n_input_dims=self.config.feature_dim + self.config.view_dim + self.config.n_appearance_embedding_dims,
-            n_output_dims=self.color_dim * self.n_offsets,
-            n_layers=self.config.mlp_n_layers,
-            n_neurons=self.config.feature_dim,
-            activation="ReLU",
-            output_activation="Sigmoid",
-        )
-        if self.config.use_feature_bank:
-            self.gaussian_mlps["feature_bank"] = NetworkFactory(tcnn=self.config.tcnn).get_network(
-                n_input_dims=self.config.view_dim,
-                n_output_dims=3,
-                n_layers=2,
-                n_neurons=self.config.feature_dim,
-                activation="ReLU",
-                output_activation="None",
+        if self.config.view_sh_level > 0:
+            cov_mlp = MLPWithSHEncodingIdentity(
+                identity_dim=self.config.feature_dim,
+                levels=self.config.view_sh_level,
+                out_dim=7 * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation="tcnn" if self.config.tcnn else "torch",
             )
+        else:
+            cov_mlp = MLP(
+                in_dim=self.config.view_dim + self.config.feature_dim,
+                out_dim=7 * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        self.gaussian_mlps["cov"] = cov_mlp
 
-        if self.config.feature_adapter.dim_out > 0:
+        # color: return 3*n_offsets
+        if self.config.view_sh_level > 0:
+            color_mlp = MLPWithSHEncodingIdentity(
+                identity_dim=self.config.feature_dim + self.config.n_appearance_embedding_dims,
+                levels=self.config.view_sh_level,
+                out_dim=self.color_dim * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=nn.Sigmoid(),
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        else:
+            color_mlp = MLP(
+                in_dim=self.config.view_dim + self.config.feature_dim + self.config.n_appearance_embedding_dims,
+                out_dim=self.color_dim * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=nn.Sigmoid(),
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        self.gaussian_mlps["color"] = color_mlp
+
+        if self.config.use_feature_bank:
+            # feature_bank: return 3*n_offsets
+            if self.config.view_sh_level > 0:
+                feature_bank = MLPWithSHEncoding(
+                    levels=self.config.view_sh_level,
+                    out_dim=3,
+                    num_layers=self.config.mlp_n_layers,
+                    layer_width=self.config.hidden_dim,
+                    activation=nn.ReLU(),
+                    out_activation=None,
+                )
+            else:
+                feature_bank = MLP(
+                    in_dim=self.config.view_dim,
+                    out_dim=3,
+                    num_layers=self.config.mlp_n_layers,
+                    layer_width=self.config.hidden_dim,
+                    activation=nn.ReLU(),
+                    out_activation=None,
+                    implementation="tcnn" if self.config.tcnn else "torch",
+                )
+            self.gaussian_mlps["feature_bank"] = feature_bank
+
+        if self.config.feature_adapter.out_dim > 0:
             self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
 
     def reset_parameters(self):
@@ -222,7 +286,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             except:
                 pass
             if gt_dim > 0:
-                self.config.feature_adapter.dim_out = gt_dim
+                self.config.feature_adapter.out_dim = gt_dim
 
         self.create_mlps()
         self.reset_parameters()
@@ -260,6 +324,8 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     def training_setup_extra_properties(self, module, *args, **kwargs):
         if self.config.optimization.mlp_scheduler.max_steps is None:
             self.config.optimization.mlp_scheduler.max_steps = module.trainer.max_steps
+        if self.config.optimization.anchor_features_lr_scheduler.max_steps is None:
+            self.config.optimization.anchor_features_lr_scheduler.max_steps = module.trainer.max_steps
 
         optimization_config = self.config.optimization
         optimizer_factory = self.config.optimization.optimizer
@@ -300,7 +366,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
                     "name": "feature_bank_mlp",
                 }
             )
-        if self.config.feature_adapter.dim_out > 0:
+        if self.config.feature_adapter.out_dim > 0:
             mlp_l.append(
                 {
                     "params": self.gaussian_mlps["feature_adapter"].parameters(),
@@ -311,6 +377,10 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         mlp_optimizer = mlp_optimizer_factory.instantiate(mlp_l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(mlp_optimizer, module)
 
+        constant_lr_scheduler = self.config.optimization.anchor_features_lr_scheduler.instantiate().get_scheduler(
+            constant_lr_optimizer, optimization_config.anchor_features_lr
+        )
+
         scheduler_lr_finals = [
             optimization_config.opacity_mlp_lr_final,
             optimization_config.cov_mlp_lr_final,
@@ -318,12 +388,12 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         ]
         if self.config.use_feature_bank:
             scheduler_lr_finals.append(optimization_config.feature_bank_mlp_lr_final)
-        if self.config.feature_adapter.dim_out > 0:
+        if self.config.feature_adapter.out_dim > 0:
             scheduler_lr_finals.append(self.config.feature_adapter.optimization.lr_final)
 
         mlp_scheduler = mlp_scheduler_factory.instantiate().get_schedulers(mlp_optimizer, scheduler_lr_finals)
 
-        return [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler]
+        return [mlp_optimizer, constant_lr_optimizer], [constant_lr_scheduler, mlp_scheduler]
 
     def train(self, mode=True):
         for mlp in self.gaussian_mlps.values():

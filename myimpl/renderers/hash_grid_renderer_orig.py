@@ -55,7 +55,7 @@ class HashGridGaussianRendererModule(GridGaussianRendererModule):
         projections = GridRendererUtils.concatenate_projections(projections_list, isects_list)
         means2d, *_ = projections
 
-        input_features = means2d.new_zeros((0, pc.config.hash_grid_feature.out_dim))
+        input_features = means2d.new_zeros((0, pc.config.feature_dim))
         input_opacities = means2d.new_zeros((0,))
         for cam_id in range(len(viewpoint_camera)):
             _xyz, _, _, _, _opacities, _anchor_mask, _primitive_mask, *_ = properties_list[cam_id]
@@ -70,12 +70,7 @@ class HashGridGaussianRendererModule(GridGaussianRendererModule):
             preprocessed_camera=preprocessed_camera,
             projections=projections,
             properties=(input_features, input_opacities),
-            bg_color=means2d.new_zeros((len(viewpoint_camera), pc.config.hash_grid_feature.out_dim)),
+            bg_color=means2d.new_zeros((len(viewpoint_camera), pc.config.feature_dim)),
             tile_size=self.config.block_size,
         )
-        aligned_feature = None
-        feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
-        if feature_adapter is not None:
-            aligned_feature = feature_adapter(render_feature)
-
-        return render_feature, aligned_feature, alpha
+        return render_feature, alpha

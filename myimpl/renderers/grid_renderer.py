@@ -281,18 +281,16 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         render_feature, aligned_feature, feature_camera = None, None, None
         if self.is_type_required(render_type_bits, self._FEATURE_REQUIRED):
             feature_camera = GridRendererUtils.get_feature_cameras(viewpoint_camera, self.config.render_feature_size)
-            render_feature, _ = self.render_feature(
+            render_feature, aligned_feature, _ = self.render_feature(
                 properties_list,
                 feature_camera,
                 pc,
                 scaling_modifier=scaling_modifier,
                 **kwargs,
             )
-            feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
-            if feature_adapter is not None:
-                aligned_feature = feature_adapter(render_feature)
-                aligned_feature = aligned_feature.permute(0, 3, 1, 2).squeeze(0)
             render_feature = render_feature.permute(0, 3, 1, 2).squeeze(0)
+            if aligned_feature is not None:
+                aligned_feature = aligned_feature.permute(0, 3, 1, 2).squeeze(0)
 
         output_pkg = {}
         # render output
@@ -374,7 +372,12 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             bg_color=means2d.new_zeros((len(viewpoint_camera), pc.config.feature_dim)),
             tile_size=self.config.block_size,
         )
-        return render_feature, alpha
+        aligned_feature = None
+        feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
+        if feature_adapter is not None:
+            aligned_feature = feature_adapter(render_feature)
+
+        return render_feature, aligned_feature, alpha
 
     def setup_web_viewer_tabs(self, viewer, server, tabs):
         super().setup_web_viewer_tabs(viewer, server, tabs)

@@ -59,7 +59,14 @@ class GridGaussianBase(Gaussian):
     extend_ratio: float = 0.1
     """Extend ratio of the grid relative to original point cloud"""
 
-    view_dim: int = 3
+    view_dim: int = field(default=3, init=False)
+
+    view_sh_level: int = 0
+    """
+    SH level for view-dependent encoding:
+    - 0: no sh encoding, [B, 3]
+    - D: enable sh encoding, [B, D^2]. **D <= 4**
+    """
 
     n_appearance_embedding_dims: int = 0
 
@@ -68,6 +75,14 @@ class GridGaussianBase(Gaussian):
     sh_degree: int = 3
 
     optimization: GridOptimizationConfigBase = field(default_factory=lambda: GridOptimizationConfigBase())
+
+    def __post_init__(self):
+        if self.view_sh_level > 4:
+            raise ValueError(f"SH level {self.view_sh_level} is not supported, max is 4")
+        if self.view_sh_level == 0:
+            self.view_dim = 3
+        else:
+            self.view_dim = self.view_sh_level**2
 
 
 class GridGaussianModelBase(GaussianModel):

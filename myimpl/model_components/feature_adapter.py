@@ -35,7 +35,7 @@ class AdapterOptimizationConfig:
 
 @dataclass
 class AdapterConfig:
-    dim_out: int = field(default=-1, init=False)
+    out_dim: int = field(default=-1, init=False)
 
     optimization: AdapterOptimizationConfig = field(default_factory=lambda: AdapterOptimizationConfig())
 
@@ -48,12 +48,12 @@ class Adapter(nn.Module):
         super().__init__()
         self.config = config
 
-        mat = torch.zeros((dim_in, self.config.dim_out), dtype=torch.float).normal_(0, 0.02)
+        mat = torch.zeros((dim_in, self.config.out_dim), dtype=torch.float).normal_(0, 0.02)
         self.weight = nn.Parameter(mat, requires_grad=True)
 
     def forward(self, x: torch.Tensor):
         """
         x: [H, W, C]
         """
-        out = torch.einsum("...hwc, cd -> ...hwd", x, self.weight)
+        out = torch.einsum("...c, cd -> ...d", x, self.weight)
         return out

@@ -1,4 +1,5 @@
 # modified from nerf-studio (https://github.com/nerfstudio-project/nerfstudio)
+from abc import abstractmethod
 from typing import Literal, Optional, Sequence
 
 import numpy as np
@@ -6,7 +7,50 @@ import torch
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
 
-from .base import TCNN_EXISTS, Encoding, tcnn
+from internal.utils.sh_utils import eval_sh
+
+from .base import TCNN_EXISTS, FieldComponent, tcnn
+
+MAX_SH_DEGREE = 4
+
+
+class Encoding(FieldComponent):
+    """Encode an input tensor. Intended to be subclassed
+
+    Args:
+        in_dim: Input dimension of tensor
+    """
+
+    def __init__(self, in_dim: int) -> None:
+        if in_dim <= 0:
+            raise ValueError("Input dimension should be greater than zero")
+        super().__init__(in_dim=in_dim)
+
+    @classmethod
+    def get_tcnn_encoding_config(cls) -> dict:
+        """Get the encoding configuration for tcnn if implemented"""
+        raise NotImplementedError("Encoding does not have a TCNN implementation")
+
+    @abstractmethod
+    def forward(self, in_tensor: Shaped[Tensor, "*bs input_dim"]) -> Shaped[Tensor, "*bs output_dim"]:
+        """Call forward and returns and processed tensor
+
+        Args:
+            in_tensor: the input tensor to process
+        """
+        raise NotImplementedError
+
+
+class Identity(Encoding):
+    """Identity encoding (Does not modify input)"""
+
+    def get_out_dim(self) -> int:
+        if self.in_dim is None:
+            raise ValueError("Input dimension has not been set")
+        return self.in_dim
+
+    def forward(self, in_tensor: Shaped[Tensor, "*bs input_dim"]) -> Shaped[Tensor, "*bs output_dim"]:
+        return in_tensor
 
 
 class HashEncoding(Encoding):
@@ -330,3 +374,120 @@ class MixedHashEncoding(Encoding):
         if self.tcnn_encoding is not None:
             return self.tcnn_encoding(in_tensor)
         return self.pytorch_fwd(in_tensor)
+
+
+class SHEncoding(Encoding):
+    """Spherical harmonic encoding
+
+    Args:
+        levels: Number of spherical harmonic levels to encode. (level = sh degree + 1)
+    """
+
+    def __init__(self, levels: int = 4, implementation: Literal["tcnn", "torch"] = "torch") -> None:
+        super().__init__(in_dim=3)
+
+        if levels <= 0 or levels > MAX_SH_DEGREE + 1:
+            raise ValueError(
+                f"Spherical harmonic encoding only supports 1 to {MAX_SH_DEGREE + 1} levels, requested {levels}"
+            )
+
+        self.levels = levels
+
+        self.tcnn_encoding = None
+        if implementation == "tcnn" and not TCNN_EXISTS:
+            # print_tcnn_speed_warning("SHEncoding")
+            pass
+        elif implementation == "tcnn":
+            encoding_config = self.get_tcnn_encoding_config(levels=self.levels)
+            self.tcnn_encoding = tcnn.Encoding(
+                n_input_dims=3,
+                encoding_config=encoding_config,
+            )
+
+    @classmethod
+    def get_tcnn_encoding_config(cls, levels: int) -> dict:
+        """Get the encoding configuration for tcnn if implemented"""
+        encoding_config = {
+            "otype": "SphericalHarmonics",
+            "degree": levels,
+        }
+        return encoding_config
+
+    def get_out_dim(self) -> int:
+        return self.levels**2
+
+    @torch.no_grad()
+    def pytorch_fwd(self, in_tensor: Float[Tensor, "*bs input_dim"]) -> Float[Tensor, "*bs output_dim"]:
+        """Forward pass using pytorch. Significantly slower than TCNN implementation."""
+        return self.components_from_spherical_harmonics(degree=self.levels - 1, directions=in_tensor)
+
+    def forward(self, in_tensor: Float[Tensor, "*bs input_dim"]) -> Float[Tensor, "*bs output_dim"]:
+        if self.tcnn_encoding is not None:
+            return self.tcnn_encoding(in_tensor)
+        return self.pytorch_fwd(in_tensor)
+
+    @classmethod
+    def components_from_spherical_harmonics(
+        cls, degree: int, directions: Float[Tensor, "*batch 3"]
+    ) -> Float[Tensor, "*batch components"]:
+        """
+        Returns value for each component of spherical harmonics.
+
+        Args:
+            degree: Number of spherical harmonic degrees to compute.
+            directions: Spherical harmonic coefficients
+        """
+        assert 0 <= degree <= MAX_SH_DEGREE, f"SH degree must be in [0, {MAX_SH_DEGREE}], got {degree}"
+        assert directions.shape[-1] == 3, f"Direction input should have three dimensions. Got {directions.shape[-1]}"
+
+        num_components = (degree + 1) ** 2
+        components = torch.zeros((*directions.shape[:-1], num_components), device=directions.device)
+
+        x = directions[..., 0]
+        y = directions[..., 1]
+        z = directions[..., 2]
+
+        xx = x**2
+        yy = y**2
+        zz = z**2
+
+        # l0
+        components[..., 0] = 0.28209479177387814
+
+        # l1
+        if degree > 0:
+            components[..., 1] = 0.4886025119029199 * y
+            components[..., 2] = 0.4886025119029199 * z
+            components[..., 3] = 0.4886025119029199 * x
+
+        # l2
+        if degree > 1:
+            components[..., 4] = 1.0925484305920792 * x * y
+            components[..., 5] = 1.0925484305920792 * y * z
+            components[..., 6] = 0.9461746957575601 * zz - 0.31539156525251999
+            components[..., 7] = 1.0925484305920792 * x * z
+            components[..., 8] = 0.5462742152960396 * (xx - yy)
+
+        # l3
+        if degree > 2:
+            components[..., 9] = 0.5900435899266435 * y * (3 * xx - yy)
+            components[..., 10] = 2.890611442640554 * x * y * z
+            components[..., 11] = 0.4570457994644658 * y * (5 * zz - 1)
+            components[..., 12] = 0.3731763325901154 * z * (5 * zz - 3)
+            components[..., 13] = 0.4570457994644658 * x * (5 * zz - 1)
+            components[..., 14] = 1.445305721320277 * z * (xx - yy)
+            components[..., 15] = 0.5900435899266435 * x * (xx - 3 * yy)
+
+        # l4
+        if degree > 3:
+            components[..., 16] = 2.5033429417967046 * x * y * (xx - yy)
+            components[..., 17] = 1.7701307697799304 * y * z * (3 * xx - yy)
+            components[..., 18] = 0.9461746957575601 * x * y * (7 * zz - 1)
+            components[..., 19] = 0.6690465435572892 * y * z * (7 * zz - 3)
+            components[..., 20] = 0.10578554691520431 * (35 * zz * zz - 30 * zz + 3)
+            components[..., 21] = 0.6690465435572892 * x * z * (7 * zz - 3)
+            components[..., 22] = 0.47308734787878004 * (xx - yy) * (7 * zz - 1)
+            components[..., 23] = 1.7701307697799304 * x * z * (xx - 3 * yy)
+            components[..., 24] = 0.6258357354491761 * (xx * (xx - 3 * yy) - yy * (3 * xx - yy))
+
+        return components

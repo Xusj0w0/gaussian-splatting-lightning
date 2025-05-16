@@ -7,12 +7,7 @@ from .utils import CandidateAnchors, GridFilteringUtils
 
 class HashGridCandidateAnchors(CandidateAnchors):
     def get_scaffold_properties(self, gaussian_model, scatter_mode="max"):
-        # n_anchors = self.keep_mask.sum()
-        # feat_dim = gaussian_model.get_anchor_features.shape[-1]
-        # anchor_features = gaussian_model.get_anchor_features.new_zeros((n_anchors, feat_dim))
-        # return {"anchor_features": anchor_features}
-
-        return super().get_scaffold_properties(gaussian_model, scatter_mode)
+        return {}
 
 
 class HashGridFilteringUtils(GridFilteringUtils):
