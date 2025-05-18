@@ -45,10 +45,10 @@ class HashGridFeatureConfig:
     A scene containing 1e7 anchors with 32-dim features, param number = 1e7 * 32 = 320M
     """
 
-    num_levels: int = 12
+    num_levels: int = 8
     min_res: int = 2 << 4
     max_res: int = 2 << 11
-    log2_hashmap_size: int = 18
+    log2_hashmap_size: int = 15
     features_per_level: int = 4
 
     use_mixed: bool = False
@@ -131,16 +131,18 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
         normalized = self.normalize_xyz(xyz)
         mask = ((normalized > 0.0) & (normalized < 1.0)).all(dim=-1, keepdim=True)
         masked = normalized * mask
-        return self.get_hash_feature_mlp(masked)
+        return self.get_hash_feature_mlp(masked).float()
 
     def compute_anchor_features(self, anchors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        hash_feature = self.compute_hash_features(anchors)
+        hash_features = self.compute_hash_features(anchors)
         anchor_features = self.get_anchor_features[mask]
         feature_adapter = self.get_feature_adapter_mlp
         if feature_adapter is not None:
-            hash_feature = feature_adapter(hash_feature.clone().detach())
+            hash_features = feature_adapter(hash_features.clone().detach())
 
-        return hash_feature + anchor_features
+        return anchor_features + hash_features
+        # return anchor_features + hash_features * F.tanh(anchor_features + hash_features)
+        # return torch.cat([anchor_features, hash_features], dim=-1)
 
     def create_mlps(self):
         self.gaussian_mlps = nn.ModuleDict()
@@ -150,14 +152,19 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
         # self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
         # self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
 
+        # add
         self.config.hash_grid_feature.out_dim = self.config.feature_adapter.out_dim
         self.config.feature_adapter.out_dim = self.config.feature_dim
         self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
-        self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(
-            self.config.hash_grid_feature.out_dim
-        )
+        self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.hash_grid_feature.out_dim)
+        feature_dim = self.config.feature_dim
 
-        feature_dim = self.config.feature_dim  #  + self.config.feature_adapter.dim_out
+        # cat
+        # self.config.hash_grid_feature.out_dim = self.config.feature_adapter.out_dim
+        # self.config.feature_adapter.out_dim = self.config.feature_dim
+        # self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
+        # self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.hash_grid_feature.out_dim)
+        # feature_dim = self.config.feature_adapter.out_dim + self.config.feature_dim
 
         # opacity: return 1*n_offsets
         self.gaussian_mlps["opacity"] = MLP(
@@ -276,9 +283,7 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
         ]
         optimizer = mlp_optimizer_factory.instantiate(mlp_l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(optimizer, module)
-        scheduler = mlp_scheduler_factory.instantiate().get_scheduler(
-            optimizer, optimization_config.hash_feature_lr_final
-        )
+        scheduler = mlp_scheduler_factory.instantiate().get_scheduler(optimizer, optimization_config.hash_feature_lr_final)
 
         optimizers.append(optimizer)
         schedulers.append(scheduler)
