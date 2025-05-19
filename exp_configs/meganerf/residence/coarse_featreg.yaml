@@ -1,5 +1,6 @@
 max_steps: 60_000
 data:
+  batch_size: 2
   path: datasets/MegaNeRF/residence
   parser:
     class_path: myimpl.dataparsers.regularization_dataparser.Regularization
@@ -16,11 +17,11 @@ model:
   renderer_output_types:
   - rgb
   - acc_depth
+  - feature
   gaussian:
-    class_path: myimpl.models.grid_adapter_gaussian.LoDGridAdapterGaussian
+    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
     init_args:
       feature_adapter:
-        dim_out: 32
         optimization:
           lr_init: 2e-3
           lr_final: 2e-5
@@ -51,8 +52,10 @@ model:
     init_args:
       normal_from_iter: 7_000
       multiview_from_iter: 7_000
+      lambda_feature:
+        enabled: true
   density:
-    class_path: myimpl.density_controllers.grid_density_controller.GridGaussianDensityController
+    class_path: myimpl.density_controllers.grid_density_controllers.GridGaussianDensityController
     init_args:
       densify_until_iter: 40_000
 save_iterations:

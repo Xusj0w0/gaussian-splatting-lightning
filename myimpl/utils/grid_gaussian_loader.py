@@ -26,14 +26,14 @@ class GridGaussianUtils:
     # fmt: off
     GRID_GAUSSIAN_PROPERTIES = {
         1: {
-            "buffers": ["voxel_size", "grid_origin"],
+            "buffers": ["voxel_size", "transforms", "grid_bbox"],
             "properties": ["anchors", "offsets", "scales", "rotations",
                         "anchor_features",],
             "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp",
                      "feature_adapter_mlp"],
         },
         2: {
-            "buffers": ["voxel_size", "grid_origin", "max_level", "start_level", "standard_dist", "visibility_threshold"],
+            "buffers": ["voxel_size", "transforms", "grid_bbox", "max_level", "start_level", "standard_dist", "visibility_threshold"],
             "properties": ["anchors", "offsets", "scales", "rotations", "levels", "extra_levels",
                         "anchor_features",],
             "mlps": ["opacity_mlp", "cov_mlp", "color_mlp", "feature_bank_mlp",
@@ -51,6 +51,7 @@ class GridGaussianUtils:
         "cov_mlp": "cov",
         "color_mlp": "color",
         "feature_bank_mlp": "feature_bank",
+        "feature_adapter_mlp": "feature_adapter",
     }
 
     @classmethod
