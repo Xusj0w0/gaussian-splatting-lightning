@@ -239,11 +239,12 @@ class GridGaussianModelBase(GaussianModel):
             rotations[:, 0] = 1.0
 
         elif mode == "tensors":
-            assert tensors is not None and "anchors" in tensors
-            anchors = tensors["anchors"]
-            offsets = tensors["offsets"]
-            scales = tensors["scales"]
-            rotations = tensors["rotations"]
+            assert tensors is not None
+            _tensors = tensors["properties"]
+            anchors = _tensors["means"]
+            offsets = _tensors["offsets"]
+            scales = _tensors["scales"]
+            rotations = _tensors["rotations"]
 
         else:
             raise ValueError(f"Unsupported mode {mode}")

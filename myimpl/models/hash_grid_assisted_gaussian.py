@@ -59,26 +59,12 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
 
         return anchor_features + hash_features
 
-    def create_mlps(self, pl_module, feature_dim: Optional[int] = None):
-        train_set = pl_module.trainer.datamodule.dataparser_outputs.train_set
-        semantic_dim = train_set.extra_data_processor[SemanticData.KEY].dim
-        assert semantic_dim > 0, "Semantic data is not available for training."
-
-        # configure hash_feature_grid and feature_adapter to match the new feature_dim
-        # self.config.hash_feature_grid.out_dim = semantic_dim
-        # self.config.feature_adapter.in_dim = self.config.feature_dim
-        # self.config.feature_adapter.out_dim = semantic_dim
-        # super().create_mlps(pl_module, feature_dim=semantic_dim)
-
-        self.config.hash_feature_grid.out_dim = self.config.feature_dim  # TODO: maybe semantic dim
-        self.config.feature_adapter.in_dim = self.config.feature_dim
-        self.config.feature_adapter.out_dim = semantic_dim
-        self.config.reduced_feature_adapter.in_dim = self.config.feature_dim
-        self.config.reduced_feature_adapter.out_dim = semantic_dim
-        super().create_mlps(pl_module, feature_dim=semantic_dim)
-
-        self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_feature_grid.instantiate()
-        self.gaussian_mlps["reduced_feature_mlp"] = self.config.reduced_feature_adapter.instantiate()
+    def create_mlps(self, feature_dim: Optional[int] = None):
+        super().create_mlps(feature_dim)
+        if self.config.hash_feature_grid.out_dim > 0:
+            self.gaussian_mlps["hash_feature"] = self.config.hash_feature_grid.instantiate()
+        if self.config.reduced_feature_adapter.out_dim > 0:
+            self.gaussian_mlps["reduced_feature"] = self.config.reduced_feature_adapter.instantiate()
 
     def get_extra_properties(
         self,
@@ -86,16 +72,39 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
         n: Optional[int] = None,
         tensors: Optional[Dict[str, torch.Tensor]] = None,
         mode: Literal["pcd", "number", "tensors"] = "pcd",
+        pl_module: Optional[lightning.LightningModule] = None,
         *args,
         **kwargs,
     ):
+        try:
+            train_set = pl_module.trainer.datamodule.dataparser_outputs.train_set
+            semantic_dim = train_set.extra_data_processor[SemanticData.KEY].dim
+            assert semantic_dim > 0, "Semantic dim should be greater than 0"
+
+            self.config.hash_feature_grid.out_dim = self.config.feature_dim  # TODO: maybe semantic dim
+            self.config.feature_adapter.in_dim = self.config.feature_dim
+            self.config.feature_adapter.out_dim = semantic_dim
+            self.config.reduced_feature_adapter.in_dim = self.config.feature_dim
+            self.config.reduced_feature_adapter.out_dim = semantic_dim
+        except:
+            pass
+
         # add temp `anchor_features`
         property_dict = super().get_extra_properties(
             fused_point_cloud=fused_point_cloud, n=n, tensors=tensors, mode=mode, *args, **kwargs
         )
 
         if mode == "tensors":
-            self.gaussian_mlps["hash_feature_mlp"].load_state_dict(tensors["hash_feature_mlp"])
+            _tensors = tensors["mlps"]
+
+            in_dim, out_dim = tensors["feature_adapter"]["weight"].shape
+
+            tensors["reduced_feature_mlp"]["weight"].shape
+            state_feature_dim = _tensors["opacity"]["layers.0.weight"].shape[-1]
+            device = self.gaussian_mlps["opacity"].layers[0].weight.device
+
+            self.gaussian_mlps["hash_feature"].load_state_dict(tensors["hash_feature"])
+            self.gaussian_mlps["reduced_feature"].load_state_dict(tensors["reduced_feature"])
         return property_dict
 
     def training_setup_extra_properties(self, module, *args, **kwargs):
@@ -106,12 +115,12 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
         mlp_scheduler_factory = self.config.optimization.mlp_scheduler
         mlp_l = [
             {
-                "params": self.gaussian_mlps["hash_feature_mlp"].parameters(),
+                "params": self.gaussian_mlps["hash_feature"].parameters(),
                 "lr": self.config.optimization.hash_feature_lr_init,
                 "name": "hash_feature_mlp",  # `_mlp` avoid errors when cat tensors to optimizers
             },
             {
-                "params": self.gaussian_mlps["reduced_feature_mlp"].parameters(),
+                "params": self.gaussian_mlps["reduced_feature"].parameters(),
                 "lr": self.config.feature_adapter.optimization.lr_init,
                 "name": "reduced_adapter_mlp",
             },
@@ -129,8 +138,8 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
 
     @property
     def get_hash_feature_mlp(self):
-        return self.gaussian_mlps["hash_feature_mlp"]
+        return self.gaussian_mlps["hash_feature"]
 
     @property
     def get_reduced_feature_adapter_mlp(self):
-        return self.gaussian_mlps["reduced_feature_mlp"]
+        return self.gaussian_mlps["reduced_feature"]

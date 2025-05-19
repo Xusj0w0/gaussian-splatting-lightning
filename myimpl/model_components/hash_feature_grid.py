@@ -53,7 +53,7 @@ class HashFeatureGridConfig:
 
     num_layers: int = 2
     layer_width: int = 64
-    out_dim: int = 16
+    out_dim: int = -1
     activation: Literal["ReLU", "Sigmoid", "Tanh", "None"] = "ReLU"
     out_activation: Literal["ReLU", "Sigmoid", "Tanh", "None"] = "None"
 

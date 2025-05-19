@@ -7,5 +7,5 @@ CUDA_VISIBLE_DEVICES=7 python large_scene/tools/partition.py --project_name resi
 **partition training**
 
 ```shell
-CUDA_VISIBLE_DEVICES=7 python large_scene/tools/train.py --ignore-slurm -p part-bs2-3-2 --initialize_from gaussian_model.pt --max-steps 60000 --n-processes 2 --process-id 2 --config  exp_configs/meganerf/residence/finetune.yaml
+CUDA_VISIBLE_DEVICES=7 python large_scene/tools/train.py --ignore-slurm -p part-bs2-3-2 --initialize_from gaussian_model.pt --max-steps 60000 --n-processes 2 --process-id 2 --config exp_configs/meganerf/residence/finetune.yaml
 ```

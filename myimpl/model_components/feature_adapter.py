@@ -49,13 +49,19 @@ class Adapter(nn.Module):
     def __init__(self, config: AdapterConfig):
         super().__init__()
         self.config = config
+        self.register_buffer("in_dim", torch.tensor(config.in_dim, dtype=torch.int))
+        self.register_buffer("out_dim", torch.tensor(config.out_dim, dtype=torch.int))
 
-        mat = torch.zeros((self.config.in_dim, self.config.out_dim), dtype=torch.float).normal_(0, 0.02)
-        self.weight = nn.Parameter(mat, requires_grad=True)
+        if self.config.in_dim != self.config.out_dim:
+            mat = torch.zeros((self.config.in_dim, self.config.out_dim), dtype=torch.float).normal_(0, 0.02)
+            self.weight = nn.Parameter(mat, requires_grad=True)
+        else:
+            self.weight = None
 
     def forward(self, x: torch.Tensor):
         """
         x: [H, W, C]
         """
-        out = torch.einsum("...c, cd -> ...d", x, self.weight)
-        return out
+        if self.weight is None:
+            return x
+        return torch.einsum("...c, cd -> ...d", x, self.weight)

@@ -75,14 +75,15 @@ class HashGridGaussianModel(ImplicitLoDGridGaussianModel):
         *args,
         **kwargs,
     ):
-        if mode == "tensors" and "anchor_features" not in tensors:
-            tensors["anchor_features"] = torch.zeros((1,), dtype=torch.float)
+        if mode == "tensors" and "anchor_features" not in tensors.get("properties", []):
+            tensors["properties"]["anchor_features"] = torch.zeros((1,), dtype=torch.float)
         property_dict = super().get_extra_properties(
             fused_point_cloud=fused_point_cloud, n=n, tensors=tensors, mode=mode, *args, **kwargs
         )
-        del property_dict["anchor_features"]
+        del property_dict["properties"]["anchor_features"]
 
         if mode == "tensors":
+            _tensors = tensors["mlps"]
             self.gaussian_mlps["hash_feature_mlp"].load_state_dict(tensors["hash_feature_mlp"])
         return property_dict
 

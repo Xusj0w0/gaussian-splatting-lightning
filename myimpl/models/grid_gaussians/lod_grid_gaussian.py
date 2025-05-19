@@ -243,10 +243,11 @@ class LoDGridGaussianModel(GridGaussianModelBase):
             levels = torch.zeros((n,), dtype=torch.int)
             extra_levels = torch.zeros((n,), dtype=torch.float)
         elif mode == "tensors":
-            assert tensors is not None and "levels" in tensors
-            levels = tensors["levels"]
+            assert tensors is not None
+            _tensors = tensors["properties"]
+            levels = _tensors["levels"]
             # extra_levels = torch.zeros((levels.shape[0],), dtype=torch.float)
-            extra_levels = tensors["extra_levels"]
+            extra_levels = _tensors["extra_levels"]
         else:
             raise ValueError(f"Unsupported mode {mode}")
 
