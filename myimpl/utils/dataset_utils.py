@@ -93,8 +93,9 @@ class NumpyDataProcessor(ExtraDataProcessor):
         super().__init__(*args, **kwargs)
         self.device = device
 
-    def update_properties(self, dataset):
-        self.device = dataset.image_device
+    def update_properties(self, *args, **kwargs):
+        if kwargs.get("dataset", None) is not None:
+            self.device = kwargs["dataset"].image_device
 
     def __call__(self, extra_data: NumpyData):
         try:
@@ -111,7 +112,19 @@ class SemanticData(NumpyData):
 class SemanticDataProcessor(NumpyDataProcessor):
     KEY: str = "semantic"
 
+    def __init__(self, dim: int, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dim = dim
+
+    def update_properties(self, *args, **kwargs):
+        super().update_properties(*args, **kwargs)
+        if kwargs.get("lambda_feature", None) is not None:
+            self.lambda_feature = kwargs["lambda_feature"]
+
     def __call__(self, extra_data: SemanticData, *args, **kwargs):
+        if not self.lambda_feature.enabled:
+            return None
+
         return super().__call__(extra_data)
 
 

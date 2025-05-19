@@ -168,10 +168,14 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
     def training_forward(self, step, module, viewpoint_camera, pc, bg_color, render_types=None, **kwargs):
         try:
             feature_until_iter = module.metric.config.feature_until_iter
-            if step > feature_until_iter and "feature" in render_types:
+            if step > feature_until_iter and module.metric.config.lambda_feature.enabled:
                 render_types.remove("feature")
+                module.metric.config.lambda_feature.enabled = False
         except:
-            pass        
+            pass
+        # log feature image
+        if step % 2000 == 0 and "feature" not in render_types:
+            render_types.append("feature")
 
         output_pkg = self(viewpoint_camera, pc, bg_color, render_types=render_types, **kwargs)
 
@@ -185,6 +189,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             # pseudo_view = MultiViewLossUtils.get_pseudo_view(viewpoint_camera, output_pkg["acc_depth"], 0.0)
             pseudo_render = self(pseudo_view, pc, bg_color, render_types=render_types, **kwargs)
             output_pkg.update({"pseudo_view": {"view": pseudo_view, "render": pseudo_render}})
+
         return output_pkg
 
     def forward(

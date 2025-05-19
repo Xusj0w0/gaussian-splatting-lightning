@@ -171,95 +171,34 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
     def compute_anchor_features(self, anchors: torch.Tensor, anchor_mask: torch.Tensor):
         return self.get_anchor_features[anchor_mask]
 
-    def create_mlps(self):
+    def create_mlps(self, pl_module, feature_dim: Optional[int] = None):
         self.gaussian_mlps = nn.ModuleDict()
         # create mlps
         # opacity: return 1*n_offsets
-        self.gaussian_mlps["opacity"] = MLP(
-            in_dim=self.config.feature_dim,
-            out_dim=self.n_offsets,
-            num_layers=self.config.mlp_n_layers,
-            layer_width=self.config.hidden_dim,
-            activation=nn.ReLU(),
-            out_activation=nn.Tanh(),
-            implementation="tcnn" if self.config.tcnn else "torch",
-        )
+        self.gaussian_mlps["opacity"] = self.create_opacity_mlp(feature_dim)
 
         # cov: return 7*n_offsets
         # 3 for scales, multiply with anchor-level scales to get gaussian scales
         # 4 for rotations
-        if self.config.view_sh_level > 0:
-            cov_mlp = MLPWithSHEncodingIdentity(
-                identity_dim=self.config.feature_dim,
-                levels=self.config.view_sh_level,
-                out_dim=7 * self.n_offsets,
-                num_layers=self.config.mlp_n_layers,
-                layer_width=self.config.hidden_dim,
-                activation=nn.ReLU(),
-                out_activation=None,
-                implementation="tcnn" if self.config.tcnn else "torch",
-            )
-        else:
-            cov_mlp = MLP(
-                in_dim=self.config.view_dim + self.config.feature_dim,
-                out_dim=7 * self.n_offsets,
-                num_layers=self.config.mlp_n_layers,
-                layer_width=self.config.hidden_dim,
-                activation=nn.ReLU(),
-                out_activation=None,
-                implementation="tcnn" if self.config.tcnn else "torch",
-            )
-        self.gaussian_mlps["cov"] = cov_mlp
+        self.gaussian_mlps["cov"] = self.create_cov_mlp(feature_dim)
 
         # color: return 3*n_offsets
-        if self.config.view_sh_level > 0:
-            color_mlp = MLPWithSHEncodingIdentity(
-                identity_dim=self.config.feature_dim + self.config.n_appearance_embedding_dims,
-                levels=self.config.view_sh_level,
-                out_dim=self.color_dim * self.n_offsets,
-                num_layers=self.config.mlp_n_layers,
-                layer_width=self.config.hidden_dim,
-                activation=nn.ReLU(),
-                out_activation=nn.Sigmoid(),
-                implementation="tcnn" if self.config.tcnn else "torch",
-            )
-        else:
-            color_mlp = MLP(
-                in_dim=self.config.view_dim + self.config.feature_dim + self.config.n_appearance_embedding_dims,
-                out_dim=self.color_dim * self.n_offsets,
-                num_layers=self.config.mlp_n_layers,
-                layer_width=self.config.hidden_dim,
-                activation=nn.ReLU(),
-                out_activation=nn.Sigmoid(),
-                implementation="tcnn" if self.config.tcnn else "torch",
-            )
-        self.gaussian_mlps["color"] = color_mlp
+        self.gaussian_mlps["color"] = self.create_color_mlp(feature_dim)
 
         if self.config.use_feature_bank:
             # feature_bank: return 3*n_offsets
-            if self.config.view_sh_level > 0:
-                feature_bank = MLPWithSHEncoding(
-                    levels=self.config.view_sh_level,
-                    out_dim=3,
-                    num_layers=self.config.mlp_n_layers,
-                    layer_width=self.config.hidden_dim,
-                    activation=nn.ReLU(),
-                    out_activation=None,
-                )
-            else:
-                feature_bank = MLP(
-                    in_dim=self.config.view_dim,
-                    out_dim=3,
-                    num_layers=self.config.mlp_n_layers,
-                    layer_width=self.config.hidden_dim,
-                    activation=nn.ReLU(),
-                    out_activation=None,
-                    implementation="tcnn" if self.config.tcnn else "torch",
-                )
-            self.gaussian_mlps["feature_bank"] = feature_bank
+            self.gaussian_mlps["feature_bank"] = self.create_feature_bank()
 
-        if self.config.feature_adapter.out_dim > 0:
-            self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
+        try:
+            train_set = pl_module.trainer.datamodule.dataparser_outputs.train_set
+            semantic_dim = train_set.extra_data_processor[SemanticData.KEY].dim
+            if self.config.feature_adapter.out_dim < 0 and semantic_dim > 0:
+                self.config.feature_adapter.out_dim = semantic_dim
+                self.config.feature_adapter.in_dim = self.config.feature_dim
+            if self.config.feature_adapter.out_dim > 0:
+                self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate()
+        except:
+            pass
 
     def reset_parameters(self):
         for mlp in self.gaussian_mlps.values():
@@ -275,20 +214,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         *args,
         **kwargs,
     ):
-        if "feature" in getattr(pl_module, "renderer_output_types", []):
-            gt_dim = -1
-            try:
-                enable_adapter = pl_module.metric.config.lambda_feature.enabled
-                if enable_adapter:
-                    extra_data_sample = pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0].get(SemanticData.KEY) # fmt: skip
-                    shape = extra_data_sample.parse_numpy_shape_from_header()
-                    gt_dim = shape[-1]
-            except:
-                pass
-            if gt_dim > 0:
-                self.config.feature_adapter.out_dim = gt_dim
-
-        self.create_mlps()
+        self.create_mlps(pl_module)
         self.reset_parameters()
         if mode == "pcd":
             assert fused_point_cloud is not None
@@ -393,7 +319,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
 
         mlp_scheduler = mlp_scheduler_factory.instantiate().get_schedulers(mlp_optimizer, scheduler_lr_finals)
 
-        return [mlp_optimizer, constant_lr_optimizer], [constant_lr_scheduler, mlp_scheduler]
+        return [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler, constant_lr_scheduler]
 
     def train(self, mode=True):
         for mlp in self.gaussian_mlps.values():
@@ -404,6 +330,90 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         for mlp in self.gaussian_mlps.values():
             mlp.eval()
         return super().eval()
+
+    def create_opacity_mlp(self, feature_dim: Optional[int] = None):
+        feature_dim = feature_dim or self.config.feature_dim
+        return MLP(
+            in_dim=feature_dim,
+            out_dim=self.n_offsets,
+            num_layers=self.config.mlp_n_layers,
+            layer_width=self.config.hidden_dim,
+            activation=nn.ReLU(),
+            out_activation=nn.Tanh(),
+            implementation="tcnn" if self.config.tcnn else "torch",
+        )
+
+    def create_cov_mlp(self, feature_dim: Optional[int] = None):
+        feature_dim = feature_dim or self.config.feature_dim
+        if self.config.view_sh_level > 0:
+            cov_mlp = MLPWithSHEncodingIdentity(
+                identity_dim=feature_dim,
+                levels=self.config.view_sh_level,
+                out_dim=7 * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        else:
+            cov_mlp = MLP(
+                in_dim=self.config.view_dim + feature_dim,
+                out_dim=7 * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        return cov_mlp
+
+    def create_color_mlp(self, feature_dim: Optional[int] = None):
+        feature_dim = feature_dim or self.config.feature_dim
+        if self.config.view_sh_level > 0:
+            color_mlp = MLPWithSHEncodingIdentity(
+                identity_dim=feature_dim + self.config.n_appearance_embedding_dims,
+                levels=self.config.view_sh_level,
+                out_dim=self.color_dim * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=nn.Sigmoid(),
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        else:
+            color_mlp = MLP(
+                in_dim=self.config.view_dim + feature_dim + self.config.n_appearance_embedding_dims,
+                out_dim=self.color_dim * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=nn.Sigmoid(),
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        return color_mlp
+
+    def create_feature_bank(self):
+        if self.config.view_sh_level > 0:
+            feature_bank = MLPWithSHEncoding(
+                levels=self.config.view_sh_level,
+                out_dim=3,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+            )
+        else:
+            feature_bank = MLP(
+                in_dim=self.config.view_dim,
+                out_dim=3,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        return feature_bank
 
     @property
     def get_anchor_features(self):

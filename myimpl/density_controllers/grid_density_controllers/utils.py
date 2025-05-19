@@ -69,6 +69,12 @@ class CandidateAnchors:
         #     raise ValueError(f"scatter_mode {scatter_mode} not supported")
         # anchor_features = anchor_features[self.keep_mask]
 
+        if not (
+            getattr(gaussian_model, "get_anchor_features", None) is not None
+            and len(gaussian_model.get_anchor_features) > 0
+        ):
+            return {}
+
         keep_indices = torch.nonzero(self.keep_mask, as_tuple=True)[0]
         is_keep = self.unique_indices.unsqueeze(1) == keep_indices.unsqueeze(0)
         keep_mask, keep_idx_mapping = torch.nonzero(is_keep, as_tuple=True)

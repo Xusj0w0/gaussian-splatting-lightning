@@ -90,6 +90,24 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             if isinstance(v, WeightScheduler) and v.max_steps is None:
                 v.max_steps = pl_module.trainer.max_steps
 
+        # get semantic regularization dim
+        try:
+            extra_data_sample = pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0].get(
+                SemanticData.KEY
+            )
+            shape = extra_data_sample.parse_numpy_shape_from_header()
+            self.semantic_dim = shape[-1]
+        except:
+            self.semantic_dim = -1
+        # configure semantic data processor
+        if self.semantic_dim > 0:
+            pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data_processor.update_properties(
+                lambda_feature=self.config.lambda_feature
+            )
+            pl_module.trainer.datamodule.dataparser_outputs.val_set.extra_data_processor.update_properties(
+                lambda_feature=self.config.lambda_feature
+            )
+
     @staticmethod
     def _create_fused_ssim_adapter():
         # fmt: off
@@ -222,7 +240,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
 
             if gt_depth is not None and pred_depth is not None:
                 pred_depth = outputs["inverse_depth"]
-                loss_depth = self.config.depth_loss_func(gt_depth, pred_depth, mask)    
+                loss_depth = self.config.depth_loss_func(gt_depth, pred_depth, mask)
 
                 metrics["loss"] += self.config.lambda_depth(global_step) * loss_depth
                 metrics["loss_depth"] = loss_depth
@@ -231,16 +249,12 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
         return metrics, prog_bar
 
     def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
-        metrics, pbar = self._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
-
-        multiview_rendered = (
-            pl_module.trainer.datamodule.hparams["multiview"] is False
-            and "pseudo_view" not in pl_module.hparams["renderer_output_types"]
-        )
-
-        cameras, (image_name, gt_image, _), extra_data = batch
+        cameras, (image_name, gt_image, mask), extra_data = batch
+        # if single batch
         if isinstance(image_name, str):
             gt_image = gt_image.unsqueeze(0)
+            if extra_data is not None:
+                extra_data = {k: [v] for k, v in extra_data.items()}
         if len(cameras.camera_center.shape) == 1:  # Camera
             params = {}
             for field in InstantiatedCameras.__dataclass_fields__:
@@ -249,6 +263,14 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                     val = val.unsqueeze(0)
                 params[field] = val
             cameras = InstantiatedCameras(**params)
+        batch = cameras, (image_name, gt_image, mask), extra_data
+
+        metrics, pbar = self._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
+
+        multiview_rendered = (
+            pl_module.trainer.datamodule.hparams["multiview"] is False
+            and "pseudo_view" not in pl_module.hparams["renderer_output_types"]
+        )
 
         if self.config.lambda_multiview.enabled and step >= self.config.multiview_from_iter and multiview_rendered:
             pseudo_results = outputs.get("pseudo_results", None)
@@ -326,34 +348,34 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                         pl_module.log_image(tag="pseudo_view_feature", image_tensor=grid)
 
         if step % 2000 == 0:
-            n_cam = len(cameras)
-
-            # log feature image
-            feature = outputs.get("render_feature", None)
-            feature_aligned = outputs.get("aligned_feature", None)
-            images = []
-            if feature is not None:
-                feature = self.preprocess_image(feature, n_cam)
-                feature_im = torch.stack(
-                    [Visualizers.pca_colormap(feature[i].contiguous()) for i in range(n_cam)], dim=0
-                )
-                images.append(feature_im)
-            if feature_aligned is not None:
-                feature_aligned = self.preprocess_image(feature_aligned, n_cam)
-                feature_aligned_im = torch.stack(
-                    [Visualizers.pca_colormap(feature_aligned[i].contiguous()) for i in range(n_cam)], dim=0
-                )
-                images.append(feature_aligned_im)
-            if len(images) > 0:
-                images.insert(
-                    0, F.interpolate(gt_image, size=images[0].shape[-2:], mode="bilinear", align_corners=True)
-                )
-                image_tensor = torch.stack(images, dim=1).reshape(-1, *images[0].shape[1:])
-                grid = torchvision.utils.make_grid(image_tensor, len(images))
-                pl_module.log_image(tag="feature", image_tensor=grid)
+            self.log_image(batch, outputs, pl_module)
 
         setattr(pl_module, "_current_metrics", metrics)
         return metrics, pbar
+
+    def log_image(self, batch, outputs, pl_module):
+        cameras, (image_name, gt_image, mask), extra_data = batch
+        n_cam = len(cameras)
+
+        # log feature image
+        feature = outputs.get("render_feature", None)
+        feature_aligned = outputs.get("aligned_feature", None)
+        images = []
+        if feature is not None:
+            feature = self.preprocess_image(feature, n_cam)
+            feature_im = torch.stack([Visualizers.pca_colormap(feature[i].contiguous()) for i in range(n_cam)], dim=0)
+            images.append(feature_im)
+        if feature_aligned is not None:
+            feature_aligned = self.preprocess_image(feature_aligned, n_cam)
+            feature_aligned_im = torch.stack(
+                [Visualizers.pca_colormap(feature_aligned[i].contiguous()) for i in range(n_cam)], dim=0
+            )
+            images.append(feature_aligned_im)
+        if len(images) > 0:
+            images.insert(0, F.interpolate(gt_image, size=images[0].shape[-2:], mode="bilinear", align_corners=True))
+            image_tensor = torch.stack(images, dim=1).reshape(-1, *images[0].shape[1:])
+            grid = torchvision.utils.make_grid(image_tensor, len(images))
+            pl_module.log_image(tag="feature", image_tensor=grid)
 
     def multiview_loss(self, view_l, view_r):
         cam_l, gt_l, rgb_l, depth_l = view_l
@@ -365,6 +387,12 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             True,
         )
         points2d, mask = MultiView.reproject(points3d, cam_r)
+        warp_rgb = F.grid_sample(gt_r, points2d, align_corners=True)
+        loss_multiview = (((warp_rgb - rgb_l)).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / mask.sum(dim=[-1, -2])
+        return loss_multiview.mean()
+
+    def preprocess_image(self, x: torch.Tensor, n_cam: int = 1) -> torch.Tensor:
+        return x.unsqueeze(0) if n_cam == 1 else x
         warp_rgb = F.grid_sample(gt_r, points2d, align_corners=True)
         loss_multiview = (((warp_rgb - rgb_l)).abs().mean(dim=1) * mask).sum(dim=[-1, -2]) / mask.sum(dim=[-1, -2])
         return loss_multiview.mean()

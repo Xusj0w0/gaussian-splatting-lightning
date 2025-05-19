@@ -1,4 +1,3 @@
-# remove `anchor_features` from the model
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
@@ -16,8 +15,10 @@ from internal.optimizers import Adam, OptimizerConfig
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import inverse_sigmoid
 from internal.utils.network_factory import NetworkFactory
-from myimpl.model_components.grid_encodings import (MLP, MLPWithHashEncoding,
-                                                    MLPWithMixedHashEncoding)
+from myimpl.model_components.embeddings import (MLP, MLPWithHashEncoding,
+                                                MLPWithMixedHashEncoding,
+                                                MLPWithSHEncoding,
+                                                MLPWithSHEncodingIdentity)
 from myimpl.models.implicit_grid_gaussian import (
     ImplicitLoDGridGaussian, ImplicitLoDGridGaussianModel,
     ImplicitLoDGridOptimizationConfig)
@@ -25,10 +26,8 @@ from myimpl.models.implicit_grid_gaussian import (
 
 @dataclass
 class HashLoDGridOptimizationConfig(ImplicitLoDGridOptimizationConfig):
-    anchor_features_lr: float = field(init=False)
-
-    hash_feature_lr_init: float = 0.005
-    hash_feature_lr_final: float = 0.0005
+    hash_feature_lr_init: float = 5e-3
+    hash_feature_lr_final: float = 5e-5
 
 
 @dataclass
@@ -46,13 +45,13 @@ class HashGridFeatureConfig:
     A scene containing 1e7 anchors with 32-dim features, param number = 1e7 * 32 = 320M
     """
 
-    num_levels: int = 16
+    num_levels: int = 8
     min_res: int = 2 << 4
-    max_res: int = 2 << 13
-    log2_hashmap_size: int = 19
+    max_res: int = 2 << 11
+    log2_hashmap_size: int = 15
     features_per_level: int = 4
 
-    use_mixed: bool = True
+    use_mixed: bool = False
     num_levels_2d: int = 8
     min_res_2d: int = 2 << 8
     max_res_2d: int = 2 << 15
@@ -127,96 +126,6 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.config.hash_grid_feature.out_dim = self.config.feature_dim
-
-        if "anchor_features" in self._names:
-            _names = list(self._names)
-            _names.remove("anchor_features")
-            self._names = tuple(_names)
-
-    def calculate_implicit_properties(
-        self,
-        viewpoint_camera: Camera,
-        appearance_code: Optional[torch.Tensor] = None,
-        anchor_mask: Optional[torch.Tensor] = None,
-        prog_ratio: Optional[torch.Tensor] = None,
-        transition_mask: Optional[torch.Tensor] = None,
-        *args,
-        **kwargs,
-    ):
-        if anchor_mask is None:
-            anchor_mask = self.get_anchors.new_ones((self.n_anchors,), dtype=torch.bool)
-        anchors = self.get_anchors[anchor_mask]
-        offsets = self.get_offsets[anchor_mask]
-        scalings = self.get_scalings[anchor_mask]
-        rotations = self.get_rotations[anchor_mask]
-        features = self.compute_hash_features(anchors)
-
-        if kwargs.get("stop_feature_grad", False):
-            features = features.clone().detach()
-
-        n_anchors, n_offsets = self.n_anchors, self.n_offsets
-
-        viewdirs = anchors - viewpoint_camera.camera_center
-        viewdirs_norm = torch.norm(viewdirs, dim=1, keepdim=True)
-        viewdirs = viewdirs / viewdirs_norm
-
-        if self.config.use_feature_bank:
-            bank_weight = F.softmax(self.get_feature_bank_mlp(viewdirs), dim=-1).unsqueeze(dim=1)
-            features = features.unsqueeze(dim=-1)
-            features = (
-                features[:, ::4, :1].repeat(1, 4, 1) * bank_weight[:, :, 0:1]
-                + features[:, ::2, :1].repeat(1, 2, 1) * bank_weight[:, :, 1:2]
-                + features[:, ::1, :1] * bank_weight[:, :, 2:3]
-            )
-            features = features.squeeze(dim=-1)
-        cat_local_view = torch.cat([features, viewdirs], dim=1)
-
-        opacities = self.get_opacity_mlp(features).reshape(-1, n_offsets, 1).clamp(max=1.0)
-        if prog_ratio is not None and transition_mask is not None:
-            prog = prog_ratio[anchor_mask]
-            transition = transition_mask[anchor_mask]
-            prog[~transition] = 1.0
-            opacities = opacities * prog
-        opacities = opacities.reshape(-1, 1)
-
-        primitive_mask = (opacities > 0.0).view(-1)
-
-        if appearance_code is not None:
-            appearance_code = appearance_code.to(cat_local_view).view(1, -1).repeat(self.n_anchors, 1)
-            color_input = torch.cat([cat_local_view, appearance_code], dim=-1)
-        else:
-            color_input = cat_local_view
-        colors = self.get_color_mlp(color_input).reshape(-1, 3)
-
-        scale_rots = self.get_cov_mlp(cat_local_view).reshape(-1, n_offsets, 7)
-        scale_rots[..., -4:] = quaternion_multiply(
-            rotations.unsqueeze(1),
-            self.rotation_activation(scale_rots[..., -4:].clone()),
-        )
-        scale_rots = scale_rots.reshape(-1, 7)
-
-        concatenated = repeat(torch.cat([anchors, scalings], dim=-1), "n c -> (n k) c", k=n_offsets)
-        concatenated = torch.cat([concatenated, offsets.reshape(-1, 3), opacities, colors, scale_rots], dim=-1)
-        concatenated_masked = concatenated[primitive_mask]
-        (
-            _anchors,
-            _scalings_offset,
-            _scalings_scales,
-            _offsets,
-            _opacities,
-            _colors,
-            _scales,
-            _rots,
-        ) = torch.split(concatenated_masked, [3, 3, 3, 3, 1, 3, self.color_dim, 4], dim=-1)
-
-        xyz = _anchors + _offsets * _scalings_offset
-        scales = F.sigmoid(_scales) * _scalings_scales
-        rots = self.rotation_activation(_rots)
-        colors = _colors
-        opacities = _opacities.squeeze()
-
-        return xyz, scales, rots, colors, opacities, anchor_mask, primitive_mask
 
     def compute_hash_features(self, xyz: torch.Tensor) -> torch.Tensor:
         normalized = self.normalize_xyz(xyz)
@@ -224,10 +133,124 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
         masked = normalized * mask
         return self.get_hash_feature_mlp(masked).float()
 
-    def create_mlps(self):
-        super().create_mlps()
+    def compute_anchor_features(self, anchors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        hash_features = self.compute_hash_features(anchors)
+        anchor_features = self.get_anchor_features[mask]
+        feature_adapter = self.get_feature_adapter_mlp
+        if feature_adapter is not None:
+            hash_features = feature_adapter(hash_features.clone().detach())
 
+        return anchor_features + hash_features
+        # return anchor_features + hash_features * F.tanh(anchor_features + hash_features)
+        # return torch.cat([anchor_features, hash_features], dim=-1)
+
+    def create_mlps(self):
+        self.gaussian_mlps = nn.ModuleDict()
+        # create mlps
+
+        # self.config.hash_grid_feature.out_dim = self.config.feature_dim
+        # self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
+        # self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
+
+        # add
+        self.config.hash_grid_feature.out_dim = self.config.feature_adapter.out_dim
+        self.config.feature_adapter.out_dim = self.config.feature_dim
         self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
+        self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(
+            self.config.hash_grid_feature.out_dim
+        )
+        feature_dim = self.config.feature_dim
+
+        # cat
+        # self.config.hash_grid_feature.out_dim = self.config.feature_adapter.out_dim
+        # self.config.feature_adapter.out_dim = self.config.feature_dim
+        # self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
+        # self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.hash_grid_feature.out_dim)
+        # feature_dim = self.config.feature_adapter.out_dim + self.config.feature_dim
+
+        # opacity: return 1*n_offsets
+        self.gaussian_mlps["opacity"] = MLP(
+            in_dim=feature_dim,
+            out_dim=self.n_offsets,
+            num_layers=self.config.mlp_n_layers,
+            layer_width=self.config.hidden_dim,
+            activation=nn.ReLU(),
+            out_activation=nn.Tanh(),
+            implementation="tcnn" if self.config.tcnn else "torch",
+        )
+
+        # cov: return 7*n_offsets
+        # 3 for scales, multiply with anchor-level scales to get gaussian scales
+        # 4 for rotations
+        if self.config.view_sh_level > 0:
+            cov_mlp = MLPWithSHEncodingIdentity(
+                identity_dim=feature_dim,
+                levels=self.config.view_sh_level,
+                out_dim=7 * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        else:
+            cov_mlp = MLP(
+                in_dim=self.config.view_dim + feature_dim,
+                out_dim=7 * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        self.gaussian_mlps["cov"] = cov_mlp
+
+        # color: return 3*n_offsets
+        if self.config.view_sh_level > 0:
+            color_mlp = MLPWithSHEncodingIdentity(
+                identity_dim=feature_dim + self.config.n_appearance_embedding_dims,
+                levels=self.config.view_sh_level,
+                out_dim=self.color_dim * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=nn.Sigmoid(),
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        else:
+            color_mlp = MLP(
+                in_dim=self.config.view_dim + feature_dim + self.config.n_appearance_embedding_dims,
+                out_dim=self.color_dim * self.n_offsets,
+                num_layers=self.config.mlp_n_layers,
+                layer_width=self.config.hidden_dim,
+                activation=nn.ReLU(),
+                out_activation=nn.Sigmoid(),
+                implementation="tcnn" if self.config.tcnn else "torch",
+            )
+        self.gaussian_mlps["color"] = color_mlp
+
+        if self.config.use_feature_bank:
+            # feature_bank: return 3*n_offsets
+            if self.config.view_sh_level > 0:
+                feature_bank = MLPWithSHEncoding(
+                    levels=self.config.view_sh_level,
+                    out_dim=3,
+                    num_layers=self.config.mlp_n_layers,
+                    layer_width=self.config.hidden_dim,
+                    activation=nn.ReLU(),
+                    out_activation=None,
+                )
+            else:
+                feature_bank = MLP(
+                    in_dim=self.config.view_dim,
+                    out_dim=3,
+                    num_layers=self.config.mlp_n_layers,
+                    layer_width=self.config.hidden_dim,
+                    activation=nn.ReLU(),
+                    out_activation=None,
+                    implementation="tcnn" if self.config.tcnn else "torch",
+                )
+            self.gaussian_mlps["feature_bank"] = feature_bank
 
     def get_extra_properties(
         self,
@@ -239,30 +262,16 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
         **kwargs,
     ):
         # add temp `anchor_features`
-        if mode == "tensors" and "anchor_features" not in tensors:
-            tensors["anchor_features"] = torch.zeros((1,), dtype=torch.float)
         property_dict = super().get_extra_properties(
             fused_point_cloud=fused_point_cloud, n=n, tensors=tensors, mode=mode, *args, **kwargs
         )
-        del property_dict["anchor_features"]
 
         if mode == "tensors":
             self.gaussian_mlps["hash_feature_mlp"].load_state_dict(tensors["hash_feature_mlp"])
         return property_dict
 
     def training_setup_extra_properties(self, module, *args, **kwargs):
-        if "anchor_features" not in self.gaussians:
-            self.gaussians["anchor_features"] = nn.Parameter(torch.zeros((1,)), requires_grad=True)
-
-        [mlp_optimizer, constant_optimizer], [mlp_scheduler] = super().training_setup_extra_properties(
-            module, *args, **kwargs
-        )
-
-        if "anchor_features" in self.gaussians:
-            del self.gaussians["anchor_features"]
-            constant_optimizer.param_groups = [
-                p for p in constant_optimizer.param_groups if p["name"] != "anchor_features"
-            ]
+        optimizers, schedulers = super().training_setup_extra_properties(module, *args, **kwargs)
 
         optimization_config = self.config.optimization
         mlp_optimizer_factory = self.config.optimization.mlp_optimizer
@@ -280,11 +289,10 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
             optimizer, optimization_config.hash_feature_lr_final
         )
 
-        return [mlp_optimizer, optimizer], [mlp_scheduler, scheduler]
+        optimizers.append(optimizer)
+        schedulers.append(scheduler)
 
-    @property
-    def get_anchor_features(self):
-        return self.gaussian_mlps["hash_feature_mlp"](self.get_anchors)
+        return optimizers, schedulers
 
     @property
     def get_hash_feature_mlp(self):
