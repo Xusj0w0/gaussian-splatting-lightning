@@ -250,11 +250,7 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
 
     def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
         cameras, (image_name, gt_image, mask), extra_data = batch
-        # if single batch
-        if isinstance(image_name, str):
-            gt_image = gt_image.unsqueeze(0)
-            if extra_data is not None:
-                extra_data = {k: [v] for k, v in extra_data.items()}
+
         if len(cameras.camera_center.shape) == 1:  # Camera
             params = {}
             for field in InstantiatedCameras.__dataclass_fields__:

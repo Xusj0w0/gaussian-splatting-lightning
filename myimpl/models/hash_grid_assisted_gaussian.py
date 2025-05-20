@@ -59,8 +59,8 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
 
         return anchor_features + hash_features
 
-    def create_mlps(self, feature_dim: Optional[int] = None):
-        super().create_mlps(feature_dim)
+    def create_mlps(self):
+        super().create_mlps()
         if self.config.hash_feature_grid.out_dim > 0:
             self.gaussian_mlps["hash_feature"] = self.config.hash_feature_grid.instantiate()
         if self.config.reduced_feature_adapter.out_dim > 0:
@@ -81,6 +81,7 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
             semantic_dim = train_set.extra_data_processor[SemanticData.KEY].dim
             assert semantic_dim > 0, "Semantic dim should be greater than 0"
 
+            self.config.mlp_input_dim = semantic_dim
             self.config.hash_feature_grid.out_dim = self.config.feature_dim  # TODO: maybe semantic dim
             self.config.feature_adapter.in_dim = self.config.feature_dim
             self.config.feature_adapter.out_dim = semantic_dim
@@ -94,7 +95,7 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
             fused_point_cloud=fused_point_cloud, n=n, tensors=tensors, mode=mode, *args, **kwargs
         )
 
-        if mode == "tensors":
+        if mode == "tensors": # TODO
             _tensors = tensors["mlps"]
 
             in_dim, out_dim = tensors["feature_adapter"]["weight"].shape
