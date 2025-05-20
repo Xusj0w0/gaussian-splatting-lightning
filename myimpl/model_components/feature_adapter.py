@@ -50,12 +50,16 @@ class Adapter(nn.Module):
         super().__init__()
         self.config = config
 
-        mat = torch.zeros((self.config.in_dim, self.config.out_dim), dtype=torch.float).normal_(0, 0.02)
-        self.weight = nn.Parameter(mat, requires_grad=True)
+        if self.config.in_dim != self.config.out_dim:
+            mat = torch.zeros((self.config.in_dim, self.config.out_dim), dtype=torch.float).normal_(0, 0.02)
+            self.weight = nn.Parameter(mat, requires_grad=True)
+        else:
+            self.weight = None
 
     def forward(self, x: torch.Tensor):
         """
         x: [H, W, C]
         """
-        out = torch.einsum("...c, cd -> ...d", x, self.weight)
-        return out
+        if self.weight is None:
+            return x
+        return torch.einsum("...c, cd -> ...d", x, self.weight)
