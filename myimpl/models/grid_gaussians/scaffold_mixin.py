@@ -64,6 +64,8 @@ class ScaffoldOptimizationConfigMixin:
 class ScaffoldGaussianMixin:
     feature_dim: int = 32
 
+    mlp_in_features: int = field(default=-1, init=False)
+
     mlp_n_layers: int = 2
 
     hidden_dim: int = 32
@@ -172,11 +174,16 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         return self.get_anchor_features[anchor_mask]
 
     def create_mlps(self):
+        """
+        1. configure `config.mlp_in_features` first
+        2. configure `config.feature_adapter.in_dim` (`out_dim`) first, if feature_adapter is required
+        """
+
         self.gaussian_mlps = nn.ModuleDict()
         # create mlps
         # opacity: return 1*n_offsets
         self.gaussian_mlps["opacity"] = MLP(
-            in_dim=self.config.feature_dim,
+            in_dim=self.config.mlp_in_features,
             out_dim=self.n_offsets,
             num_layers=self.config.mlp_n_layers,
             layer_width=self.config.hidden_dim,
@@ -190,7 +197,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         # 4 for rotations
         if self.config.view_sh_level > 0:
             cov_mlp = MLPWithSHEncodingIdentity(
-                identity_dim=self.config.feature_dim,
+                identity_dim=self.config.mlp_in_features,
                 levels=self.config.view_sh_level,
                 out_dim=7 * self.n_offsets,
                 num_layers=self.config.mlp_n_layers,
@@ -201,7 +208,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             )
         else:
             cov_mlp = MLP(
-                in_dim=self.config.view_dim + self.config.feature_dim,
+                in_dim=self.config.view_dim + self.config.mlp_in_features,
                 out_dim=7 * self.n_offsets,
                 num_layers=self.config.mlp_n_layers,
                 layer_width=self.config.hidden_dim,
@@ -214,7 +221,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         # color: return 3*n_offsets
         if self.config.view_sh_level > 0:
             color_mlp = MLPWithSHEncodingIdentity(
-                identity_dim=self.config.feature_dim + self.config.n_appearance_embedding_dims,
+                identity_dim=self.config.mlp_in_features + self.config.n_appearance_embedding_dims,
                 levels=self.config.view_sh_level,
                 out_dim=self.color_dim * self.n_offsets,
                 num_layers=self.config.mlp_n_layers,
@@ -225,7 +232,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             )
         else:
             color_mlp = MLP(
-                in_dim=self.config.view_dim + self.config.feature_dim + self.config.n_appearance_embedding_dims,
+                in_dim=self.config.view_dim + self.config.mlp_in_features + self.config.n_appearance_embedding_dims,
                 out_dim=self.color_dim * self.n_offsets,
                 num_layers=self.config.mlp_n_layers,
                 layer_width=self.config.hidden_dim,
@@ -259,7 +266,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             self.gaussian_mlps["feature_bank"] = feature_bank
 
         if self.config.feature_adapter.out_dim > 0:
-            self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.feature_dim)
+            self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate()
 
     def reset_parameters(self):
         for mlp in self.gaussian_mlps.values():
@@ -275,21 +282,27 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
         *args,
         **kwargs,
     ):
+        # configure mlp params
+        if self.config.mlp_in_features < 0:
+            self.config.mlp_in_features = self.config.feature_dim
         if "feature" in getattr(pl_module, "renderer_output_types", []):
-            gt_dim = -1
             try:
                 enable_adapter = pl_module.metric.config.lambda_feature.enabled
-                if enable_adapter:
-                    extra_data_sample = pl_module.trainer.datamodule.dataparser_outputs.train_set.extra_data[0].get(SemanticData.KEY) # fmt: skip
-                    shape = extra_data_sample.parse_numpy_shape_from_header()
-                    gt_dim = shape[-1]
+                if enable_adapter and (
+                    self.config.feature_adapter.out_dim < 0 or self.config.feature_adapter.in_dim < 0
+                ):
+                    train_set = pl_module.trainer.datamodule.dataparser_outputs.train_set
+                    semantic_dim = train_set.extra_data_processor[SemanticData.KEY].semantic_dim
+
+                    self.config.feature_adapter.in_dim = self.config.feature_dim
+                    self.config.feature_adapter.out_dim = semantic_dim
+
             except:
                 pass
-            if gt_dim > 0:
-                self.config.feature_adapter.out_dim = gt_dim
 
         self.create_mlps()
         self.reset_parameters()
+
         if mode == "pcd":
             assert fused_point_cloud is not None
             n_anchors = fused_point_cloud.shape[0]
@@ -300,15 +313,17 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
             assert n is not None
             anchor_features = torch.zeros((n, self.config.feature_dim), dtype=torch.float)
 
-        elif mode == "tensors":
-            assert tensors is not None and "anchor_features" in tensors
-            anchor_features = tensors["anchor_features"]
+        elif mode == "tensors":  # TODO: mlp structure may be different
+            assert tensors is not None
+            _tensors = tensors["properties"]
+            anchor_features = _tensors["anchor_features"]
 
-            self.gaussian_mlps["opacity"].load_state_dict(tensors["opacity_mlp"])
-            self.gaussian_mlps["cov"].load_state_dict(tensors["cov_mlp"])
-            self.gaussian_mlps["color"].load_state_dict(tensors["color_mlp"])
-            if "feature_bank_mlp" in tensors:
-                self.gaussian_mlps["feature_bank"].load_state_dict(tensors["feature_bank_mlp"])
+            _tensors = tensors["mlps"]
+            self.gaussian_mlps["opacity"].load_state_dict(_tensors["opacity_mlp"])
+            self.gaussian_mlps["cov"].load_state_dict(_tensors["cov_mlp"])
+            self.gaussian_mlps["color"].load_state_dict(_tensors["color_mlp"])
+            if "feature_bank" in _tensors:
+                self.gaussian_mlps["feature_bank"].load_state_dict(_tensors["feature_bank"])
                 self.config.use_feature_bank = True
 
         else:
@@ -393,7 +408,7 @@ class ScaffoldGaussianModelMixin:  # GridGaussianModel,
 
         mlp_scheduler = mlp_scheduler_factory.instantiate().get_schedulers(mlp_optimizer, scheduler_lr_finals)
 
-        return [mlp_optimizer, constant_lr_optimizer], [constant_lr_scheduler, mlp_scheduler]
+        return [mlp_optimizer, constant_lr_optimizer], [mlp_scheduler, constant_lr_scheduler]
 
     def train(self, mode=True):
         for mlp in self.gaussian_mlps.values():

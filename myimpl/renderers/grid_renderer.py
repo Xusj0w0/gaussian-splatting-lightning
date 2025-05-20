@@ -171,7 +171,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             if step > feature_until_iter and "feature" in render_types:
                 render_types.remove("feature")
         except:
-            pass        
+            pass
 
         output_pkg = self(viewpoint_camera, pc, bg_color, render_types=render_types, **kwargs)
 
@@ -377,7 +377,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             projections=projections,
             properties=(input_features, input_opacities),
             bg_color=means2d.new_zeros((len(viewpoint_camera), pc.config.feature_dim)),
-            tile_size=self.config.block_size,
+            tile_size=int(self.config.block_size // 2),
         )
         aligned_feature = None
         feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)

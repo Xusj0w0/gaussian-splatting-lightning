@@ -156,7 +156,9 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
         self.config.hash_grid_feature.out_dim = self.config.feature_adapter.out_dim
         self.config.feature_adapter.out_dim = self.config.feature_dim
         self.gaussian_mlps["hash_feature_mlp"] = self.config.hash_grid_feature.instantiate()
-        self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(self.config.hash_grid_feature.out_dim)
+        self.gaussian_mlps["feature_adapter"] = self.config.feature_adapter.instantiate(
+            self.config.hash_grid_feature.out_dim
+        )
         feature_dim = self.config.feature_dim
 
         # cat
@@ -283,7 +285,9 @@ class HashLoDGridGaussianModel(ImplicitLoDGridGaussianModel):
         ]
         optimizer = mlp_optimizer_factory.instantiate(mlp_l, lr=0.0, eps=1e-15)
         self._add_optimizer_after_backward_hook_if_available(optimizer, module)
-        scheduler = mlp_scheduler_factory.instantiate().get_scheduler(optimizer, optimization_config.hash_feature_lr_final)
+        scheduler = mlp_scheduler_factory.instantiate().get_scheduler(
+            optimizer, optimization_config.hash_feature_lr_final
+        )
 
         optimizers.append(optimizer)
         schedulers.append(scheduler)

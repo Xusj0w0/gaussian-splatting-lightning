@@ -238,15 +238,18 @@ class LoDGridGaussianModel(GridGaussianModelBase):
     ):
         if mode == "pcd":
             assert fused_point_cloud is not None
+
         elif mode == "number":
             assert n is not None
             levels = torch.zeros((n,), dtype=torch.int)
             extra_levels = torch.zeros((n,), dtype=torch.float)
+
         elif mode == "tensors":
-            assert tensors is not None and "levels" in tensors
-            levels = tensors["levels"]
+            assert tensors is not None
+            _tensors = tensors["properties"]
+            levels = _tensors["levels"]
             # extra_levels = torch.zeros((levels.shape[0],), dtype=torch.float)
-            extra_levels = tensors["extra_levels"]
+            extra_levels = _tensors["extra_levels"]
         else:
             raise ValueError(f"Unsupported mode {mode}")
 

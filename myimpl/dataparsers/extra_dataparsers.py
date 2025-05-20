@@ -32,15 +32,18 @@ class SemanticMixin:
         if self.params.semantic_dir is None or len(self.params.semantic_dir) <= 0:
             return
 
+        semantic_dim = -1
         for image_set in [dataparser_outputs.train_set, dataparser_outputs.val_set]:
             for idx, image_name in enumerate(image_set.image_names):
                 semantic_file_path = osp.join(self.path, self.params.semantic_dir, f"{image_name}.npy")
                 if osp.exists(semantic_file_path):
                     extra_data = SemanticData(semantic_file_path)
+                    if semantic_dim < 0:
+                        semantic_dim = extra_data.parse_numpy_shape_from_header()[-1]
                 else:
                     extra_data = SemanticData(None)
                 image_set.extra_data[idx].add_extra_data(extra_data)
-            image_set.extra_data_processor.add_extra_data_processor(SemanticDataProcessor())
+            image_set.extra_data_processor.add_extra_data_processor(SemanticDataProcessor(semantic_dim))
 
 
 @dataclass

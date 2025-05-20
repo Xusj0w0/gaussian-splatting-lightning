@@ -23,6 +23,41 @@ class GridGaussianType:
 
 
 class GridGaussianUtils:
+    BUFFER_NAMES = [
+        "voxel_size",
+        "transforms",
+        "grid_bbox",
+        "max_level",
+        "start_level",
+        "standard_dist",
+        "visibility_threshold",
+    ]
+
+    @classmethod
+    def tensors_from_model(cls, model: GridGaussianModel):
+        pt = {}
+
+        # use `get_xxx` to get buffers
+        pt["buffers"] = {}
+        for buffer in cls.BUFFER_NAMES:
+            attr = getattr(model, f"_{buffer}", None)
+            if attr is not None:
+                pt["buffers"].update({f"_{buffer}": attr})
+
+        # get properties from gaussians container
+        pt["properties"] = {}
+        for k, v in model.gaussians.items():
+            pt["properties"].update({k: v})
+
+        # get properties from gaussian_mlps container
+        pt["mlps"] = {}
+        for k, v in model.gaussian_mlps.items():
+            pt["mlps"].update({k: v.state_dict()})
+
+        return pt
+
+
+class GridGaussianUtils0:
     # fmt: off
     GRID_GAUSSIAN_PROPERTIES = {
         1: {

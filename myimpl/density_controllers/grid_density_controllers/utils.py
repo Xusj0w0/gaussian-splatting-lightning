@@ -69,12 +69,16 @@ class CandidateAnchors:
         #     raise ValueError(f"scatter_mode {scatter_mode} not supported")
         # anchor_features = anchor_features[self.keep_mask]
 
+        features = getattr(gaussian_model, "get_anchor_features", None)
+        if features is None or len(features) <= 0:
+            return {}
+
         keep_indices = torch.nonzero(self.keep_mask, as_tuple=True)[0]
         is_keep = self.unique_indices.unsqueeze(1) == keep_indices.unsqueeze(0)
         keep_mask, keep_idx_mapping = torch.nonzero(is_keep, as_tuple=True)
 
         indices = (torch.nonzero(self.grad_mask, as_tuple=True)[0] / gaussian_model.n_offsets).long()[keep_mask]
-        anchor_features = gaussian_model.get_anchor_features[indices]
+        anchor_features = features[indices]
         feat_dim = anchor_features.shape[-1]
 
         if scatter_mode == "max":

@@ -35,20 +35,22 @@ class AdapterOptimizationConfig:
 
 @dataclass
 class AdapterConfig:
+    in_dim: int = field(default=-1, init=False)
+
     out_dim: int = field(default=-1, init=False)
 
     optimization: AdapterOptimizationConfig = field(default_factory=lambda: AdapterOptimizationConfig())
 
-    def instantiate(self, dim_in, *args, **kwargs) -> "Adapter":
-        return Adapter(self, dim_in)
+    def instantiate(self, *args, **kwargs) -> "Adapter":
+        return Adapter(self)
 
 
 class Adapter(nn.Module):
-    def __init__(self, config: AdapterConfig, dim_in: int):
+    def __init__(self, config: AdapterConfig):
         super().__init__()
         self.config = config
 
-        mat = torch.zeros((dim_in, self.config.out_dim), dtype=torch.float).normal_(0, 0.02)
+        mat = torch.zeros((self.config.in_dim, self.config.out_dim), dtype=torch.float).normal_(0, 0.02)
         self.weight = nn.Parameter(mat, requires_grad=True)
 
     def forward(self, x: torch.Tensor):
