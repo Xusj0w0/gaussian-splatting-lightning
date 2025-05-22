@@ -208,9 +208,9 @@ class LoDGridGaussianModel(GridGaussianModelBase):
 
     def setup_from_tensors(self, tensors, *args, **kwargs):
         buffer_names = self.get_buffer_names()
-        for n in tensors:
+        for n in tensors["buffers"]:
             if n in buffer_names:
-                self.register_buffer(n, tensors[n])
+                self.register_buffer(n, tensors["buffers"][n])
 
         property_dict = self.get_init_properties(tensors=tensors, mode="tensors", *args, **kwargs)
         for name, value in property_dict.items():

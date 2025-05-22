@@ -358,6 +358,8 @@ class GridScene(PartitionableScene):
         return extra_data
 
     def save_partitioning_results(self, output_path: str, image_set: ImageSet, model: ImplicitLoDGridGaussianModel):
+        from myimpl.utils.grid_gaussian_loader import GridGaussianUtils
+
         super().save_partitioning_results(output_path, image_set)
 
         partition_dir = osp.join(output_path, "partition_infos")
@@ -372,9 +374,13 @@ class GridScene(PartitionableScene):
 
             mask = self.gaussians_in_partitions[partition_idx]
             mask_properties = {k: v[mask] for k, v in property_dict.items()}
-            mask_properties["anchor_features"] = mask_properties["anchor_features"][0:0]
             model.properties = mask_properties
-            self.save_gaussians(osp.join(partition_dir, "partitions", partition_id_str), model)
+
+            tensors = GridGaussianUtils.tensors_from_model(model)
+            tensors["properties"]["anchor_features"] = tensors["properties"]["anchor_features"][..., 0:0]
+            del tensors["mlps"]["feature_adapter"]
+            torch.save(tensors, osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.pt"))
+
             model.properties = property_dict
 
     def save_gaussians(self, dst_dir: str, model: VanillaGaussianModel):

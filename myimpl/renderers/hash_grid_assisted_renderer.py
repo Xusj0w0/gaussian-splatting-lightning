@@ -58,7 +58,7 @@ class HashGridAssistedGaussianRendererModule(GridGaussianRendererModule):
         input_features = means2d.new_zeros((0, pc.config.hash_grid_feature.out_dim))
         input_opacities = means2d.new_zeros((0,))
         for cam_id in range(len(viewpoint_camera)):
-            _xyz, _, _, _, _opacities, _anchor_mask, _primitive_mask, *_ = properties_list[cam_id]
+            _xyz, _, _, _, _opacities, *_ = properties_list[cam_id]
             _visibility_filter = visibility_filter[cam_id]
             positions = _xyz[_visibility_filter].clone().detach()
             features = pc.compute_hash_features(positions)
@@ -73,5 +73,8 @@ class HashGridAssistedGaussianRendererModule(GridGaussianRendererModule):
             bg_color=means2d.new_zeros((len(viewpoint_camera), pc.config.hash_grid_feature.out_dim)),
             tile_size=self.config.block_size,
         )
+        feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
+        if feature_adapter is not None:
+            aligned_feature = feature_adapter(render_feature)
 
-        return render_feature, render_feature, alpha
+        return render_feature, aligned_feature, alpha

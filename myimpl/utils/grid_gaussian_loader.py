@@ -36,6 +36,7 @@ class GridGaussianUtils:
     @classmethod
     def tensors_from_model(cls, model: GridGaussianModel):
         pt = {}
+        pt["config"] = model.config
 
         # use `get_xxx` to get buffers
         pt["buffers"] = {}

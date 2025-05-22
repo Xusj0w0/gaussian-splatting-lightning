@@ -19,7 +19,7 @@ from myimpl.model_components.embeddings import (MLP, MLPWithHashEncoding,
                                                 MLPWithMixedHashEncoding,
                                                 MLPWithSHEncoding,
                                                 MLPWithSHEncodingIdentity)
-from myimpl.model_components.feature_adapter import AdapterConfig
+from myimpl.model_components.feature_adapter import AdapterConfig, FusionConfig
 from myimpl.model_components.hash_grid import (
     HashGridFeatureConfig, HashGridFeatureOptimizationConfig)
 from myimpl.models.implicit_grid_gaussian import (
@@ -43,7 +43,7 @@ class HashGridAssistedGaussian(ImplicitLoDGridGaussian):
 
     hash_grid_feature: HashGridFeatureConfig = field(default_factory=lambda: HashGridFeatureConfig())
 
-    reduced_feature_adapter: AdapterConfig = field(default_factory=lambda: AdapterConfig())
+    feature_fusion: FusionConfig = field(default_factory=lambda: FusionConfig())
 
     def instantiate(self, *args, **kwargs):
         return HashGridAssistedGaussianModel(self)
@@ -62,13 +62,10 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
         return self.get_hash_grid_feature_mlp(masked)
 
     def compute_anchor_features(self, anchors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        hash_features = self.compute_hash_features(anchors)
-        hash_features = self.get_feature_adapter_mlp(hash_features.clone().detach())
-
+        with torch.no_grad():
+            hash_features = self.compute_hash_features(anchors)
         anchor_features = self.get_anchor_features[mask]
-        anchor_features = self.get_reduced_feature_adapter_mlp(anchor_features)
-
-        return anchor_features + hash_features
+        return self.get_feature_fusion_mlp(hash_features, anchor_features)
 
     def create_mlps(self):
         """
@@ -82,8 +79,8 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
 
         if self.config.hash_grid_feature.out_dim > 0:
             self.gaussian_mlps["hash_grid_feature"] = self.config.hash_grid_feature.instantiate()
-        if self.config.reduced_feature_adapter.in_dim > 0 and self.config.reduced_feature_adapter.out_dim > 0:
-            self.gaussian_mlps["reduced_feature_adapter"] = self.config.reduced_feature_adapter.instantiate()
+        if self.config.feature_fusion.is_valid():
+            self.gaussian_mlps["feature_fusion"] = self.config.feature_fusion.instantiate()
 
     def get_extra_properties(
         self,
@@ -105,27 +102,53 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
 
             self.config.mlp_in_features = semantic_dim
 
-            # directly match with semantic regularization
-            self.config.hash_grid_feature.out_dim = semantic_dim
-
             # feature adapter: match output hash grid feature with mlp_in_features
             self.config.feature_adapter.in_dim = self.config.hash_grid_feature.out_dim
             self.config.feature_adapter.out_dim = self.config.mlp_in_features
 
-            # reduced feature adapter: match feature_dim with mlp_in_features
-            self.config.reduced_feature_adapter.in_dim = self.config.feature_dim
-            self.config.reduced_feature_adapter.out_dim = self.config.mlp_in_features
+            # feature fusion: match feature_dim with mlp_in_features
+            self.config.feature_fusion.hash_feature_dim = self.config.hash_grid_feature.out_dim
+            self.config.feature_fusion.residual_feature_dim = self.config.feature_dim
+            self.config.feature_fusion.mlp_in_dim = self.config.mlp_in_features
 
         property_dict = super().get_extra_properties(
             fused_point_cloud=fused_point_cloud, n=n, tensors=tensors, mode=mode, pl_module=pl_module, *args, **kwargs
         )
 
         if mode == "tensors":  # TODO: mlp structure may be different
+            config = tensors.get("config", None)
+
+            _tensors = tensors["properties"]
+            anchor_features = _tensors["anchor_features"]
+            if anchor_features.shape[-1] <= 0:
+                # use hash grid and fusion module
+                # feature dim should be the same as mlp_in_features
+                if config is not None:
+                    self.config.feature_dim = config.mlp_in_features
+
             _tensors = tensors["mlps"]
+            device = next(self.gaussian_mlps["opacity"].parameters()).device
+            # hash grid feature
             if "hash_grid_feature" in _tensors:
-                self.gaussian_mlps["hash_grid_feature"].load_state_dict(_tensors["hash_grid_feature"])
-            if "reduced_feature_adapter" in _tensors:
-                self.gaussian_mlps["reduced_feature_adapter"].load_state_dict(_tensors["reduced_feature_adapter"])
+                try:
+                    self.gaussian_mlps["hash_grid_feature"].load_state_dict(_tensors["hash_grid_feature"])
+                except:
+                    if config is not None:
+                        self.config.hash_grid_feature.update_config(config.hash_grid_feature)
+                        self.gaussian_mlps["hash_grid_feature"] = self.config.hash_grid_feature.instantiate()
+                        self.gaussian_mlps["hash_grid_feature"].load_state_dict(_tensors["hash_grid_feature"])
+
+            # feature fusion
+            if "feature_fusion" in _tensors:
+                try:
+                    self.gaussian_mlps["feature_fusion"].load_state_dict(_tensors["feature_fusion"])
+                except:
+                    if config is not None:
+                        self.config.feature_fusion.update_config(config.feature_fusion)
+                        self.gaussian_mlps["feature_fusion"] = self.config.feature_fusion.instantiate()
+                        self.gaussian_mlps["feature_fusion"].load_state_dict(_tensors["feature_fusion"])
+
+            self.gaussian_mlps.to(device)
 
         return property_dict
 
@@ -136,41 +159,50 @@ class HashGridAssistedGaussianModel(ImplicitLoDGridGaussianModel):
         mlp_optimizer_factory = self.config.optimization.mlp_optimizer
         mlp_scheduler_factory = self.config.optimization.mlp_scheduler
 
-        mlp_l = [
-            {
-                "params": self.gaussian_mlps["hash_grid_feature"].parameters(),
-                "lr": optimization_config.hash_feature_lr_init,
-                "name": "hash_grid_feature_mlp",
-            },
-            {
-                "params": self.gaussian_mlps["reduced_feature_adapter"].parameters(),
-                "lr": self.config.feature_adapter.optimization.lr_init,
-                "name": "reduced_feature_adapter_mlp",
-            },
-        ]
-        mlp_optimizer = mlp_optimizer_factory.instantiate(mlp_l, lr=0.0, eps=1e-15)
-        self._add_optimizer_after_backward_hook_if_available(mlp_optimizer, module)
+        # hash grid
+        hashgrid_optimizer, hashgrid_scheduler = None, None
+        hashgrid = getattr(self, "get_hash_grid_feature_mlp", None)
+        if hashgrid is not None:
+            hashgrid_optimizer = mlp_optimizer_factory.instantiate(
+                [
+                    {
+                        "params": hashgrid.parameters(),
+                        "lr": optimization_config.hash_feature_lr_init,
+                        "name": "hash_grid_feature_mlp",
+                    }
+                ],
+                lr=0.0,
+            )
+            self._add_optimizer_after_backward_hook_if_available(hashgrid_optimizer, module)
+            hashgrid_scheduler = mlp_scheduler_factory.instantiate().get_scheduler(
+                hashgrid_optimizer, optimization_config.hash_feature_lr_final
+            )
+        optimizers += [hashgrid_optimizer] if hashgrid_optimizer is not None else []
+        schedulers += [hashgrid_scheduler] if hashgrid_scheduler is not None else []
 
-        mlp_scheduler = mlp_scheduler_factory.instantiate().get_schedulers(
-            mlp_optimizer,
-            [
-                optimization_config.hash_feature_lr_final,
-                self.config.feature_adapter.optimization.lr_final,
-            ],
-        )
+        # fusion
+        fusion_optimizer, fusion_scheduler = None, None
+        fusion = getattr(self, "get_feature_fusion_mlp", None)
+        if fusion is not None:
+            fusion_optimizer, fusion_scheduler = fusion.training_setup(module)
+        if fusion_optimizer is not None:
+            self._add_optimizer_after_backward_hook_if_available(fusion_optimizer, module)
+        optimizers += [fusion_optimizer] if fusion_optimizer is not None else []
+        schedulers += [fusion_scheduler] if fusion_scheduler is not None else []
 
-        optimizers.insert(0, mlp_optimizer)
-        schedulers.insert(0, mlp_scheduler)
         return optimizers, schedulers
+
+    # def load_state_dict(self, state_dict, strict=True):
+    #     return super().load_state_dict(state_dict, strict=False)
 
     @property
     def get_hash_grid_feature_mlp(self):
         if "hash_grid_feature" not in self.gaussian_mlps:
-            return nn.Identity()
+            return None
         return self.gaussian_mlps["hash_grid_feature"]
 
     @property
-    def get_reduced_feature_adapter_mlp(self):
-        if "reduced_feature_adapter" not in self.gaussian_mlps:
-            return nn.Identity()
-        return self.gaussian_mlps["reduced_feature_adapter"]
+    def get_feature_fusion_mlp(self):
+        if "feature_fusion" not in self.gaussian_mlps:
+            return None
+        return self.gaussian_mlps["feature_fusion"]

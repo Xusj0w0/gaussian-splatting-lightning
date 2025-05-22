@@ -21,7 +21,6 @@ data:
       eval_image_select_mode: list
       eval_list: datasets/MegaNeRF/residence/splits/val_images.txt
       down_sample_factor: 4
-      semantic_dir: extra/sam2_feature_dim32
 
   train_max_num_images_to_cache: 64
   num_workers: 6
@@ -30,13 +29,13 @@ model:
   renderer_output_types:
   - rgb
   - acc_depth
-  - feature
   gaussian:
     class_path: myimpl.models.hash_grid_assisted_gaussian.HashGridAssistedGaussian
     init_args:
       base_layer: 11
       max_level: 4
       start_level: 1
+      feature_dim: 32
       hash_grid_feature:
         out_dim: 16
       feature_adapter:
@@ -44,16 +43,10 @@ model:
           lr_init: 3e-3
           lr_final: 3e-5
       feature_fusion:
+        fix_hash_weight: True
         optimization:
           lr_init: 3e-3
           lr_final: 3e-5
-      hash_grid_feature:
-        num_levels: 10
-        min_res: 16
-        max_res: 8192
-        log2_hashmap_size: 16
-        features_per_level: 4
-        use_mixed: false
       optimization:
         hash_feature_lr_init: 5e-3
         hash_feature_lr_final: 5e-5
@@ -83,10 +76,7 @@ model:
       normal_from_iter: 7_000
       multiview_from_iter: 7_000
       lambda_feature:
-        enabled: true
-        init: 1.0
-        final_factor: 1.0
-      # feature_until_iter: 30_000
+        enabled: false
   density:
     class_path: myimpl.density_controllers.grid_density_controllers.GridGaussianDensityController
     init_args:

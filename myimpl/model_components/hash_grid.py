@@ -45,10 +45,10 @@ class HashGridFeatureConfig:
     A scene containing 1e7 anchors with 32-dim features, param number = 1e7 * 32 = 320M
     """
 
-    num_levels: int = 8
+    num_levels: int = 10
     min_res: int = 2 << 4
-    max_res: int = 2 << 11
-    log2_hashmap_size: int = 15
+    max_res: int = 2 << 13
+    log2_hashmap_size: int = 16
     features_per_level: int = 4
 
     use_mixed: bool = False
@@ -107,3 +107,15 @@ class HashGridFeatureConfig:
             return None
         else:
             raise ValueError(f"Unknown activation function: {activation}")
+
+    def update_config(self, config: "HashGridFeatureConfig"):
+        self.num_levels = config.num_levels
+        self.min_res = config.min_res
+        self.max_res = config.max_res
+        self.log2_hashmap_size = config.log2_hashmap_size
+        self.features_per_level = config.features_per_level
+        self.num_layers = config.num_layers
+        self.layer_width = config.layer_width
+        self.out_dim = config.out_dim
+        self.activation = config.activation
+        self.out_activation = config.out_activation
