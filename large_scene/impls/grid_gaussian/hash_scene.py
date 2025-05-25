@@ -59,7 +59,6 @@ class GridSceneConfig(PartitionableSceneConfig):
 
     def __post_init__(self):
         super().__post_init__()
-        self.visibility_threshold = 0.05
 
 
 @dataclass
@@ -106,11 +105,11 @@ class GridScene(PartitionableScene):
             ),
             means_transformed[..., :2],
         )
-        # self.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
-        self.camera_visibilities = torch.zeros(
-            (len(self.partition_coordinates), len(image_set.cameras)),
-            dtype=torch.float32,
-        )
+        self.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
+        # self.camera_visibilities = torch.zeros(
+        #     (len(self.partition_coordinates), len(image_set.cameras)),
+        #     dtype=torch.float32,
+        # )
         self.visibility_based_partition_assignment()
 
         self.partition_coordinates = bounded_coordinates
@@ -119,9 +118,9 @@ class GridScene(PartitionableScene):
         points3D_transformed = (
             point_cloud.points.to(self.manhattan_trans) @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
         )
-        # self.save_plots(
-        #     output_path, BasicPointCloud(points=points3D_transformed, colors=point_cloud.colors, normals=None)
-        # )
+        self.save_plots(
+            output_path, BasicPointCloud(points=points3D_transformed, colors=point_cloud.colors, normals=None)
+        )
         self.partition_coordinates = partition_coordinates
         self.save_partitioning_results(output_path, image_set, coarse_model)
 
@@ -372,16 +371,16 @@ class GridScene(PartitionableScene):
         for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
             partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
 
-            mask = self.gaussians_in_partitions[partition_idx]
-            mask_properties = {k: v[mask] for k, v in property_dict.items()}
-            model.properties = mask_properties
+            # mask = self.gaussians_in_partitions[partition_idx].cuda() | model.get_levels <= 1
+            # mask_properties = {k: v[mask] for k, v in property_dict.items()}
+            # model.properties = mask_properties
 
             tensors = GridGaussianUtils.tensors_from_model(model)
-            tensors["properties"]["anchor_features"] = tensors["properties"]["anchor_features"][..., 0:0]
+            # tensors["properties"]["anchor_features"] = tensors["properties"]["anchor_features"][..., 0:0]
             del tensors["mlps"]["feature_adapter"]
             torch.save(tensors, osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.pt"))
 
-            model.properties = property_dict
+            # model.properties = property_dict
 
     def save_gaussians(self, dst_dir: str, model: VanillaGaussianModel):
         if isinstance(model, VanillaGaussianModel):

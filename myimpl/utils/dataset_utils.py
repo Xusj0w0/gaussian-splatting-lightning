@@ -122,9 +122,11 @@ class SemanticDataProcessor(NumpyDataProcessor):
             self.lambda_feature = kwargs["lambda_feature"]
 
     def __call__(self, extra_data: SemanticData, *args, **kwargs):
-        if getattr(self.lambda_feature, "enabled", False):
-            return super().__call__(extra_data)
-        return None
+        try:
+            if getattr(self.lambda_feature, "enabled", False):
+                return super().__call__(extra_data)
+        except:
+            return None
 
 
 class DepthData(NumpyData):

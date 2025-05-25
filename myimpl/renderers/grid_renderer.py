@@ -377,7 +377,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             projections=projections,
             properties=(input_features, input_opacities),
             bg_color=means2d.new_zeros((len(viewpoint_camera), pc.config.feature_dim)),
-            tile_size=int(self.config.block_size // 2),
+            tile_size=self.config.block_size,
         )
         aligned_feature = None
         feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)

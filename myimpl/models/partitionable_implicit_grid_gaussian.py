@@ -60,7 +60,7 @@ class PartitionableMixin:
                 + features[:, ::1, :1] * bank_weight[:, :, 2:3]
             )
             features = features.squeeze(dim=-1)
-        cat_local_view = torch.cat([features, viewdirs], dim=1)
+        cat_local_view = torch.cat([viewdirs, features], dim=1)
 
         opacities_offsets = self.forward_by_partition_id(
             self.get_opacity_mlp, anchor_partition_ids, features
@@ -126,7 +126,7 @@ class PartitionableMixin:
         anchor_partition_ids: torch.Tensor,
         features: torch.Tensor,
     ):
-        for layer in reversed(list(mlp.values())[0]):
+        for layer in reversed(list(mlp.values())[0].layers):
             if isinstance(layer, nn.Linear):
                 dim_out = layer.out_features
                 break
@@ -146,7 +146,7 @@ class PartitionableMixin:
         self._anchor_partition_ids: torch.Tensor
         return self._anchor_partition_ids
 
-    def create_mlps(self: "PartitionableImplicitGridGaussianModel"):
+    def create_mlps_oldver(self: "PartitionableImplicitGridGaussianModel"):
         self.gaussian_mlps = nn.ModuleDict()
         self.gaussian_mlps["opacity"] = nn.ModuleDict(
             {
@@ -202,6 +202,22 @@ class PartitionableMixin:
                     )
                     for k in self.config.partition_ids
                 }
+            )
+
+    def create_mlps(self: "PartitionableImplicitGridGaussianModel"):
+        self.gaussian_mlps = nn.ModuleDict()
+        self.gaussian_mlps["opacity"] = nn.ModuleDict(
+            {str(k): self.create_opacity_mlp() for k in self.config.partition_ids},
+        )
+        self.gaussian_mlps["cov"] = nn.ModuleDict(
+            {str(k): self.create_cov_mlp() for k in self.config.partition_ids},
+        )
+        self.gaussian_mlps["color"] = nn.ModuleDict(
+            {str(k): self.create_color_mlp() for k in self.config.partition_ids},
+        )
+        if self.config.use_feature_bank:
+            self.gaussian_mlps["feature_bank"] = nn.ModuleDict(
+                {str(k): self.create_feature_bank_mlp() for k in self.config.partition_ids},
             )
 
     @property
