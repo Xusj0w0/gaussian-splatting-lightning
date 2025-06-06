@@ -34,26 +34,30 @@ model:
   gaussian:
     class_path: myimpl.models.hash_grid_assisted_gaussian.HashGridAssistedGaussian
     init_args:
+      feature_dim: 32
       base_layer: 11
       max_level: 4
       start_level: 1
-      hash_grid_feature:
-        out_dim: 32
+
       feature_adapter:
         optimization:
           lr_init: 3e-3
           lr_final: 3e-5
+
       feature_fusion:
         optimization:
           lr_init: 3e-3
           lr_final: 3e-5
+
       hash_grid_feature:
+        out_dim: 32
         num_levels: 10
         min_res: 16
         max_res: 8192
         log2_hashmap_size: 16
         features_per_level: 4
         use_mixed: false
+
       optimization:
         hash_feature_lr_init: 5e-3
         hash_feature_lr_final: 5e-5

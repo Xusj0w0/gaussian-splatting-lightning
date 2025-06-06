@@ -5,6 +5,8 @@ tmp
 .env
 *.pkl
 *.zip
+*.pt
+*.pth
 
 experiments
 **/cuda_src

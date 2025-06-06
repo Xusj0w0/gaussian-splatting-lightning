@@ -48,9 +48,11 @@ from ..base.partitionable_scene import (PartitionableScene,
 class GridSceneConfig(PartitionableSceneConfig):
     down_sample_factor: int = 4
 
-    partition_bbox_enlarge_by_gaussian_assignment: float = 0.05
+    partition_bbox_enlarge_by_gaussian_assignment: float = 0.1
 
     visibility_threshold: float = field(default=0.05)
+
+    location_based_enlarge: float = field(default=0.2)
 
     train_config: Optional[str] = None
 

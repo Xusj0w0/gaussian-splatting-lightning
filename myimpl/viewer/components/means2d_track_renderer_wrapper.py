@@ -76,7 +76,7 @@ class GSplatMeans2dTrackRendererWrapper(Renderer):
                 output_pkg["visibility_filter"],
             )
 
-            conics = torch.tensor([[[16.0, 0.0, 16.0]]]).to(means2d).repeat(1, means2d.shape[0], 1)
+            conics = torch.tensor([[[4.0, 0.0, 4.0]]]).to(means2d).repeat(1, means2d.shape[0], 1)
             projections = None, means2d, None, conics, None
             opacities = opacities[visibility_filter].unsqueeze(0)
             rgb = torch.zeros((means2d.shape[0], 1)).to(means2d)

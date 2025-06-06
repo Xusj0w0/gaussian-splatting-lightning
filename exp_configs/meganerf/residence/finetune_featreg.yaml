@@ -58,7 +58,7 @@ model:
       lambda_feature.init: 0.01
       lambda_feature.final_factor: 1.0
   density:
-    class_path: myimpl.density_controllers.partition_grid_density_controller.PartitionGridGaussianDensityController
+    class_path: myimpl.density_controllers.partition_grid_density_controllers.PartitionGridGaussianDensityController
     init_args:
       densification: false
       # densify_until_iter: 15_000
