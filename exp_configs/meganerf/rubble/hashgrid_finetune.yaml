@@ -33,8 +33,8 @@ model:
     class_path: myimpl.models.hash_grid_assisted_gaussian.HashGridAssistedGaussian
     init_args:
       feature_dim: 32
-      base_layer: 10
-      max_level: 5
+      base_layer: 11
+      max_level: 4
       start_level: 1
 
       feature_fusion:
@@ -54,7 +54,7 @@ model:
       optimization:
         hash_feature_lr_init: 0.0
         hash_feature_lr_final: 0.0
-        anchor_features_lr: 2.5e-4
+        anchor_features_lr: 5e-4
         anchor_features_lr_scheduler:
           warmup_steps: 0
         means_lr_init: 0.0
@@ -64,12 +64,12 @@ model:
         offsets_lr_scheduler:
           init_args:
             lr_final: 3.2e-6
-        opacity_mlp_lr_init: 2e-4
-        opacity_mlp_lr_final: 2e-5
-        cov_mlp_lr_init: 4e-4
-        cov_mlp_lr_final: 4e-5
+        opacity_mlp_lr_init: 4e-4
+        opacity_mlp_lr_final: 4e-5
+        cov_mlp_lr_init: 8e-4
+        cov_mlp_lr_final: 8e-5
         color_mlp_lr_init: 8e-4
-        color_mlp_lr_final: 5e-5
+        color_mlp_lr_final: 8e-5
         feature_bank_mlp_lr_init: 1e-4
         feature_bank_mlp_lr_final: 1e-5
   renderer:
@@ -84,7 +84,7 @@ model:
     class_path: myimpl.density_controllers.grid_density_controllers.GridGaussianDensityController
     init_args:
       densify_until_iter: 40_000
-      densify_grad_threshold: 1.2e-4
+      densify_grad_threshold: 1e-4
 
 save_iterations:
 - 20_000

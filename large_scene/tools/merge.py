@@ -119,7 +119,7 @@ def update_ckpt(ckpt, merged_gaussians, max_sh_degree, retain_appearance: bool, 
         # modify hyperparameter
         orig_gaussian = ckpt["hyper_parameters"]["gaussian"]
         if ckpt["state_dict"].get("gaussian_model.gaussians.levels", None) is not None:
-            gaussian_params = {k: getattr(orig_gaussian, k) for k in PartitionableImplicitLoDGridGaussian.__dataclass_fields__ if k in orig_gaussian.__dict__}
+            gaussian_params = {k: getattr(orig_gaussian, k) for k, v in PartitionableImplicitLoDGridGaussian.__dataclass_fields__.items() if k in orig_gaussian.__dict__ and v.init}
             gaussian_params.update({"partition_ids": torch.unique(anchor_partition_ids).tolist()})
             ckpt["hyper_parameters"]["gaussian"] = PartitionableImplicitLoDGridGaussian(**gaussian_params)
         else:

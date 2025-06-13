@@ -149,7 +149,8 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
         pass
     renderer = RendererWithMetricsWrapper(renderer)
     # avoid loading point cloud
-    dataparser_config.points_from == "random"
+    dataparser_config.points_from = "random"
+    dataparser_config.eval_list = "misc/vis_partition/eval_list.txt"
     dataparser_outputs: DataParserOutputs = dataparser_config.instantiate(
         path=dataset_path,
         output_path=os.getcwd(),
@@ -192,6 +193,7 @@ def main():
         feature = predicts.get("aligned_feature", None)
         if feature is None:
             feature = predicts.get("render_feature", None)
+        torch.save(feature, osp.join(output_dir, "{}.pth".format(batch[1][0])))
         feature_im = Visualizers.pca_colormap(feature.contiguous()) * 255.0
         feature_im = feature_im.permute(1, 2, 0).to(torch.uint8).cpu()
 
