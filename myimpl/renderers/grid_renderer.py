@@ -108,9 +108,9 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             self.n_appearance_embedding_dims = lightning_module.gaussian_model.config.n_appearance_embedding_dims
 
             if self.config.filter_by_ws_size:
-                self.ws_size_thresh = lightning_module.trainer.datamodule.dataparser_outputs.camera_extent * 0.1
-            if self.config.filter_by_vs_size:
-                self.vs_size_thresh = 0.02
+                self.ws_size_thresh = lightning_module.trainer.datamodule.dataparser_outputs.camera_extent * 0.5
+        if self.config.filter_by_vs_size:
+            self.vs_size_thresh = 0.5
 
         if self.n_appearance_embedding_dims > 0:
             self.appearance_embedding = nn.Embedding(

@@ -8,13 +8,31 @@ from einops import repeat
 from torch_scatter import scatter_max, scatter_mean, scatter_sum
 
 from internal.cameras.cameras import Cameras
-from internal.density_controllers.density_controller import \
-    Utils as OptimizerManipulator
-from internal.density_controllers.vanilla_density_controller import (
-    VanillaDensityController, VanillaDensityControllerImpl)
-from myimpl.models.grid_gaussians import (GridFactory, GridGaussianModel,
-                                          LoDGridGaussianModel,
-                                          ScaffoldGaussianModelMixin)
+from internal.density_controllers.density_controller import Utils as OptimizerManipulator
+from internal.density_controllers.vanilla_density_controller import VanillaDensityController, VanillaDensityControllerImpl
+from myimpl.models.grid_gaussians import GridFactory, GridGaussianModel, LoDGridGaussianModel, ScaffoldGaussianModelMixin
+
+
+def chunked_nonzero(is_keep, max_elements=2 << 28):
+    rows, cols = is_keep.shape
+    max_rows_per_chunk = max_elements // cols
+    keep_mask_list = []
+    keep_idx_mapping_list = []
+
+    for row_start in range(0, rows, max_rows_per_chunk):
+        row_end = min(row_start + max_rows_per_chunk, rows)
+        chunk = is_keep[row_start:row_end, :]
+
+        r, c = torch.nonzero(chunk, as_tuple=True)
+        r = r + row_start
+
+        keep_mask_list.append(r)
+        keep_idx_mapping_list.append(c)
+
+    keep_mask = torch.cat(keep_mask_list, dim=0)
+    keep_idx_mapping = torch.cat(keep_idx_mapping_list, dim=0)
+
+    return keep_mask, keep_idx_mapping
 
 
 @dataclass
@@ -39,9 +57,7 @@ class CandidateAnchors:
         return self.anchors.shape[0]
 
     def get_basic_properties(self, gaussian_model: GridGaussianModel, voxel_size: float):
-        scales = gaussian_model.scale_inverse_activation(
-            gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size
-        )
+        scales = gaussian_model.scale_inverse_activation(gaussian_model.get_scalings.new_ones((self.n_anchors, 6)) * voxel_size)
         offsets = gaussian_model.get_anchors.new_zeros((self.n_anchors, gaussian_model.n_offsets, 3))
         rotations = gaussian_model.get_anchors.new_zeros((self.n_anchors, 4))
         rotations[..., 0] = 1.0
@@ -51,9 +67,7 @@ class CandidateAnchors:
         extra_levels = gaussian_model.get_extra_levels.new_zeros((self.n_anchors,))
         return {"levels": self.levels, "extra_levels": extra_levels}
 
-    def get_scaffold_properties(
-        self, gaussian_model: ScaffoldGaussianModelMixin, scatter_mode: Literal["max", "mean"] = "max"
-    ):
+    def get_scaffold_properties(self, gaussian_model: ScaffoldGaussianModelMixin, scatter_mode: Literal["max", "mean"] = "max"):
         # original implementation
         # TODO: CUDA OOM!
         # anchor_features = repeat(gaussian_model.get_anchor_features, "n c -> (n o) c", o=gaussian_model.n_offsets)
@@ -75,7 +89,8 @@ class CandidateAnchors:
 
         keep_indices = torch.nonzero(self.keep_mask, as_tuple=True)[0]
         is_keep = self.unique_indices.unsqueeze(1) == keep_indices.unsqueeze(0)
-        keep_mask, keep_idx_mapping = torch.nonzero(is_keep, as_tuple=True)
+        # keep_mask, keep_idx_mapping = torch.nonzero(is_keep, as_tuple=True)
+        keep_mask, keep_idx_mapping = chunked_nonzero(is_keep)
 
         indices = (torch.nonzero(self.grad_mask, as_tuple=True)[0] / gaussian_model.n_offsets).long()[keep_mask]
         anchor_features = features[indices]
@@ -89,9 +104,7 @@ class CandidateAnchors:
             raise ValueError(f"scatter_mode {scatter_mode} not supported")
         return {"anchor_features": anchor_features}  # , "opacities": opacities}
 
-    def get_all_properties(
-        self, gaussian_model: GridGaussianModel, voxel_size, scatter_mode: Literal["max", "mean"] = "max"
-    ):
+    def get_all_properties(self, gaussian_model: GridGaussianModel, voxel_size, scatter_mode: Literal["max", "mean"] = "max"):
         property_dict = self.get_basic_properties(gaussian_model, voxel_size)
         if getattr(gaussian_model, "get_levels", None) is not None and gaussian_model.get_levels.shape[0] > 0:
             property_dict.update(self.get_lod_grid_properties(gaussian_model))
@@ -105,9 +118,7 @@ class GridFilteringUtils:
     candidate_class_type = CandidateAnchors
 
     @staticmethod
-    def filter_exsiting_grids(
-        candidate_grids: torch.Tensor, existing_grids: torch.Tensor, overlap: int = 1, use_chunk=True
-    ):
+    def filter_exsiting_grids(candidate_grids: torch.Tensor, existing_grids: torch.Tensor, overlap: int = 1, use_chunk=True):
         assert overlap > 0
         count = candidate_grids.new_zeros((candidate_grids.shape[0],), dtype=torch.int)
         if use_chunk:
@@ -233,9 +244,7 @@ class GridFilteringUtils:
         # if is current level, then directly filter by existing anchors and weed out by cameras
         # if is next level, execute filtering after activate_level == max_level
         # and current level shouldn't exceed max_level
-        if not is_next_level or (
-            gaussian_model.activate_level >= gaussian_model.max_level and res_level < gaussian_model.max_level
-        ):
+        if not is_next_level or (gaussian_model.activate_level >= gaussian_model.max_level and res_level < gaussian_model.max_level):
             if candidate_grids.shape[0] > 0:
                 # don't filter by existing anchors
                 if overlap < 0:

@@ -1,0 +1,28 @@
+max_steps: 120_000
+data:
+  path: datasets/MegaNeRF/residence
+  parser:
+    class_path: myimpl.dataparsers.regularization_dataparser.Regularization
+    init_args:
+      split_mode: experiment
+      eval_image_select_mode: list
+      eval_list: datasets/MegaNeRF/residence/splits/val_images.txt
+      down_sample_factor: 4
+  train_max_num_images_to_cache: 64
+  num_workers: 4
+  async_caching: true
+model:
+  gaussian:
+    optimization:
+      means_lr_init: 1.6e-4
+      means_lr_scheduler:
+        lr_final: 1.6e-6
+  density:
+    densify_until_iter: 60_000
+save_iterations:
+- 20_000
+- 40_000
+- 60_000
+- 80_000
+- 100_000
+- 120_000
