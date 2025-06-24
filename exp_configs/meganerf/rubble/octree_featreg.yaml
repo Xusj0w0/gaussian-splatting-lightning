@@ -1,0 +1,62 @@
+max_steps: 60_000
+data:
+  batch_size: 2
+  path: datasets/MegaNeRF/rubble
+  parser:
+    class_path: myimpl.dataparsers.regularization_dataparser.Regularization
+    init_args:
+      split_mode: experiment
+      eval_image_select_mode: list
+      eval_list: datasets/MegaNeRF/rubble/splits/val_images.txt
+      down_sample_factor: 4
+      semantic_dir: extra/sam2_feature_dim32
+  train_max_num_images_to_cache: 64
+  num_workers: 4
+  async_caching: true
+model:
+  renderer_output_types:
+  - rgb
+  - acc_depth
+  - feature
+  gaussian:
+    class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
+    init_args:
+      base_layer: 10
+      max_level: 5
+      start_level: 1
+      optimization:
+        means_lr_init: 0.0
+        scales_lr: 5e-3
+        rotations_lr_init: 1e-3
+        offsets_lr_init: 6.4e-4
+        offsets_lr_scheduler:
+          init_args:
+            lr_final: 6.4e-6
+        anchor_features_lr: 5e-3
+        opacity_mlp_lr_init: 4e-3
+        opacity_mlp_lr_final: 4e-5
+        cov_mlp_lr_init: 8e-3
+        cov_mlp_lr_final: 8e-5
+        color_mlp_lr_init: 8e-3
+        color_mlp_lr_final: 8e-5
+        feature_bank_mlp_lr_init: 1e-3
+        feature_bank_mlp_lr_final: 1e-5
+  renderer:
+    class_path: myimpl.renderers.grid_renderer.GridGaussianRenderer
+  metric:
+    class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
+    init_args:
+      normal_from_iter: 7_000
+      lambda_feature:
+        enabled: true
+  density:
+    class_path: myimpl.density_controllers.grid_density_controllers.GridGaussianDensityController
+    init_args:
+      densify_until_iter: 40_000
+      densify_grad_threshold: 1.5e-4
+
+save_iterations:
+- 7_000
+- 20_000
+- 40_000
+- 60_000

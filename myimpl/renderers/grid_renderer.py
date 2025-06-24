@@ -87,6 +87,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         "feature": _FEATURE_REQUIRED,
         "pseudo_view": _PSEUDO_VIEW_REQUIRED,
     }
+    _TRUNCATE_FEATURE_DIM = 4
     config: GridGaussianRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
@@ -355,30 +356,86 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
                 **kwargs,
             )
         )
+
+        # accelerate rendering by truncating features
+        # projections: radii, means2d, depths, conics, compensations
+        # isects: tiles_per_gauss, isect_ids, flatten_ids, isect_offsets
+        trunc_num = -1
+        if self._TRUNCATE_FEATURE_DIM > 0:
+            assert (
+                pc.config.feature_dim % self._TRUNCATE_FEATURE_DIM == 0
+            ), "pc.config.feature_dim is not divisible by trunc_num"
+            trunc_num = int(pc.config.feature_dim // self._TRUNCATE_FEATURE_DIM)
+            _projections_list, _isects_list = [], []
+            for projections, isects in zip(projections_list, isects_list):
+                _, means2d, _, conics, _ = projections
+                _, _, flatten_ids, isect_offsets = isects
+
+                for trunc_id in range(trunc_num):
+                    _projections_list.append((None, means2d, None, conics, None))
+                    _isects_list.append((None, None, flatten_ids, isect_offsets))
+                    # flatten_ids = flatten_ids + means2d.shape[0]
+                    # isect_offsets = isect_offsets + flatten_ids.shape[0]
+
+            projections_list, _projections_list = _projections_list, projections_list
+            isects_list, _isects_list = _isects_list, isects_list
+
+            # deal with camera
+            viewmats, Ks, (width, height) = preprocessed_camera
+            _viewmats = viewmats.repeat_interleave(trunc_num, 0)
+            _Ks = Ks.repeat_interleave(trunc_num, 0)
+            _width, _height = [], []
+            for w, h in zip(width, height):
+                _width += [w] * trunc_num
+                _height += [h] * trunc_num
+            _img_size = (_width, _height)
+            preprocessed_camera = _viewmats, _Ks, _img_size
+
         projections = GridRendererUtils.concatenate_projections(projections_list, isects_list)
         means2d, *_ = projections
 
+        bg_color = means2d.new_zeros((len(properties_list), pc.config.feature_dim))
+        if self._TRUNCATE_FEATURE_DIM > 0:
+            bg_color = means2d.new_zeros((len(properties_list) * trunc_num, self._TRUNCATE_FEATURE_DIM))
+
         input_features = means2d.new_zeros((0, pc.config.feature_dim))
         input_opacities = means2d.new_zeros((0,))
-        for cam_id in range(len(viewpoint_camera)):
+        for cam_id in range(len(properties_list)):
             _, _, _, _, _opacities, _anchor_mask, _primitive_mask, *_ = properties_list[cam_id]
             _visibility_filter = visibility_filter[cam_id]
+            _opacities = _opacities[_visibility_filter]
             indices = torch.nonzero(_anchor_mask, as_tuple=True)[0]
             indices = indices.reshape(-1, 1).expand(-1, pc.n_offsets).reshape(-1)
             indices = indices[_primitive_mask]
             indices = indices[_visibility_filter]
-            features = pc.get_anchor_features[indices]
+            _features = pc.get_anchor_features[indices]
 
-            input_opacities = torch.cat([input_opacities, _opacities[_visibility_filter]], dim=0)
-            input_features = torch.cat([input_features, features], dim=0)
+            if self._TRUNCATE_FEATURE_DIM > 0:
+                if len(input_features) == 0:
+                    input_features = means2d.new_zeros((0, self._TRUNCATE_FEATURE_DIM))
+                _opacities = _opacities.repeat(trunc_num)
+                _features = _features.reshape(_features.shape[0], -1, self._TRUNCATE_FEATURE_DIM)
+                _features = _features.permute(1, 0, 2).flatten(0, 1)
+
+            input_opacities = torch.cat([input_opacities, _opacities], dim=0)
+            input_features = torch.cat([input_features, _features], dim=0)
 
         render_feature, alpha = GridRendererUtils.rasterize_cat_projections(
             preprocessed_camera=preprocessed_camera,
             projections=projections,
             properties=(input_features, input_opacities),
-            bg_color=means2d.new_zeros((len(viewpoint_camera), pc.config.feature_dim)),
+            bg_color=bg_color,
             tile_size=self.config.block_size,
         )
+
+        # postprocess
+        if self._TRUNCATE_FEATURE_DIM > 0:
+            render_feature = render_feature.reshape(-1, trunc_num, *render_feature.shape[1:])  # [B, T, H, W, C]
+            render_feature = render_feature.permute(0, 2, 3, 1, 4)
+            render_feature = render_feature.reshape(*render_feature.shape[:-2], -1)
+            alpha = alpha.reshape(-1, trunc_num, *alpha.shape[1:])
+            alpha = alpha.mean(dim=1)
+
         aligned_feature = None
         feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
         if feature_adapter is not None:
