@@ -30,7 +30,7 @@ class ScaffoldMetrics(VanillaMetrics):
 
     normal_from_iter: int = 7_000
 
-    grad_weighted_normal: bool = False
+    grad_weighted_normal: bool = True
 
     multiview_from_iter: int = 7_000
 
@@ -199,11 +199,11 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
                 grad = (grad - grad.min()) / (grad.max() - grad.min())
                 rgb_grad[..., 1:-1, 1:-1] = grad
                 conf = (1.0 - rgb_grad) ** 2
-                # loss_normal = ((normal - normal_from_depth).abs().sum(1) * conf).mean()
-                loss_normal = ((1.0 - F.cosine_similarity(normal, normal_from_depth, dim=1)) * conf).mean()
+                loss_normal = ((normal - normal_from_depth).abs().sum(1) * conf).mean()
+                # loss_normal = ((1.0 - F.cosine_similarity(normal, normal_from_depth, dim=1)) * conf).mean()
             else:
-                # loss_normal = ((normal - normal_from_depth).abs().sum(1)).mean()
-                loss_normal = (1.0 - F.cosine_similarity(normal, normal_from_depth, dim=1)).mean()
+                loss_normal = ((normal - normal_from_depth).abs().sum(1)).mean()
+                # loss_normal = (1.0 - F.cosine_similarity(normal, normal_from_depth, dim=1)).mean()
 
             metrics["loss"] += self.config.lambda_normal * loss_normal
             metrics["loss_normal"] = loss_normal

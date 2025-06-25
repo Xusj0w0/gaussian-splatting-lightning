@@ -59,6 +59,8 @@ class GridGaussianRenderer(GSplatV1Renderer):
     render_feature_size: int = 256
     """short side of the feature map"""
 
+    trunc_feature_dim: int = -1
+
     appearance_model: AppearanceModelConfig = field(default_factory=lambda: AppearanceModelConfig())
 
     use_decoupled_appearance: bool = False
@@ -87,7 +89,6 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         "feature": _FEATURE_REQUIRED,
         "pseudo_view": _PSEUDO_VIEW_REQUIRED,
     }
-    _TRUNCATE_FEATURE_DIM = 4
     config: GridGaussianRenderer
 
     def setup(self, stage: str, lightning_module=None, *args: Any, **kwargs: Any) -> Any:
@@ -361,11 +362,11 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         # projections: radii, means2d, depths, conics, compensations
         # isects: tiles_per_gauss, isect_ids, flatten_ids, isect_offsets
         trunc_num = -1
-        if self._TRUNCATE_FEATURE_DIM > 0:
+        if self.config.trunc_feature_dim > 0:
             assert (
-                pc.config.feature_dim % self._TRUNCATE_FEATURE_DIM == 0
+                pc.config.feature_dim % self.config.trunc_feature_dim == 0
             ), "pc.config.feature_dim is not divisible by trunc_num"
-            trunc_num = int(pc.config.feature_dim // self._TRUNCATE_FEATURE_DIM)
+            trunc_num = int(pc.config.feature_dim // self.config.trunc_feature_dim)
             _projections_list, _isects_list = [], []
             for projections, isects in zip(projections_list, isects_list):
                 _, means2d, _, conics, _ = projections
@@ -395,26 +396,22 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         means2d, *_ = projections
 
         bg_color = means2d.new_zeros((len(properties_list), pc.config.feature_dim))
-        if self._TRUNCATE_FEATURE_DIM > 0:
-            bg_color = means2d.new_zeros((len(properties_list) * trunc_num, self._TRUNCATE_FEATURE_DIM))
+        if self.config.trunc_feature_dim > 0:
+            bg_color = means2d.new_zeros((len(properties_list) * trunc_num, self.config.trunc_feature_dim))
 
         input_features = means2d.new_zeros((0, pc.config.feature_dim))
         input_opacities = means2d.new_zeros((0,))
         for cam_id in range(len(properties_list)):
-            _, _, _, _, _opacities, _anchor_mask, _primitive_mask, *_ = properties_list[cam_id]
+            _properties = properties_list[cam_id]
             _visibility_filter = visibility_filter[cam_id]
-            _opacities = _opacities[_visibility_filter]
-            indices = torch.nonzero(_anchor_mask, as_tuple=True)[0]
-            indices = indices.reshape(-1, 1).expand(-1, pc.n_offsets).reshape(-1)
-            indices = indices[_primitive_mask]
-            indices = indices[_visibility_filter]
-            _features = pc.get_anchor_features[indices]
+            _opacities = _properties[4][_visibility_filter]
+            _features = self.get_features_for_render(pc, _properties, _visibility_filter)
 
-            if self._TRUNCATE_FEATURE_DIM > 0:
+            if self.config.trunc_feature_dim > 0:
                 if len(input_features) == 0:
-                    input_features = means2d.new_zeros((0, self._TRUNCATE_FEATURE_DIM))
+                    input_features = means2d.new_zeros((0, self.config.trunc_feature_dim))
                 _opacities = _opacities.repeat(trunc_num)
-                _features = _features.reshape(_features.shape[0], -1, self._TRUNCATE_FEATURE_DIM)
+                _features = _features.reshape(_features.shape[0], -1, self.config.trunc_feature_dim)
                 _features = _features.permute(1, 0, 2).flatten(0, 1)
 
             input_opacities = torch.cat([input_opacities, _opacities], dim=0)
@@ -429,7 +426,7 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
         )
 
         # postprocess
-        if self._TRUNCATE_FEATURE_DIM > 0:
+        if self.config.trunc_feature_dim > 0:
             render_feature = render_feature.reshape(-1, trunc_num, *render_feature.shape[1:])  # [B, T, H, W, C]
             render_feature = render_feature.permute(0, 2, 3, 1, 4)
             render_feature = render_feature.reshape(*render_feature.shape[:-2], -1)
@@ -442,6 +439,15 @@ class GridGaussianRendererModule(GSplatV1RendererModule):
             aligned_feature = feature_adapter(render_feature)
 
         return render_feature, aligned_feature, alpha
+
+    def get_features_for_render(self, pc, properties, visibility_filter):
+        _, _, _, _, _, anchor_mask, primitive_mask, *_ = properties
+        indices = torch.nonzero(anchor_mask, as_tuple=True)[0]
+        indices = indices.reshape(-1, 1).expand(-1, pc.n_offsets).reshape(-1)
+        indices = indices[primitive_mask]
+        indices = indices[visibility_filter]
+        features = pc.get_anchor_features[indices]
+        return features
 
     def setup_web_viewer_tabs(self, viewer, server, tabs):
         super().setup_web_viewer_tabs(viewer, server, tabs)
