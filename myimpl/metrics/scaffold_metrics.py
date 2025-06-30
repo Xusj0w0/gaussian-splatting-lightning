@@ -136,7 +136,8 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
 
         # if single batch
         if isinstance(image_name, str):
-            gt_image = gt_image.unsqueeze(0)
+            if len(gt_image.shape) <= 3:
+                gt_image = gt_image.unsqueeze(0)
             if extra_data is not None:
                 extra_data = {k: [v] for k, v in extra_data.items()}
 

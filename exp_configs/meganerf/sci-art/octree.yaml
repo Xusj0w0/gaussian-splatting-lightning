@@ -19,8 +19,8 @@ model:
   gaussian:
     class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
     init_args:
-      base_layer: 11
-      max_level: 4
+      base_layer: 10
+      max_level: 5
       start_level: 1
       optimization:
         means_lr_init: 0.0
