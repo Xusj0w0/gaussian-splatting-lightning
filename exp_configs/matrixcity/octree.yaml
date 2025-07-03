@@ -1,14 +1,14 @@
 max_steps: 60_000
 data:
   batch_size: 2
-  path: datasets/MegaNeRF/sci-art
+  path: datasets/MatrixCity/small_city/aerial
   parser:
     class_path: myimpl.dataparsers.regularization_dataparser.Regularization
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
-      eval_list: datasets/MegaNeRF/sci-art/splits/val_images.txt
-      down_sample_factor: 4
+      eval_list: datasets/MatrixCity/small_city/aerial/splits/val_images.txt
+      down_sample_factor: 1
   train_max_num_images_to_cache: 64
   num_workers: 4
   async_caching: true
@@ -19,7 +19,7 @@ model:
   gaussian:
     class_path: myimpl.models.implicit_grid_gaussian.ImplicitLoDGridGaussian
     init_args:
-      base_layer: 12
+      base_layer: 11
       max_level: -1
       start_level: 1
       optimization:
@@ -49,7 +49,7 @@ model:
     class_path: myimpl.density_controllers.grid_density_controllers.GridGaussianDensityController
     init_args:
       densify_until_iter: 40_000
-      densify_grad_threshold: 1.2e-4
+      densify_grad_threshold: 2e-4
 
 save_iterations:
 - 7_000
