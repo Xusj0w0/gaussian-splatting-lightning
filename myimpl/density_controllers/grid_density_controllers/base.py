@@ -124,7 +124,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         global_step: int,
         pl_module: LightningModule,
     ) -> None:
-        if global_step >= self.config.densify_until_iter:
+        if global_step >= self.config.densify_until_iter or not self.config.densification:
             return
 
         if global_step >= self.config.update_from_iter:
@@ -132,8 +132,7 @@ class GridGaussianDensityControllerImpl(VanillaDensityControllerImpl):
                 self.update_state(outputs, gaussian_model.n_anchors, gaussian_model.n_offsets)
 
                 if (
-                    self.config.densification
-                    and global_step >= self.config.densify_from_iter
+                    global_step >= self.config.densify_from_iter
                     and global_step % self.config.densification_interval == 0
                 ):
                     # filter out mlp optimizers

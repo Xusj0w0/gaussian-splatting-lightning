@@ -1,26 +1,14 @@
-max_steps: 60_000
+max_steps: 120_000
 data:
   batch_size: 2
-
-  # path: datasets/MipNeRF360/bicycle
-  # parser:
-  #   class_path: myimpl.dataparsers.regularization_dataparser.Regularization
-  #   init_args:
-  #     split_mode: experiment
-  #     eval_image_select_mode: step
-  #     eval_step: 8
-  #     down_sample_factor: 4
-  #     down_sample_rounding_mode: ceil
-  #     semantic_dir: extra/sam2_feature_dim32
-
-  path: datasets/MegaNeRF/rubble
+  path: datasets/Mill19/rubble
   parser:
     class_path: myimpl.dataparsers.regularization_dataparser.Regularization
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
-      eval_list: datasets/MegaNeRF/rubble/splits/val_images.txt
-      down_sample_factor: 4
+      eval_list: datasets/Mill19/rubble/val_images.txt
+      down_sample_factor: 1
       semantic_dir: extra/sam2_feature_dim32
 
   train_max_num_images_to_cache: 64
@@ -89,15 +77,13 @@ model:
         enabled: true
         init: 1.0
         final_factor: 1.0
-      # feature_until_iter: 30_000
   density:
     class_path: myimpl.density_controllers.grid_density_controllers.GridGaussianDensityController
     init_args:
-      densify_until_iter: 40_000
-      densify_grad_threshold: 1.5e-4
-
+      densify_until_iter: 60_000
+      densify_grad_threshold: 1.2e-4
+      densification_interval: 200
 save_iterations:
-- 7_000
-- 20_000
 - 40_000
-- 60_000
+- 80_000
+- 120_000
