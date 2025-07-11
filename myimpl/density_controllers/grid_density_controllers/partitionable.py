@@ -106,6 +106,7 @@ class PartitionableFilteringUtils(GridFilteringUtils):
 class PartitionableGridGaussianDensityController(GridGaussianDensityController):
     densify_in_partition: bool = True
     prune_in_partition: bool = True
+    optimize_in_partition: bool = False
 
     def instantiate(self, *args, **kwargs):
         return PartitionableGridGaussianDensityControllerImpl(self)
@@ -134,6 +135,17 @@ class PartitionableGridGaussianDensityControllerImpl(GridGaussianDensityControll
             partition_info = PartitionInfo(partition_info_path, partition_name)
             if hasattr(partition_info, "bounding_box"):
                 self.partition_info = partition_info
+
+    def after_backward(self, outputs, batch, gaussian_model, optimizers, global_step, pl_module):
+        if self.config.optimize_in_partition:
+            if hasattr(self, "partition_info") and self.config.prune_in_partition:
+                is_in_partition = self.partition_info.is_in_partition(gaussian_model.get_xyz)
+                for name in gaussian_model.get_property_names():
+                    prop = gaussian_model.gaussians[name]
+                    if prop.grad is not None:
+                        prop.grad[~is_in_partition] = 0.0
+
+        super().after_backward(outputs, batch, gaussian_model, optimizers, global_step, pl_module)
 
     def _densify_and_prune(self, gaussian_model: GridGaussianModel, optimizers: List):
         n_offsets = gaussian_model.n_offsets

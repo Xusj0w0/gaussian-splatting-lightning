@@ -1,13 +1,13 @@
-max_steps: 180_000
+max_steps: 240_000
 data:
   batch_size: 2
-  path: datasets/Mill19/rubble
+  path: datasets/MatrixCity/smallcity-aerial
   parser:
     class_path: myimpl.dataparsers.regularization_dataparser.Regularization
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
-      eval_list: datasets/Mill19/rubble/val_images.txt
+      eval_list: datasets/MatrixCity/smallcity-aerial/val_images.txt
       down_sample_factor: 1
       semantic_dir: extra/sam2_feature_dim32
 
@@ -24,20 +24,18 @@ model:
     init_args:
       feature_dim: 32
       base_layer: 11
-      max_level: 4
+      max_level: 6
       start_level: 1
 
       feature_adapter:
         optimization:
           lr_init: 3e-3
           lr_final: 3e-5
-          max_steps: null
 
       feature_fusion:
         optimization:
           lr_init: 3e-3
           lr_final: 3e-5
-          max_steps: 120_000
 
       hash_grid_feature:
         out_dim: 32
@@ -54,15 +52,16 @@ model:
         anchor_features_lr: 2.5e-3
         anchor_features_lr_scheduler:
           warmup_steps: 0
+          max_steps: null
         means_lr_init: 0.0
         scales_lr: 5e-3
         rotations_lr_init: 1e-3
-        offsets_lr_init: 3.2e-4
+        offsets_lr_init: 1.6e-3
         offsets_lr_scheduler:
           init_args:
-            lr_final: 3.2e-6
+            lr_final: 1.6e-5
         mlp_scheduler:
-          max_steps: 120_000
+          max_steps: 240_000
         opacity_mlp_lr_init: 2e-3
         opacity_mlp_lr_final: 2e-5
         cov_mlp_lr_init: 4e-3
@@ -76,8 +75,7 @@ model:
   metric:
     class_path: myimpl.metrics.scaffold_metrics.ScaffoldMetrics
     init_args:
-      normal_from_iter: 7_000
-      feature_until_iter: 120_000
+      normal_from_iter: 10_000
       lambda_feature:
         enabled: true
         init: 1.0
@@ -85,10 +83,11 @@ model:
   density:
     class_path: myimpl.density_controllers.grid_density_controllers.GridGaussianDensityController
     init_args:
-      densify_until_iter: 80_000
-      densify_grad_threshold: 1.0e-4
-      densification_interval: 200
+      densify_until_iter: 120_000
+      densify_grad_threshold: 1e-4
+      densification_interval: 400
 save_iterations:
 - 60_000
 - 120_000
 - 180_000
+- 240_000

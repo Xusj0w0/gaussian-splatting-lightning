@@ -126,6 +126,7 @@ def load_from_ckpt(args, device) -> Tuple[VanillaGaussianModel, VanillaRenderer,
         if args.dataset_path is not None:
             dataset_path = args.dataset_path
             dataparser_config.eval_list = osp.join(args.dataset_path, "splits/val_images.txt")
+            dataparser_config.down_sample_factor = args.down_sample_factor
 
     elif args.ckpt.endswith(".ply"):
         assert args.dataset_path is not None, "ply model detected, dataset path should be specified"

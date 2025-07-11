@@ -1,6 +1,6 @@
 max_steps: 60_000
 data:
-  batch_size: 1
+  batch_size: 2
   path: datasets/UrbanScene3D/residence
   parser:
     class_path: myimpl.dataparsers.regularization_dataparser.Regularization
@@ -52,6 +52,7 @@ model:
         anchor_features_lr: 2.5e-3
         anchor_features_lr_scheduler:
           warmup_steps: 0
+          max_steps: null
         means_lr_init: 0.0
         scales_lr: 5e-3
         rotations_lr_init: 1e-3
@@ -59,6 +60,8 @@ model:
         offsets_lr_scheduler:
           init_args:
             lr_final: 1.6e-6
+        mlp_scheduler:
+          max_steps: 60_000
         opacity_mlp_lr_init: 2e-3
         opacity_mlp_lr_final: 2e-5
         cov_mlp_lr_init: 4e-3

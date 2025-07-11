@@ -24,6 +24,7 @@ def make_parser():
     parser.add_argument("--ext", nargs="+", default=["jpg", "JPG", "jpeg", "JPEG", "png", "PNG"])
     parser.add_argument("--skip_image", default=False, action="store_true")
     parser.add_argument("--skip_sparse", default=False, action="store_true")
+    parser.add_argument("--prefix", type=str, default="")
     return parser
 
 
@@ -38,7 +39,13 @@ def load_sparse_model(sparse_model_path):
 
 
 def merge_sparse_model(
-    cameras: Dict[int, Camera], images: Dict[int, Image], points3d: Dict[int, Point3D], _cameras, _images, _points3d
+    cameras: Dict[int, Camera],
+    images: Dict[int, Image],
+    points3d: Dict[int, Point3D],
+    _cameras: Dict[int, Camera],
+    _images: Dict[int, Image],
+    _points3d: Dict[int, Point3D],
+    prefix: str = "",
 ):
     def is_same_camera(camera: Camera, camera_ref: Camera):
         if camera.model != camera_ref.model:
@@ -76,7 +83,7 @@ def merge_sparse_model(
             qvec=v.qvec,
             tvec=v.tvec,
             camera_id=val_cam_mapping[v.camera_id],
-            name=v.name,
+            name=add_prefix(v.name, prefix),
             xys=v.xys,
             point3D_ids=np.empty((0,)),  # pts3d not merged yet
         )
@@ -154,6 +161,10 @@ def resize_image(image_path: str, dst_path: str, down_sample_factor: int = 1, re
     resized_image.save(dst_path, quality=100)
 
 
+def add_prefix(image_name: str, prefix: str = ""):
+    return osp.join(osp.dirname(image_name), prefix + osp.basename(image_name))
+
+
 def main():
     args = make_parser().parse_args()
     os.makedirs(args.dst_path, exist_ok=True)
@@ -174,7 +185,7 @@ def main():
                 future_list = []
                 for i in image_list:
                     src_path = osp.abspath(osp.join(src_dir, i))
-                    dst_path = osp.abspath(osp.join(dst_dir, i))
+                    dst_path = add_prefix(osp.abspath(osp.join(dst_dir, i)), args.prefix if split == "val" else "")
                     future_list.append(
                         tpe.submit(
                             resize_image,
@@ -193,12 +204,12 @@ def main():
         train_cameras, train_images, train_points3d = load_sparse_model(osp.join(args.dataset_path, "train/sparse"))
         val_cameras, val_images, val_points3d = load_sparse_model(osp.join(args.dataset_path, "val/sparse"))
         cameras, images, points3d = merge_sparse_model(
-            train_cameras, train_images, train_points3d, val_cameras, val_images, val_points3d
+            train_cameras, train_images, train_points3d, val_cameras, val_images, val_points3d, args.prefix
         )
         val_image_names = [v.name for v in val_images.values()]
         with open(osp.join(args.dst_path, "val_images.txt"), "w") as f:
             for image_name in val_image_names:
-                f.write(f"{image_name}\n")
+                f.write(add_prefix(image_name, args.prefix) + "\n")
 
         # rescaling images
         camera_scalings, _cameras = {}, {}

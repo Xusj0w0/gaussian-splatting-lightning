@@ -210,6 +210,8 @@ class ScaffoldMetricsImpl(VanillaMetricsImpl):
             metrics["loss_normal"] = loss_normal
             prog_bar["loss_normal"] = False
 
+        if isinstance(self.config.feature_until_iter, int) and global_step >= self.config.feature_until_iter:
+            self.config.lambda_feature.enabled = False
         if self.config.lambda_feature.enabled and "feature" in rendered_types:
             gt_feature = extra_data.get(SemanticData.KEY, None)
             aligned_feature = outputs.get("aligned_feature", None)
