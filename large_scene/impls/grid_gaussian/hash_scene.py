@@ -25,23 +25,23 @@ import internal.utils.colmap as colmap_utils
 from internal.cameras.cameras import Camera, Cameras
 from internal.dataparsers.colmap_dataparser import Colmap, ColmapDataParser
 from internal.dataparsers.dataparser import ImageSet
-from internal.models.vanilla_gaussian import (VanillaGaussian,
-                                              VanillaGaussianModel)
+from internal.models.vanilla_gaussian import VanillaGaussian, VanillaGaussianModel
 from internal.renderers.renderer import Renderer
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import GaussianPlyUtils
 from internal.utils.graphics_utils import BasicPointCloud
-from internal.utils.partitioning_utils import (MinMaxBoundingBox,
-                                               MinMaxBoundingBoxes,
-                                               PartitionCoordinates,
-                                               Partitioning, SceneBoundingBox)
-from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussianModel,
-                                                  ImplicitLoDGridGaussianModel)
+from internal.utils.partitioning_utils import (
+    MinMaxBoundingBox,
+    MinMaxBoundingBoxes,
+    PartitionCoordinates,
+    Partitioning,
+    SceneBoundingBox,
+)
+from myimpl.models.implicit_grid_gaussian import ImplicitGridGaussianModel, ImplicitLoDGridGaussianModel
 from myimpl.renderers.grid_renderer import GridGaussianRendererModule
 
-from ..base.partitionable_scene import (PartitionableScene,
-                                        PartitionableSceneConfig)
+from ..base.partitionable_scene import PartitionableScene, PartitionableSceneConfig
 
 
 @dataclass
@@ -107,11 +107,12 @@ class GridScene(PartitionableScene):
             ),
             means_transformed[..., :2],
         )
-        self.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
-        # self.camera_visibilities = torch.zeros(
-        #     (len(self.partition_coordinates), len(image_set.cameras)),
-        #     dtype=torch.float32,
-        # )
+        if osp.exists("tmp_data.pt"):
+            data = torch.load("tmp_data.pt")
+            self.anchor_visibilities = data['anchor']
+            self.camera_visibilities = data['camera']
+        else:
+            self.calculate_camera_visibilities(coarse_model, renderer, image_set.cameras, device=device, bg_color=bg_color)
         self.visibility_based_partition_assignment()
 
         self.partition_coordinates = bounded_coordinates
@@ -252,6 +253,10 @@ class GridScene(PartitionableScene):
             (len(self.partition_coordinates), len(cameras)),
             dtype=torch.float32,
         )
+        self.anchor_visibilities = torch.zeros(
+            (len(self.partition_coordinates), len(coarse_model.get_anchors)),
+            dtype=torch.float32,
+        )
         n_anchors, n_offsets = self.gaussians_in_partitions.shape[1], coarse_model.n_offsets
         for camera_idx, camera in enumerate(tqdm(cameras)):
             camera.to_device(device)
@@ -302,7 +307,11 @@ class GridScene(PartitionableScene):
 
                 weights_in_partition = anchor_weights[is_in_partition].sum()
                 weights_total = blend_weights.sum()
-                self.camera_visibilities[partition_idx, camera_idx] = weights_in_partition / weights_total
+                ratio = weights_in_partition / weights_total
+                self.camera_visibilities[partition_idx, camera_idx] = ratio
+                if ratio > self.scene_config.visibility_threshold:
+                    vis = anchor_weights #  / weights_total
+                    self.anchor_visibilities[partition_idx] += vis.to(self.anchor_visibilities)
 
         return self.camera_visibilities
 
@@ -331,8 +340,7 @@ class GridScene(PartitionableScene):
     def load_point_cloud(self, dataset_path):
         from glob import glob
 
-        from internal.utils.graphics_utils import (
-            fetch_ply_without_rgb_normalization, store_ply)
+        from internal.utils.graphics_utils import fetch_ply_without_rgb_normalization, store_ply
 
         ply_path = osp.join(dataset_path, "point_cloud.ply")
         if osp.exists(ply_path):
@@ -373,16 +381,16 @@ class GridScene(PartitionableScene):
         for partition_idx in tqdm(range(len(self.partition_coordinates)), desc="Saving partition ply files"):
             partition_id_str = self.partition_coordinates.get_str_id(partition_idx)
 
-            # mask = self.gaussians_in_partitions[partition_idx].cuda() | model.get_levels <= 1
-            # mask_properties = {k: v[mask] for k, v in property_dict.items()}
-            # model.properties = mask_properties
+            mask = self.gaussians_in_partitions[partition_idx] | (self.anchor_visibilities[partition_idx] > 1e-3)
+            mask_properties = {k: v[mask.to(device=v.device)] for k, v in property_dict.items()}
+            model.properties = mask_properties
 
             tensors = GridGaussianUtils.tensors_from_model(model)
             # tensors["properties"]["anchor_features"] = tensors["properties"]["anchor_features"][..., 0:0]
             del tensors["mlps"]["feature_adapter"]
             torch.save(tensors, osp.join(partition_dir, "partitions", partition_id_str, "gaussian_model.pt"))
 
-            # model.properties = property_dict
+            model.properties = property_dict
 
     def save_gaussians(self, dst_dir: str, model: VanillaGaussianModel):
         if isinstance(model, VanillaGaussianModel):

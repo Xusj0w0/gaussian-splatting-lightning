@@ -42,6 +42,8 @@ class GaussianSplatting(LightningModule):
             output_path: str = None,
             save_val_output: bool = False,
             save_val_metrics: bool = None,
+            save_best_psnr: bool = False,
+            save_best_ssim: bool = False,
             max_save_val_output: int = -1,
             renderer: Union[Renderer, RendererConfig] = lazy_instance(VanillaRenderer),
             metric: Metric = lazy_instance(VanillaMetrics),
@@ -166,7 +168,7 @@ class GaussianSplatting(LightningModule):
                     pl_module=self,
                 )
             elif self.hparams["initialize_from"].endswith((".pth", ".pt")):
-                self.gaussian_model.setup_from_tensors(torch.load(self.hparams["initialize_from"], map_location="cpu"))
+                self.gaussian_model.setup_from_tensors(torch.load(self.hparams["initialize_from"], map_location="cpu"), pl_module=self)
             else:
                 self._initialize_gaussians_from_trained_model()
         else:
@@ -588,6 +590,27 @@ class GaussianSplatting(LightningModule):
                 for i in metric_fields:
                     mean_metrics.append("{:.8f}".format(torch.stack(metric_list_key_by_name[i]).mean(dim=0).item()))
                 metrics_writer.writerow(mean_metrics)
+
+        # save best checkpoint (ssim)
+        if self.hparams.get("save_best_ssim", False):
+            best_ssim = getattr(self, "best_ssim", 0.0)
+            current_ssim = torch.tensor([v[1].get("ssim", 0.0) for v in self.val_metrics]).mean()
+            if current_ssim > best_ssim:
+                self.best_ssim = current_ssim
+                if self.trainer.global_rank == 0:
+                    ckpt_path = os.path.join(self.hparams["output_path"], "checkpoints", "best_ssim.ckpt")
+                    os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+                    self.trainer.save_checkpoint(ckpt_path)
+        # save best checkpoint (psnr)
+        if self.hparams.get("save_best_psnr", False):
+            best_psnr = getattr(self, "best_psnr", 0.0)
+            current_psnr = torch.tensor([v[1].get("psnr", 0.0) for v in self.val_metrics]).mean()
+            if current_psnr > best_psnr:
+                self.best_psnr = current_psnr
+                if self.trainer.global_rank == 0:
+                    ckpt_path = os.path.join(self.hparams["output_path"], "checkpoints", "best_psnr.ckpt")
+                    os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+                    self.trainer.save_checkpoint(ckpt_path)
 
         self.val_metrics.clear()
 

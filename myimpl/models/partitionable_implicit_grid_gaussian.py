@@ -10,6 +10,7 @@ from pytorch3d.transforms import quaternion_multiply
 
 from internal.cameras.cameras import Camera
 from internal.utils.network_factory import NetworkFactory
+from myimpl.dataparsers.feature_dataparser import FeatureDataParser
 from myimpl.models.implicit_grid_gaussian import (ImplicitGridGaussian,
                                                   ImplicitGridGaussianModel,
                                                   ImplicitLoDGridGaussian,
@@ -24,6 +25,15 @@ __all__ = [
 
 
 class PartitionableMixin:
+    def divide_features(self, anchor_partition_ids):
+        mask_dict = {}
+        unique_ids = torch.unique(anchor_partition_ids)
+        for i in unique_ids:
+            mask = anchor_partition_ids == i
+            mask_dict[str(i.item())] = mask
+        self._mask_dict = mask_dict
+
+    @torch.no_grad()
     def calculate_implicit_properties(
         self: Union["PartitionableMixin", ImplicitGridGaussianModel],
         viewpoint_camera: Camera,
@@ -42,6 +52,7 @@ class PartitionableMixin:
         scalings = self.get_scalings[anchor_mask]
         rotations = self.get_rotations[anchor_mask]
         anchor_partition_ids = self.get_anchor_partition_ids[anchor_mask]
+        self.divide_features(anchor_partition_ids)
 
         n_anchors, n_offsets = self.n_anchors, self.n_offsets
 
@@ -51,7 +62,7 @@ class PartitionableMixin:
 
         if self.config.use_feature_bank:
             bank_weight = F.softmax(
-                self.forward_by_partition_id(self.get_feature_bank_mlp, anchor_partition_ids, viewdirs), dim=-1
+                self.forward_by_partition_id(self.get_feature_bank_mlp, viewdirs), dim=-1
             ).unsqueeze(dim=1)
             features = features.unsqueeze(dim=-1)
             features = (
@@ -62,9 +73,7 @@ class PartitionableMixin:
             features = features.squeeze(dim=-1)
         cat_local_view = torch.cat([viewdirs, features], dim=1)
 
-        opacities_offsets = self.forward_by_partition_id(
-            self.get_opacity_mlp, anchor_partition_ids, features
-        )  # try: remove viewdirs
+        opacities_offsets = self.forward_by_partition_id(self.get_opacity_mlp, features)  # try: remove viewdirs
         opacities = torch.clamp(opacities_offsets, max=1.0).reshape(-1, n_offsets, 1)
         if prog_ratio is not None and transition_mask is not None:
             prog = prog_ratio[anchor_mask]
@@ -80,9 +89,9 @@ class PartitionableMixin:
             color_input = torch.cat([cat_local_view, appearance_code], dim=-1)
         else:
             color_input = cat_local_view
-        colors = self.forward_by_partition_id(self.get_color_mlp, anchor_partition_ids, color_input).reshape(-1, 3)
+        colors = self.forward_by_partition_id(self.get_color_mlp, color_input).reshape(-1, 3)
 
-        scale_rots = self.forward_by_partition_id(self.get_cov_mlp, anchor_partition_ids, cat_local_view).reshape(-1, n_offsets, 7)  # fmt: skip
+        scale_rots = self.forward_by_partition_id(self.get_cov_mlp, cat_local_view).reshape(-1, n_offsets, 7)  # fmt: skip
         scale_rots[..., -4:] = quaternion_multiply(
             rotations.unsqueeze(1),
             self.rotation_activation(scale_rots[..., -4:].clone()),
@@ -123,7 +132,6 @@ class PartitionableMixin:
     def forward_by_partition_id(
         self: "PartitionableImplicitGridGaussianModel",
         mlp: Dict[int, nn.Sequential],
-        anchor_partition_ids: torch.Tensor,
         features: torch.Tensor,
     ):
         for layer in reversed(list(mlp.values())[0].layers):
@@ -131,10 +139,8 @@ class PartitionableMixin:
                 dim_out = layer.out_features
                 break
         output = features.new_zeros((features.shape[0], dim_out))
-        unique_ids = torch.unique(anchor_partition_ids)
-        for i in unique_ids:
-            mask = anchor_partition_ids == i
-            output[mask] = mlp[str(i.item())](features[mask])
+        for idx, mask in self._mask_dict.items():
+            output[mask] = mlp[idx](features[mask])
         return output
 
     def setup_from_number(self, n, *args, **kwargs):

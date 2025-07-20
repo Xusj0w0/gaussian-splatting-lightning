@@ -24,17 +24,23 @@ from utils.common import AsyncImageReader, AsyncImageSaver, AsyncNDArraySaver
 from utils.distibuted_tasks import (configure_arg_parser,
                                     get_task_list_with_args)
 
+CFGs = {
+    "tiny": "configs/sam2.1/sam2.1_hiera_t.yaml",
+    "small": "configs/sam2.1/sam2.1_hiera_s.yaml",
+    "base": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "large": "configs/sam2.1/sam2.1_hiera_l.yaml",
+}
+
 
 def make_parser():
     parser = argparse.ArgumentParser(description="Extract HWC feature to npy file")
     parser.add_argument("image_path", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--sam2_ckpt", "-c", type=str, default="checkpoints/sam2/sam2.1_hiera_large.pt")
-    parser.add_argument("--sam2_cfg", type=str, default="configs/sam2.1/sam2.1_hiera_l.yaml")
+    parser.add_argument("--sam2_ckpt", type=str, default="checkpoints/sam2/sam2.1_hiera_large.pt")
     parser.add_argument(
         "--feat_dim",
         type=str,
-        default="256",
+        default="32",
         help="should in [32, 64, 256], corresponding shape are [32x256x256, 64x128x128, 256x64x64]",
     )
     parser.add_argument("--preview", action="store_true", default=False)
@@ -43,8 +49,15 @@ def make_parser():
     return parser
 
 
-def build_sam_predictor(args):
-    sam2 = build_sam2(args.sam2_cfg, args.sam2_ckpt, device=MODEL_DEVICE)
+def parse_arch(ckpt_path):
+    arch = [k for k in CFGs if k in os.path.basename(ckpt_path)]
+    if len(arch) == 0:
+        raise ValueError(f"Cannot find arch in {ckpt_path}, should be one of {list(CFGs.keys())}")
+    return arch[0]
+
+
+def build_sam_predictor(ckpt_path, arch):
+    sam2 = build_sam2(CFGs[arch], ckpt_path, device=MODEL_DEVICE)
     predictor = SAM2ImagePredictor(sam2)
     return predictor
 
@@ -77,14 +90,15 @@ if __name__ == "__main__":
     print(f"output_path={os.path.join(output_path, 'extra')}")
 
     # build output dirs
-    feature_dir = os.path.join(output_path, "extra", "sam2_feature_dim{}".format(args.feat_dim))
-    feature_preview_dir = os.path.join(output_path, "extra", "sam2_feature_preview_dim{}".format(args.feat_dim))
+    arch = parse_arch(args.sam2_ckpt)
+    feature_dir = os.path.join(output_path, "extra", "sam2_{}_d{}".format(arch, args.feat_dim))
+    feature_preview_dir = os.path.join(output_path, "extra", "sam2_{}_d{}_preview".format(arch, args.feat_dim))
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(feature_preview_dir, exist_ok=True)
 
     # initialize SAM
     print("Initializing SAM...")
-    predictor = build_sam_predictor(args)
+    predictor = build_sam_predictor(args.sam2_ckpt, arch)
 
     print("Finding image files...")
     image_list = get_image_list(args)

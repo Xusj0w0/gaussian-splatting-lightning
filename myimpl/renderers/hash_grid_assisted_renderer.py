@@ -74,6 +74,7 @@ class HashGridAssistedGaussianRendererModule(GridGaussianRendererModule):
             tile_size=self.config.block_size,
         )
         feature_adapter = getattr(pc, "get_feature_adapter_mlp", None)
+        aligned_feature = None
         if feature_adapter is not None:
             aligned_feature = feature_adapter(render_feature)
 

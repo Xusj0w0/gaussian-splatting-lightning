@@ -172,6 +172,14 @@ def update_ckpt(
     # remove optimizer states
     ckpt["optimizer_states"] = []
 
+    # remove scheduler
+    ckpt["lr_schedulers"] = []
+
+    # remove meta
+    ckpt["epoch"] = 0
+    ckpt["global_step"] = 0
+    ckpt["loops"] = {}
+
     # reinitialize density controller states
     if isinstance(ckpt["hyper_parameters"]["density"], VanillaDensityController):
         for k in list(ckpt["state_dict"].keys()):
@@ -180,7 +188,7 @@ def update_ckpt(
                     (merged_gaussians["means"].shape[0], *ckpt["state_dict"][k].shape[1:]),
                     dtype=ckpt["state_dict"][k].dtype,
                 )
-
+    
     # add merged gaussians to ckpt
     for k, v in merged_gaussians.items():
         ckpt["state_dict"]["gaussian_model.gaussians.{}".format(k)] = v

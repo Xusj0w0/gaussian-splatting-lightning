@@ -32,6 +32,8 @@ class OptimizationConfig:
 
     max_steps: int = None
 
+    warmup_steps: int = 0
+
 
 @dataclass
 class AdapterConfig:
@@ -82,7 +84,7 @@ class Adapter(nn.Module):
         optimizer = Adam().instantiate(param_group, lr=0.0, eps=1e-15)
         scheduler = (
             ExponentialDecayScheduler(
-                lr_final=self.config.optimization.lr_final, max_steps=self.config.optimization.max_steps
+                lr_final=self.config.optimization.lr_final, max_steps=self.config.optimization.max_steps, warmup_steps=self.config.optimization.warmup_steps,
             )
             .instantiate()
             .get_scheduler(optimizer, lr_init=self.config.optimization.lr_init)

@@ -26,7 +26,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str, required=True, help="path to checkpoint file")
     parser.add_argument("--dataset_path", type=str, help="path to dataset")
-    parser.add_argument("--down_sample_factor", type=int, default=4, help="down sample factor in training phase")
+    parser.add_argument("--down_sample_factor", type=int, default=1, help="down sample factor in training phase")
     parser.add_argument("--output", type=str, required=True, help="path to evaluation outputs")
     return parser.parse_args()
 
@@ -68,7 +68,7 @@ def get_metric_calculator(device, val_side: str = None):
     def get_metrics(predicts, batch):
         predicted_image = torch.clamp_max(predicts["render"], max=1.0)
         gt_image = batch[1][1]
-
+ 
         # mask
         if batch[1][-1] is not None:
             predicted_image = predicted_image * batch[1][-1]
@@ -212,7 +212,8 @@ def main():
     n_gaussian_list = []
     time_list = []
     n_rendered_frames = 0
-    for _ in range(8):
+    torch.cuda.reset_peak_memory_stats()
+    for _ in range(20):
         for camera in cameras:
             predicts = renderer(
                 camera,
@@ -246,11 +247,13 @@ def main():
 
         average_n_gaussians = torch.mean(torch.tensor(n_gaussian_list, dtype=torch.float)).item()
         fps = n_rendered_frames / torch.sum(torch.tensor(time_list, dtype=torch.float))
+        peak_mem = torch.cuda.max_memory_allocated() / (1024.0 ** 2)
         metrics_writer.writerow(["FPS", "{}".format(fps)])
+        metrics_writer.writerow(["PeakMemory(MB)", "{}".format(peak_mem)])
         metrics_writer.writerow(["AverageNGaussians", "{}".format(average_n_gaussians)])
 
         print(mean_row)
-        print("FPS={}, AverageNGaussians={}".format(fps, average_n_gaussians))
+        print("FPS={}, PeakMemory(MB)={}, AverageNGaussians={}".format(fps, peak_mem, average_n_gaussians))
 
 
 main()

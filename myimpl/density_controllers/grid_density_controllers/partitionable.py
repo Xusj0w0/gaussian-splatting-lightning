@@ -65,13 +65,17 @@ class PartitionInfo:
 
                 break
 
-    def is_in_partition(self, coordinates: torch.Tensor):
+    def is_in_partition(self, coordinates: torch.Tensor, enlarge: float = 0.0):
         if self.manhattan_trans.device != coordinates.device:
             self.manhattan_trans = self.manhattan_trans.to(coordinates.device)
             self.bounding_box = MinMaxBoundingBox(
                 min=self.bounding_box.min.to(coordinates.device),
                 max=self.bounding_box.max.to(coordinates.device),
             )
+        if enlarge > 0.0:
+            _min = self.bounding_box.min - enlarge * (self.bounding_box.max - self.bounding_box.min)
+            _max = self.bounding_box.max + enlarge * (self.bounding_box.max - self.bounding_box.min)
+            self.bounding_box = MinMaxBoundingBox(min=_min, max=_max)
 
         coordinates = coordinates @ self.manhattan_trans[:3, :3].T + self.manhattan_trans[:3, -1]
         mask = torch.logical_and(
@@ -104,8 +108,8 @@ class PartitionableFilteringUtils(GridFilteringUtils):
 
 @dataclass
 class PartitionableGridGaussianDensityController(GridGaussianDensityController):
-    densify_in_partition: bool = True
-    prune_in_partition: bool = True
+    densify_in_partition: bool = False
+    prune_in_partition: bool = False
     optimize_in_partition: bool = False
 
     def instantiate(self, *args, **kwargs):
@@ -138,7 +142,7 @@ class PartitionableGridGaussianDensityControllerImpl(GridGaussianDensityControll
 
     def after_backward(self, outputs, batch, gaussian_model, optimizers, global_step, pl_module):
         if self.config.optimize_in_partition:
-            if hasattr(self, "partition_info") and self.config.prune_in_partition:
+            if hasattr(self, "partition_info"):
                 is_in_partition = self.partition_info.is_in_partition(gaussian_model.get_xyz)
                 for name in gaussian_model.get_property_names():
                     prop = gaussian_model.gaussians[name]
