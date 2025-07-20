@@ -1,6 +1,7 @@
 # self-defined
 .vscode
 datasets
+datasets_citygs
 tmp
 .env
 *.pkl
